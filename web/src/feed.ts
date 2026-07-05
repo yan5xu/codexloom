@@ -195,7 +195,8 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
         return update(state, key, (b) => (b.kind === "file" ? { ...b, status, changes } : b));
       }
       default: {
-        if (t !== "item/completed" || !item.type) return state;
+        // userMessage items duplicate hub/user-message; drop them.
+        if (t !== "item/completed" || !item.type || item.type === "userMessage") return state;
         const key = `r:${itemId}`;
         if (state.index[key] !== undefined) return state;
         return push(

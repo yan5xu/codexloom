@@ -506,7 +506,8 @@ func (h *Hub) ResolveApproval(key, approvalID, decision string) (map[string]any,
 		return nil, errf(404, "no pending approval %s", approvalID)
 	}
 	delete(rt.approvals, approvalID)
-	d := "reject"
+	// codex 0.142.5 availableDecisions are "accept" / "cancel" (see protocol doc).
+	d := "cancel"
 	if decision == "accept" || decision == "approve" {
 		d = "accept"
 	}

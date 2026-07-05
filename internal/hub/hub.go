@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/yan5xu/codex-hub/internal/codex"
+	"github.com/yan5xu/codex-hub/internal/rollout"
 	"github.com/yan5xu/codex-hub/internal/store"
 )
 
@@ -72,6 +73,11 @@ type Session struct {
 	LastTurn       *TurnSummary `json:"lastTurn"`
 	CreatedAt      string       `json:"createdAt"`
 	UpdatedAt      string       `json:"updatedAt"`
+	// Source is "edge" for sessions mirrored read-only from pinix-edge's
+	// registry (they are re-imported each startup and never persisted here);
+	// empty for sessions codex-hub owns. Sending a task promotes an edge
+	// session to a native one (Source cleared, then persisted).
+	Source string `json:"source,omitempty"`
 }
 
 // SessionView is what the API returns: metadata + live runtime info.
@@ -151,10 +157,16 @@ func New(st *store.Store) *Hub {
 	if h.sessions == nil {
 		h.sessions = map[string]*Session{}
 	}
+	// Mirror pinix-edge's registry: edge-created sessions become visible here
+	// (read-only) and their rollout history is immediately viewable.
+	h.importEdgeLocked()
 	// Reconcile: tasks running when the hub last died are interrupted.
 	h.mu.Lock()
 	for _, meta := range h.sessions {
 		h.seqs[meta.ID] = st.LastSeq(meta.ID)
+		if meta.Source == "edge" {
+			continue // edge mirrors carry no codex-hub-driven turn state
+		}
 		if meta.Status == "running" {
 			h.emitLocked(meta.ID, "hub/turn-interrupted", map[string]any{
 				"reason": "hub-restart",
@@ -176,8 +188,48 @@ func New(st *store.Store) *Hub {
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func (h *Hub) persistLocked() {
-	if err := h.st.SaveSessions(h.sessions); err != nil {
+	// Persist only sessions codex-hub owns. Edge mirrors are re-imported from
+	// pinix-edge's registry on every startup, so writing them here would only
+	// let them drift out of sync.
+	own := make(map[string]*Session, len(h.sessions))
+	for id, meta := range h.sessions {
+		if meta.Source == "edge" {
+			continue
+		}
+		own[id] = meta
+	}
+	if err := h.st.SaveSessions(own); err != nil {
 		log.Printf("[hub] persist: %v", err)
+	}
+}
+
+// importEdgeLocked merges pinix-edge's name registry into the session map as
+// read-only mirrors. Existing sessions (by name) win — codex-hub never lets an
+// edge entry shadow one it owns.
+func (h *Hub) importEdgeLocked() {
+	agents, err := store.LoadEdgeAgents()
+	if err != nil {
+		log.Printf("[hub] load edge registry: %v", err)
+		return
+	}
+	taken := map[string]bool{}
+	for _, meta := range h.sessions {
+		taken[meta.Name] = true
+	}
+	for _, a := range agents {
+		if taken[a.Name] {
+			continue
+		}
+		id := "edge-" + a.Name
+		if _, clash := h.sessions[id]; clash {
+			continue
+		}
+		h.sessions[id] = &Session{
+			ID: id, Name: a.Name, Cwd: a.Cwd, ThreadID: a.ThreadID,
+			Sandbox: "danger-full-access", ApprovalPolicy: "never",
+			Status: "idle", Source: "edge",
+			CreatedAt: now(), UpdatedAt: now(),
+		}
 	}
 }
 
@@ -723,6 +775,7 @@ func (h *Hub) SendTask(key, text string, inactivity time.Duration) (SendResult, 
 		stopWatchdog: make(chan struct{}),
 	}
 	rt.activeTurn = turn
+	meta.Source = "" // adopting an edge mirror into codex-hub's own registry
 	meta.Status = "running"
 	meta.CurrentTask = text
 	meta.CurrentTurnID = ""
@@ -919,7 +972,16 @@ func (h *Hub) KillSession(key string) (map[string]any, error) {
 	return map[string]any{"killed": true, "id": sessionID, "name": name}, nil
 }
 
-// ---- history (thread/read) ----
+// ---- history (read from codex rollout files) ----
+//
+// History is NOT reconstructed from codex-hub's own event log. The real,
+// complete history of any session lives in the codex rollout file that
+// `codex app-server` writes for its thread; we read it directly (see the
+// rollout package). This means imported/adopted sessions show their full
+// history immediately, and no "migration/conversion" step exists. Live events
+// (from a session codex-hub is actively driving) still flow through the store
+// event log for real-time SSE broadcast — but historical viewing always reads
+// the rollout, so a non-driven session is fully viewable too.
 
 type HistoryTurn struct {
 	ID     string           `json:"id"`
@@ -946,154 +1008,33 @@ func (h *Hub) History(key string, count int) (History, error) {
 		h.mu.Unlock()
 		return History{}, errf(404, "session not found: %s", key)
 	}
-	rt, err := h.getRuntimeLocked(meta)
-	sessionID := meta.ID
-	h.mu.Unlock()
-	if err != nil {
-		return History{}, err
-	}
-	if err := waitReady(rt); err != nil {
-		return History{}, errf(500, "codex not ready: %s", err)
-	}
-
-	h.mu.Lock()
-	meta = h.sessions[sessionID]
-	if meta == nil {
-		h.mu.Unlock()
-		return History{}, errf(404, "session vanished")
-	}
 	threadID := meta.ThreadID
 	hist := History{ID: meta.ID, Name: meta.Name, Cwd: meta.Cwd, ThreadID: threadID, Status: meta.Status}
 	h.mu.Unlock()
 
-	result, err := rt.client.Request("thread/read", map[string]any{
-		"threadId": threadID, "includeTurns": true,
-	}, 30*time.Second)
+	if threadID == "" {
+		return hist, nil // no thread started yet → no rollout, no history
+	}
+
+	tr, err := rollout.Read(threadID)
 	if err != nil {
-		return History{}, errf(500, "thread/read failed: %s", err)
+		// No rollout on disk (e.g. brand-new session before its first turn is
+		// flushed). Not an error: report empty history for this session.
+		log.Printf("[hub] history: no rollout for %s (thread %s): %v", meta.Name, threadID, err)
+		return hist, nil
 	}
-	var parsed struct {
-		Thread struct {
-			Turns []struct {
-				ID     string            `json:"id"`
-				Status string            `json:"status"`
-				Items  []json.RawMessage `json:"items"`
-			} `json:"turns"`
-		} `json:"thread"`
-	}
-	if err := json.Unmarshal(result, &parsed); err != nil {
-		return History{}, errf(500, "thread/read parse: %s", err)
-	}
-	turns := parsed.Thread.Turns
+	turns := tr.Turns
 	if len(turns) > count {
 		turns = turns[len(turns)-count:]
 	}
 	for _, t := range turns {
-		ht := HistoryTurn{ID: t.ID, Status: t.Status, Items: []map[string]any{}}
-		for _, raw := range t.Items {
-			ht.Items = append(ht.Items, simplifyItem(raw))
+		items := t.Items
+		if items == nil {
+			items = []map[string]any{}
 		}
-		hist.Turns = append(hist.Turns, ht)
+		hist.Turns = append(hist.Turns, HistoryTurn{ID: t.ID, Status: t.Status, Items: items})
 	}
 	return hist, nil
-}
-
-func simplifyItem(raw json.RawMessage) map[string]any {
-	var item struct {
-		Type             string `json:"type"`
-		ID               string `json:"id"`
-		Text             string `json:"text"`
-		Phase            string `json:"phase"`
-		Summary          string `json:"summary"`
-		Command          string `json:"command"`
-		Cwd              string `json:"cwd"`
-		Status           string `json:"status"`
-		AggregatedOutput string `json:"aggregatedOutput"`
-		Output           string `json:"output"`
-		ExitCode         *int   `json:"exitCode"`
-		DurationMs       *int64 `json:"durationMs"`
-		Content          []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-		Changes []struct {
-			Path string          `json:"path"`
-			Kind json.RawMessage `json:"kind"`
-			Diff string          `json:"diff"`
-		} `json:"changes"`
-	}
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return map[string]any{"type": "unknown"}
-	}
-	switch item.Type {
-	case "userMessage":
-		text := item.Text
-		for _, c := range item.Content {
-			text += c.Text
-		}
-		return map[string]any{"type": "user", "text": text}
-	case "agentMessage":
-		typ := "thinking"
-		if item.Phase == "final_answer" || item.Phase == "" {
-			typ = "answer"
-		}
-		return map[string]any{"type": typ, "text": item.Text}
-	case "reasoning":
-		text := item.Text
-		if text == "" {
-			text = item.Summary
-		}
-		return map[string]any{"type": "reasoning", "text": truncate(text, 2000)}
-	case "commandExecution":
-		output := item.AggregatedOutput
-		if output == "" {
-			output = item.Output
-		}
-		m := map[string]any{
-			"type": "command", "id": item.ID, "command": item.Command,
-			"cwd": item.Cwd, "status": item.Status, "output": truncate(output, 4000),
-		}
-		if item.ExitCode != nil {
-			m["exitCode"] = *item.ExitCode
-		}
-		if item.DurationMs != nil {
-			m["durationMs"] = *item.DurationMs
-		}
-		return m
-	case "fileChange":
-		changes := []map[string]any{}
-		for _, c := range item.Changes {
-			changes = append(changes, map[string]any{
-				"path": c.Path, "kind": kindString(c.Kind), "diff": truncate(c.Diff, 4000),
-			})
-		}
-		return map[string]any{"type": "file_change", "id": item.ID, "status": item.Status, "changes": changes}
-	default:
-		return map[string]any{"type": item.Type, "raw": truncate(string(raw), 1000)}
-	}
-}
-
-func kindString(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	var obj struct {
-		Type string `json:"type"`
-	}
-	if json.Unmarshal(raw, &obj) == nil {
-		return obj.Type
-	}
-	return ""
-}
-
-func truncate(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit] + fmt.Sprintf("\n[... %d chars truncated]", len(s)-limit)
 }
 
 // Shutdown closes all codex processes. Running sessions keep status=running

@@ -2,8 +2,12 @@
 //
 // Layout (default ~/.codex-hub, override with CODEX_HUB_DATA):
 //
-//	sessions.json        session metadata (atomic write via rename)
+//	sessions.json        the registry: name → (threadId, cwd) plus runtime meta
 //	events/<id>.ndjson   append-only per-session event log, one JSON per line
+//
+// sessions.json is a small REGISTRY, not a history store: session history lives
+// in codex's own rollout files (see internal/rollout). The event log is used
+// only for live SSE broadcast of sessions codex-hub is actively driving.
 //
 // Events carry a per-session monotonically increasing seq so observers can
 // replay from any point (?since=SEQ) and then follow live.
@@ -47,6 +51,57 @@ func Open(dir string) (*Store, error) {
 }
 
 func (s *Store) Dir() string { return s.dir }
+
+// EdgeAgent is one entry from pinix-edge's registry (~/.pinix/code_agents/names.json).
+type EdgeAgent struct {
+	Name     string
+	ThreadID string
+	Cwd      string
+}
+
+// EdgeNamesFile is pinix-edge's own name→thread registry. codex-hub reads it
+// (never writes it) so edge-created sessions appear here and their history —
+// which lives in the same codex rollout files — is viewable immediately.
+func EdgeNamesFile() string {
+	if p := os.Getenv("PINIX_EDGE_NAMES"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".pinix", "code_agents", "names.json")
+}
+
+// LoadEdgeAgents reads pinix-edge's names.json. Missing file → nil, nil.
+func LoadEdgeAgents() ([]EdgeAgent, error) {
+	path := EdgeNamesFile()
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var raw map[string]struct {
+		ThreadID string `json:"threadId"`
+		Cwd      string `json:"cwd"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]EdgeAgent, 0, len(raw))
+	for name, v := range raw {
+		if v.ThreadID == "" {
+			continue
+		}
+		out = append(out, EdgeAgent{Name: name, ThreadID: v.ThreadID, Cwd: v.Cwd})
+	}
+	return out, nil
+}
 
 func (s *Store) sessionsFile() string { return filepath.Join(s.dir, "sessions.json") }
 

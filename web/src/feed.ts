@@ -82,6 +82,10 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
     case "__history__": {
       // Seed past turns read from the codex rollout file (mirror/idle sessions
       // have no live event log). Builds blocks directly from history items.
+      // Guard: if real live content already arrived (an in-progress turn
+      // streamed in before this async seed resolved), do NOT wipe it. Only
+      // "sys" markers like "— live —" don't count as content.
+      if (state.blocks.some((b) => b.kind !== "sys")) return state;
       let s: FeedState = { blocks: [], index: {}, approvals: {} };
       const turns = (d as any).turns || [];
       for (let i = 0; i < turns.length; i++) {

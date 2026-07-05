@@ -23,6 +23,7 @@ export type Block =
       changes: { path: string; kind: string; diff: string }[];
     }
   | { kind: "sys"; ts: string; cls: "ok" | "warn" | "err" | "dim"; text: string }
+  | { kind: "image"; id: string; data: string }
   | { kind: "raw"; id: string; type: string; json: string };
 
 export interface FeedState {
@@ -105,6 +106,9 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
           break;
         case "file_change":
           blocks.push({ kind: "file", id, status: "completed", changes: it.changes || [] });
+          break;
+        case "image":
+          blocks.push({ kind: "image", id, data: it.data || "" });
           break;
       }
     }

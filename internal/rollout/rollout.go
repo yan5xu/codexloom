@@ -269,6 +269,20 @@ func (tr *Transcript) handleResponseItem(payload json.RawMessage, outputs map[st
 	if json.Unmarshal(payload, &p) != nil {
 		return
 	}
+	// Generated images: carry the base64 PNG as a data URI so the UI can render
+	// it inline (the rollout stores it in `result`).
+	if p.Type == "image_generation_call" {
+		var img struct {
+			Result string `json:"result"`
+		}
+		if json.Unmarshal(payload, &img) == nil && img.Result != "" {
+			tr.cur().Items = append(tr.cur().Items, map[string]any{
+				"type": "image",
+				"data": "data:image/png;base64," + img.Result,
+			})
+		}
+		return
+	}
 	// Only exec_command function calls render as shell commands; apply_patch is
 	// covered by event_msg/patch_apply_end, other tools are internal.
 	if p.Type != "function_call" || p.Name != "exec_command" {

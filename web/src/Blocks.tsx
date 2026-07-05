@@ -135,6 +135,18 @@ export function BlockView({ block }: { block: Block }) {
         </details>
       );
 
+    // Generated image — rendered inline from its base64 data URI.
+    case "image":
+      return (
+        <div className="my-2">
+          <img
+            src={block.data}
+            alt="generated"
+            className="max-w-md rounded-xl border border-border shadow-card"
+          />
+        </div>
+      );
+
     // System line — quiet meta with a mono timestamp.
     case "sys":
       return (

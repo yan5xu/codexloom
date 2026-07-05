@@ -79,59 +79,92 @@ export default function App() {
   const selected = sessions.find((s) => s.id === current) || null;
 
   return (
-    <div className="flex h-full overflow-hidden text-[14px]">
-      {/* sidebar */}
-      <div className="flex w-[260px] shrink-0 flex-col border-r border-line bg-panel">
-        <h1 className="px-4 pb-2.5 pt-3.5 text-[15px] font-semibold tracking-wide">
-          <span className="text-accent">◉</span> codex-hub
-        </h1>
-        <div className="flex-1 overflow-y-auto">
-          {sessions.map((s) => (
-            <div
-              key={s.id}
-              onClick={() => setCurrent(s.id)}
-              className={`cursor-pointer border-l-[3px] px-3.5 py-2.5 hover:bg-panel2 ${
-                s.id === current ? "border-accent bg-panel2" : "border-transparent"
-              }`}
-            >
-              <div className="flex items-center gap-2 font-semibold">
-                <span
-                  className={`h-2 w-2 shrink-0 rounded-full ${
-                    s.status === "running" ? "pulse bg-warn" : s.status === "idle" ? "bg-ok" : "bg-dim"
-                  }`}
-                />
-                {s.name}
-              </div>
-              <div className="mt-0.5 truncate font-mono text-[11.5px] text-dim">{s.cwd}</div>
-              {s.currentTask && (
-                <div className="mt-0.5 truncate text-[11.5px] text-warn">{s.currentTask}</div>
-              )}
-            </div>
-          ))}
+    <div className="flex h-full overflow-hidden">
+      {/* sidebar — session list (mirrors the topic list: rounded pills, color-only layering) */}
+      <aside className="flex w-[272px] shrink-0 flex-col bg-sidebar/60">
+        <div className="px-4 pb-2 pt-4">
+          <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground/70">codex · hub</p>
+          <h2 className="mt-0.5 font-serif text-xl leading-tight tracking-tight">Sessions</h2>
         </div>
-        <div className="flex flex-col gap-2 border-t border-line p-3">
+
+        <div className="mx-3 h-px bg-border/40" />
+
+        <div className="flex items-center justify-between px-4 pb-1 pt-3">
+          <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
+            Threads
+          </span>
+          <span className="font-mono text-[10px] text-muted-foreground/50">{sessions.length}</span>
+        </div>
+
+        <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
+          {sessions.map((s) => {
+            const active = s.id === current;
+            return (
+              <button
+                key={s.id}
+                onClick={() => setCurrent(s.id)}
+                className={`group relative block w-full overflow-hidden rounded-xl px-2.5 py-2 text-left transition-colors ${
+                  active ? "bg-primary/[0.07]" : "hover:bg-foreground/[0.03]"
+                }`}
+              >
+                {active && (
+                  <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-primary" />
+                )}
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${
+                      s.status === "running"
+                        ? "pulse bg-warning"
+                        : s.status === "idle"
+                          ? "bg-success"
+                          : "bg-muted-foreground/40"
+                    }`}
+                  />
+                  <span
+                    className={`truncate text-[13.5px] ${active ? "font-semibold text-foreground" : "font-medium text-foreground/90"}`}
+                  >
+                    {s.name}
+                  </span>
+                </div>
+                <div className="mt-0.5 truncate pl-4 font-mono text-[11px] text-muted-foreground/70">{s.cwd}</div>
+                {s.currentTask && (
+                  <div className="mt-0.5 truncate pl-4 text-[11px] text-warning/90">{s.currentTask}</div>
+                )}
+              </button>
+            );
+          })}
+          {sessions.length === 0 && (
+            <div className="px-3 py-6 text-center text-[12px] text-muted-foreground/50">
+              No sessions yet.
+            </div>
+          )}
+        </div>
+
+        {/* new session */}
+        <div className="mx-3 h-px bg-border/40" />
+        <div className="flex flex-col gap-2 p-3">
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="session name"
             spellCheck={false}
-            className="rounded-md border border-line bg-bg px-2.5 py-1.5 text-[13px] outline-none focus:border-accent"
+            className="h-8 rounded-xl bg-background px-2.5 text-[13px] outline-none ring-1 ring-border/60 transition focus:ring-primary/40"
           />
           <input
             value={newCwd}
             onChange={(e) => setNewCwd(e.target.value)}
             placeholder="working directory"
             spellCheck={false}
-            className="rounded-md border border-line bg-bg px-2.5 py-1.5 font-mono text-[12.5px] outline-none focus:border-accent"
+            className="h-8 rounded-xl bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border/60 transition focus:ring-primary/40"
           />
           <button
             onClick={create}
-            className="rounded-md border border-[#1f6feb] bg-[#1f6feb] px-3 py-1.5 text-[13px] font-medium"
+            className="rounded-xl bg-primary px-3 py-2 text-[13px] font-medium text-primary-foreground transition-colors hover:opacity-90"
           >
-            new session
+            + New session
           </button>
         </div>
-      </div>
+      </aside>
 
       {/* main */}
       {selected ? (
@@ -142,15 +175,16 @@ export default function App() {
           onError={showToast}
         />
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-dim">
-          <div className="text-3xl">◉</div>
-          <div>select or create a session</div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-background text-muted-foreground">
+          <div className="text-4xl opacity-25">◐</div>
+          <h2 className="font-serif text-2xl tracking-tight text-foreground/80">codex-hub</h2>
+          <div className="text-sm text-muted-foreground/70">Select or create a session to begin.</div>
         </div>
       )}
 
       {/* toast */}
       {toast && (
-        <div className="fixed bottom-20 right-5 z-10 rounded-lg border border-err bg-[#3d1418] px-4 py-2.5 text-err">
+        <div className="fixed bottom-6 right-6 z-10 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive shadow-card backdrop-blur">
           {toast}
         </div>
       )}

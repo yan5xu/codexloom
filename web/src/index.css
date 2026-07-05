@@ -1,18 +1,85 @@
+/* ================================================================
+   codex-hub — visual language aligned with Pinix Agent (topic).
+   "Quiet Luxury Cashmere": warm ochre-sand neutrals (H=78),
+   Vicuña-camel primary, editorial serif headings, soft warm depth.
+   Light by default; warm-espresso dark via prefers-color-scheme.
+   ================================================================ */
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:opsz,wght@14..32,300..700&family=JetBrains+Mono:wght@400..600&display=swap");
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #0d1117;
-  --color-panel: #161b22;
-  --color-panel2: #1c2129;
-  --color-line: #2d333b;
-  --color-txt: #e6edf3;
-  --color-dim: #8b949e;
-  --color-accent: #58a6ff;
-  --color-ok: #3fb950;
-  --color-err: #f85149;
-  --color-warn: #d29922;
-  --color-grape: #bc8cff;
-  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+:root {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+
+  /* Warm quartz-sand surfaces — layered jade depth */
+  --background: oklch(0.975 0.006 78);
+  --foreground: oklch(0.24 0.012 78);
+  --card: oklch(0.998 0.002 78);
+  --sidebar: oklch(0.945 0.012 78);
+  --secondary: oklch(0.95 0.008 78);
+  --muted: oklch(0.925 0.012 78);
+  --muted-foreground: oklch(0.48 0.015 78);
+  --border: oklch(0.905 0.010 78);
+
+  /* Brand: Vicuña Camel */
+  --primary: oklch(0.48 0.095 78);
+  --primary-foreground: oklch(0.99 0.003 78);
+
+  /* Semantic — earth-toned, restrained chroma */
+  --success: oklch(0.58 0.09 150);
+  --warning: oklch(0.66 0.13 55);
+  --destructive: oklch(0.55 0.16 28);
+
+  /* Diff tint */
+  --add: oklch(0.55 0.09 150);
+  --del: oklch(0.55 0.16 28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Deep espresso & smoked amber */
+    --background: oklch(0.115 0.008 78);
+    --foreground: oklch(0.92 0.008 78);
+    --card: oklch(0.155 0.011 78);
+    --sidebar: oklch(0.09 0.006 78);
+    --secondary: oklch(0.185 0.010 78);
+    --muted: oklch(0.21 0.012 78);
+    --muted-foreground: oklch(0.62 0.015 78);
+    --border: oklch(0.235 0.010 78);
+
+    --primary: oklch(0.72 0.11 78);
+    --primary-foreground: oklch(0.14 0.008 78);
+
+    --success: oklch(0.70 0.10 150);
+    --warning: oklch(0.78 0.13 55);
+    --destructive: oklch(0.64 0.16 28);
+
+    --add: oklch(0.70 0.10 150);
+    --del: oklch(0.66 0.16 28);
+  }
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-sidebar: var(--sidebar);
+  --color-secondary: var(--secondary);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-destructive: var(--destructive);
+  --color-add: var(--add);
+  --color-del: var(--del);
 }
 
 html,
@@ -22,10 +89,55 @@ body,
 }
 
 body {
-  background: var(--color-bg);
-  color: var(--color-txt);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* Editorial serif headings */
+.font-serif {
+  font-family: var(--font-serif);
+  letter-spacing: 0;
+}
+
+/* ---- Warm-tinted card elevation ---- */
+.shadow-card {
+  box-shadow:
+    0 1px 3px oklch(0.20 0.03 78 / 0.04),
+    0 6px 18px oklch(0.20 0.03 78 / 0.07),
+    inset 0 1px 0.5px oklch(1 0.002 78 / 0.9);
+}
+@media (prefers-color-scheme: dark) {
+  .shadow-card {
+    box-shadow:
+      0 2px 5px oklch(0 0 0 / 0.4),
+      0 10px 24px oklch(0.05 0.008 78 / 0.35),
+      inset 0 1px 0 oklch(1 0 0 / 0.06);
+  }
+}
+
+/* Soft hairline separators (color-difference layering, no hard borders) */
+.edge-b {
+  box-shadow: 0 1px 0 oklch(0.7 0.02 78 / 0.14);
+}
+.edge-t {
+  box-shadow: 0 -1px 0 oklch(0.7 0.02 78 / 0.14);
+}
+
+/* Composer top shimmer divider */
+.shimmer-divider {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    oklch(0.7 0.05 78 / 0.35) 20%,
+    oklch(0.7 0.05 78 / 0.35) 80%,
+    transparent
+  );
+}
+
+/* ---- Collapsible marker ---- */
 details.card > summary {
   list-style: none;
 }
@@ -34,16 +146,17 @@ details.card > summary::-webkit-details-marker {
 }
 details.card > summary::before {
   content: "▸";
-  color: var(--color-dim);
+  color: var(--muted-foreground);
   font-size: 10px;
   margin-right: 8px;
   display: inline-block;
-  transition: transform 0.12s;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
 details.card[open] > summary::before {
   transform: rotate(90deg);
 }
 
+/* ---- Status pulse + streaming caret ---- */
 @keyframes pulse-dot {
   50% {
     opacity: 0.3;
@@ -54,6 +167,43 @@ details.card[open] > summary::before {
 }
 .cursor-blink::after {
   content: "▋";
-  color: var(--color-accent);
+  color: var(--primary);
   animation: pulse-dot 1s infinite;
+  margin-left: 1px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* ---- Scrollbars ---- */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(0.5 0.02 78 / 0.22);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.5 0.02 78 / 0.38);
+}
+
+::selection {
+  background: var(--primary);
+  color: var(--primary-foreground);
 }

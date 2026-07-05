@@ -98,99 +98,116 @@ export function SessionPane({
   };
 
   const approvalEntries = Object.entries(feed.approvals);
+  const running = session.status === "running";
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      {/* header */}
-      <div className="flex items-center gap-3 border-b border-line bg-panel px-4 py-2.5">
-        <span className="text-[15px] font-bold">{session.name}</span>
+    <main className="flex min-w-0 flex-1 flex-col bg-background">
+      {/* header — serif title, status pill, mono meta; soft warm shadow, no hard border */}
+      <header
+        className="flex shrink-0 items-center gap-3 px-4 py-2.5 md:px-6"
+        style={{ boxShadow: "0 4px 12px -6px oklch(0.2 0.03 78 / 0.12)" }}
+      >
+        <div className="min-w-0">
+          <h1 className="truncate font-serif text-xl leading-none tracking-tight">{session.name}</h1>
+          <div className="mt-1 truncate font-mono text-[10px] uppercase tracking-widest text-muted-foreground/80">
+            {session.cwd} · {session.threadId}
+          </div>
+        </div>
         <span
-          className={`rounded-full border px-2.5 py-px text-[11px] ${
-            session.status === "running"
-              ? "border-warn text-warn"
+          className={`ml-1 inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-medium ${
+            running
+              ? "bg-warning/10 text-warning"
               : session.status === "idle"
-                ? "border-ok text-ok"
-                : "border-line text-dim"
+                ? "bg-success/10 text-success"
+                : "bg-muted text-muted-foreground"
           }`}
         >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              running ? "animate-pulse bg-warning" : session.status === "idle" ? "bg-success" : "bg-muted-foreground/50"
+            }`}
+          />
           {session.status}
-          {session.currentTask ? ` — ${session.currentTask.slice(0, 50)}` : ""}
+          {session.currentTask ? ` — ${session.currentTask.slice(0, 42)}` : ""}
         </span>
-        <span className="flex-1 truncate font-mono text-[12px] text-dim">
-          {session.cwd} · {session.threadId}
-        </span>
-        {session.status === "running" && (
+        <div className="flex-1" />
+        {running && (
           <button
             onClick={interrupt}
-            className="rounded-md border border-line bg-panel2 px-3 py-1.5 text-[13px] hover:border-warn hover:text-warn"
+            className="shrink-0 rounded-xl px-3 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-warning/10 hover:text-warning"
           >
             interrupt
           </button>
         )}
         <button
           onClick={kill}
-          className="rounded-md border border-line bg-panel2 px-3 py-1.5 text-[13px] text-err hover:border-err"
+          className="shrink-0 rounded-xl px-3 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
         >
           kill
         </button>
-      </div>
+      </header>
 
-      {/* pending approvals */}
-      {approvalEntries.length > 0 && (
-        <div className="px-5 pt-2">
+      {/* event feed + pending approvals */}
+      <div ref={feedRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl px-4 pb-8 pt-4 md:px-6">
+          {/* pending approvals */}
           {approvalEntries.map(([id, ap]) => (
-            <div key={id} className="mb-2 max-w-4xl rounded-lg border border-warn bg-[#2d1a06] px-3.5 py-3">
-              <div className="mb-2">
-                ⚠ <b>codex requests approval</b> — <span className="font-mono text-[12px]">{ap.method}</span>
+            <div key={id} className="mb-3 rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3.5 shadow-card">
+              <div className="mb-2 text-sm">
+                <span className="text-warning">⚠</span> <b>codex requests approval</b> —{" "}
+                <span className="font-mono text-[12px]">{ap.method}</span>
               </div>
-              <pre className="mb-2 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[12px] text-dim">
+              <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-xl bg-muted/50 px-3 py-2 font-mono text-[12px] text-muted-foreground">
                 {JSON.stringify(ap.params, null, 2)?.slice(0, 1500)}
               </pre>
               <button
                 onClick={() => resolveApproval(id, "accept")}
-                className="mr-2 rounded-md border border-[#238636] bg-[#238636] px-3 py-1.5 text-[13px]"
+                className="mr-2 rounded-xl bg-primary px-3.5 py-1.5 text-[13px] font-medium text-primary-foreground transition-colors hover:opacity-90"
               >
                 approve
               </button>
               <button
                 onClick={() => resolveApproval(id, "reject")}
-                className="rounded-md border border-line bg-panel2 px-3 py-1.5 text-[13px] text-err hover:border-err"
+                className="rounded-xl px-3.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
               >
                 reject
               </button>
             </div>
           ))}
+
+          {feed.blocks.map((b, i) => (
+            <BlockView key={i} block={b} />
+          ))}
         </div>
-      )}
-
-      {/* event feed */}
-      <div ref={feedRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-5 pb-8 pt-4">
-        {feed.blocks.map((b, i) => (
-          <BlockView key={i} block={b} />
-        ))}
       </div>
 
-      {/* composer */}
-      <div className="flex items-end gap-2.5 border-t border-line bg-panel px-4 py-3">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          placeholder="send a task to this session… (Enter to send, Shift+Enter for newline)"
-          className="max-h-40 min-h-[42px] flex-1 resize-none rounded-lg border border-line bg-bg px-3 py-2.5 text-[13.5px] outline-none focus:border-accent"
-        />
-        <button
-          onClick={send}
-          className="rounded-md border border-[#1f6feb] bg-[#1f6feb] px-4 py-2 text-[13px] font-medium"
-        >
-          send
-        </button>
+      {/* composer — mirrors AgentComposer: shimmer divider + rounded-2xl ring container */}
+      <div className="relative shrink-0 bg-background px-4 pb-3 pt-2 md:px-6">
+        <div className="shimmer-divider absolute inset-x-0 top-0 h-px" />
+        <div className="mx-auto flex max-w-3xl items-end gap-2.5">
+          <div className="flex flex-1 items-end rounded-2xl bg-card p-1.5 shadow-card ring-1 ring-border/60 transition focus-within:ring-primary/40">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="Send a task to this session…  (Enter to send · Shift+Enter for newline)"
+              className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2.5 py-2 text-[13.5px] outline-none placeholder:text-muted-foreground/50"
+            />
+            <button
+              onClick={send}
+              disabled={!input.trim()}
+              className="mb-0.5 mr-0.5 shrink-0 rounded-xl bg-primary px-4 py-2 text-[13px] font-medium text-primary-foreground transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground/40"
+            >
+              send
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
+    </main>
   );
 }

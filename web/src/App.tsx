@@ -80,6 +80,13 @@ export default function App() {
 
   const selected = sessions.find((s) => s.id === current) || null;
 
+  // Middle-truncate long paths so the trailing folder (what distinguishes
+  // same-named projects) stays visible.
+  const midPath = (p: string) => {
+    if (p.length <= 34) return p;
+    return p.slice(0, 14) + "…" + p.slice(-18);
+  };
+
   return (
     <div className="flex h-screen overflow-hidden">
       {/* backdrop — only on mobile when the drawer is open */}
@@ -120,7 +127,7 @@ export default function App() {
                   setSidebarOpen(false);
                 }}
                 className={`group relative block w-full overflow-hidden rounded-xl px-2.5 py-2 text-left transition-colors ${
-                  active ? "bg-primary/[0.07]" : "hover:bg-foreground/[0.03]"
+                  active ? "bg-primary/[0.12] ring-1 ring-primary/20" : "hover:bg-foreground/[0.04]"
                 }`}
               >
                 {active && (
@@ -130,10 +137,8 @@ export default function App() {
                   <span
                     className={`h-2 w-2 shrink-0 rounded-full ${
                       s.status === "running"
-                        ? "pulse bg-warning"
-                        : s.status === "idle"
-                          ? "bg-success"
-                          : "bg-muted-foreground/40"
+                        ? "pulse bg-success ring-2 ring-success/20"
+                        : "bg-muted-foreground/30"
                     }`}
                   />
                   <span
@@ -142,7 +147,12 @@ export default function App() {
                     {s.name}
                   </span>
                 </div>
-                <div className="mt-0.5 truncate pl-4 font-mono text-[11px] text-muted-foreground/70">{s.cwd}</div>
+                <div
+                  title={s.cwd}
+                  className="mt-0.5 truncate pl-4 font-mono text-[10.5px] text-muted-foreground"
+                >
+                  {midPath(s.cwd)}
+                </div>
                 {s.currentTask && (
                   <div className="mt-0.5 truncate pl-4 text-[11px] text-warning/90">{s.currentTask}</div>
                 )}
@@ -156,22 +166,22 @@ export default function App() {
           )}
         </div>
 
-        {/* new session */}
-        <div className="mx-3 h-px bg-border/40" />
-        <div className="flex flex-col gap-2 p-3">
+        {/* new session — floating panel separated from the scrolling list */}
+        <div className="border-t border-border/50 bg-sidebar/80 px-3 pb-5 pt-3 shadow-[0_-4px_12px_-8px_rgba(0,0,0,0.08)]">
+          <div className="flex flex-col gap-2">
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="session name"
             spellCheck={false}
-            className="h-8 rounded-xl bg-background px-2.5 text-[13px] outline-none ring-1 ring-border/60 transition focus:ring-primary/40"
+            className="h-8 rounded-xl bg-background px-2.5 text-[13px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/70 focus:ring-primary/40"
           />
           <input
             value={newCwd}
             onChange={(e) => setNewCwd(e.target.value)}
             placeholder="working directory"
             spellCheck={false}
-            className="h-8 rounded-xl bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border/60 transition focus:ring-primary/40"
+            className="h-8 rounded-xl bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/70 focus:ring-primary/40"
           />
           <button
             onClick={create}
@@ -179,6 +189,7 @@ export default function App() {
           >
             + New session
           </button>
+          </div>
         </div>
       </aside>
 

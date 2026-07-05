@@ -132,7 +132,7 @@ export function BlockView({ block }: { block: Block }) {
           <img
             src={block.data}
             alt="generated"
-            className="max-w-md rounded-xl border border-border shadow-card"
+            className="max-h-80 max-w-sm rounded-xl border border-border/60 shadow-card"
           />
         </div>
       );

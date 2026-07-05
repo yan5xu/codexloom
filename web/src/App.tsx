@@ -78,6 +78,26 @@ export default function App() {
     }
   };
 
+  // Deep-link: on first session load, honor #<id|name> in the URL so a session
+  // view is directly linkable (and headless-screenshot-able).
+  const hashApplied = useRef(false);
+  useEffect(() => {
+    if (hashApplied.current || sessions.length === 0) return;
+    const h = decodeURIComponent(window.location.hash.slice(1));
+    if (h) {
+      const s = sessions.find((x) => x.id === h || x.name === h);
+      if (s) setCurrent(s.id);
+    }
+    hashApplied.current = true;
+  }, [sessions]);
+
+  const selectSession = (id: string) => {
+    setCurrent(id);
+    setSidebarOpen(false);
+    const s = sessions.find((x) => x.id === id);
+    if (s) window.location.hash = encodeURIComponent(s.name);
+  };
+
   const selected = sessions.find((s) => s.id === current) || null;
 
   // Middle-truncate long paths so the trailing folder (what distinguishes
@@ -122,10 +142,7 @@ export default function App() {
             return (
               <button
                 key={s.id}
-                onClick={() => {
-                  setCurrent(s.id);
-                  setSidebarOpen(false);
-                }}
+                onClick={() => selectSession(s.id)}
                 className={`group relative block w-full overflow-hidden rounded-xl px-2.5 py-2 text-left transition-colors ${
                   active ? "bg-primary/[0.12] ring-1 ring-primary/20" : "hover:bg-foreground/[0.04]"
                 }`}

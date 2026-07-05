@@ -8,7 +8,9 @@
 
 /** Format ISO timestamp to short time (e.g., "10:30 AM") */
 export function shortTime(ts: string): string {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const d = new Date(ts);
+  if (!ts || isNaN(d.getTime())) return ""; // empty/invalid → render nothing
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Format token count to human-readable (e.g., 1500 → "1.5k", 2000000 → "2.0M") */

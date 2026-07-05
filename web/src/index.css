@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0d1117;
+  --color-panel: #161b22;
+  --color-panel2: #1c2129;
+  --color-line: #2d333b;
+  --color-txt: #e6edf3;
+  --color-dim: #8b949e;
+  --color-accent: #58a6ff;
+  --color-ok: #3fb950;
+  --color-err: #f85149;
+  --color-warn: #d29922;
+  --color-grape: #bc8cff;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-txt);
+}
+
+details.card > summary {
+  list-style: none;
+}
+details.card > summary::-webkit-details-marker {
+  display: none;
+}
+details.card > summary::before {
+  content: "▸";
+  color: var(--color-dim);
+  font-size: 10px;
+  margin-right: 8px;
+  display: inline-block;
+  transition: transform 0.12s;
+}
+details.card[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+@keyframes pulse-dot {
+  50% {
+    opacity: 0.3;
+  }
+}
+.pulse {
+  animation: pulse-dot 1.2s infinite;
+}
+.cursor-blink::after {
+  content: "▋";
+  color: var(--color-accent);
+  animation: pulse-dot 1s infinite;
+}

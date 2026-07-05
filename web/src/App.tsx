@@ -79,7 +79,7 @@ export default function App() {
   const selected = sessions.find((s) => s.id === current) || null;
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-screen overflow-hidden">
       {/* sidebar — session list (mirrors the topic list: rounded pills, color-only layering) */}
       <aside className="flex w-[272px] shrink-0 flex-col bg-sidebar/60">
         <div className="px-4 pb-2 pt-4">

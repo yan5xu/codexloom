@@ -841,3 +841,5 @@ details.card[open] > summary::before {
   background: var(--primary);
   color: var(--primary-foreground);
 }
+
+html, body, #root { height: 100%; }

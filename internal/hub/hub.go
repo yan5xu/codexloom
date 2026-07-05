@@ -1069,12 +1069,16 @@ type History struct {
 	Cwd      string        `json:"cwd"`
 	ThreadID string        `json:"threadId"`
 	Status   string        `json:"status"`
+	Total    int           `json:"total"` // total turns in the rollout (for scroll-up paging)
 	Turns    []HistoryTurn `json:"turns"`
 }
 
-func (h *Hub) History(key string, count int) (History, error) {
+func (h *Hub) History(key string, count, offset int) (History, error) {
 	if count <= 0 {
 		count = 10
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	h.mu.Lock()
 	meta := h.resolveLocked(key)
@@ -1097,10 +1101,18 @@ func (h *Hub) History(key string, count int) (History, error) {
 		log.Printf("[hub] history: no rollout for %s (thread %s): %v", meta.Name, threadID, err)
 		return hist, nil
 	}
-	turns := tr.Turns
-	if len(turns) > count {
-		turns = turns[len(turns)-count:]
+	all := tr.Turns
+	hist.Total = len(all)
+	// Window from the end: skip the newest `offset` turns, take `count` before them.
+	end := len(all) - offset
+	if end < 0 {
+		end = 0
 	}
+	start := end - count
+	if start < 0 {
+		start = 0
+	}
+	turns := all[start:end]
 	for _, t := range turns {
 		items := t.Items
 		if items == nil {

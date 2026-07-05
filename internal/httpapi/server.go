@@ -102,7 +102,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/sessions/{key}/history", func(w http.ResponseWriter, r *http.Request) {
 		count, _ := strconv.Atoi(r.URL.Query().Get("count"))
-		hist, err := s.hub.History(r.PathValue("key"), count)
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		hist, err := s.hub.History(r.PathValue("key"), count, offset)
 		if err != nil {
 			writeErr(w, err)
 			return

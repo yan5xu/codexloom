@@ -17,14 +17,25 @@ export function SessionPane({
   const [input, setInput] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const loadedRef = useRef(0); // turns loaded so far
+  const totalRef = useRef(0); // total turns in rollout
+  const loadingRef = useRef(false);
+  const keepScrollRef = useRef<number | null>(null); // scrollHeight before a prepend
 
-  // Seed past turns from the codex rollout file (single source of history —
-  // works for mirror/idle sessions with no live event log), then follow live.
+  const PAGE = 25;
+
+  // Seed the newest page of past turns from the rollout (single source of
+  // history; works for mirror/idle sessions with no live event log).
   useEffect(() => {
     let cancelled = false;
-    api("GET", `/api/sessions/${session.id}/history?count=100`)
+    loadedRef.current = 0;
+    totalRef.current = 0;
+    api("GET", `/api/sessions/${session.id}/history?count=${PAGE}&offset=0`)
       .then((h) => {
-        if (!cancelled) dispatch({ type: "__history__", ts: "", data: h } as any);
+        if (cancelled) return;
+        totalRef.current = h.total || 0;
+        loadedRef.current = (h.turns || []).length;
+        dispatch({ type: "__history__", ts: "", data: h } as any);
       })
       .catch(() => {
         /* ignore — live stream still works */
@@ -33,6 +44,25 @@ export function SessionPane({
       cancelled = true;
     };
   }, [session.id]);
+
+  // Scroll-up lazy load: fetch the next older page and prepend it.
+  const loadOlder = () => {
+    if (loadingRef.current || loadedRef.current >= totalRef.current) return;
+    loadingRef.current = true;
+    const el = feedRef.current;
+    keepScrollRef.current = el ? el.scrollHeight : null;
+    const offset = loadedRef.current;
+    api("GET", `/api/sessions/${session.id}/history?count=${PAGE}&offset=${offset}`)
+      .then((h) => {
+        const older = h.turns || [];
+        loadedRef.current += older.length;
+        totalRef.current = h.total || totalRef.current;
+        dispatch({ type: "__history_prepend__", ts: "", data: { turns: older, offset } } as any);
+      })
+      .finally(() => {
+        loadingRef.current = false;
+      });
+  };
 
   // Live event stream: replay=0 → history is the single source of the past,
   // events carry only new activity after open (no duplication with history).
@@ -48,15 +78,25 @@ export function SessionPane({
     return () => es.close();
   }, [session.id]);
 
-  // Autoscroll while pinned to bottom.
+  // After blocks change: if a prepend just happened, preserve the scroll
+  // position (keep the same turn under the viewport); otherwise autoscroll to
+  // bottom while pinned there.
   useEffect(() => {
     const el = feedRef.current;
-    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (keepScrollRef.current !== null) {
+      el.scrollTop += el.scrollHeight - keepScrollRef.current;
+      keepScrollRef.current = null;
+      return;
+    }
+    if (stickRef.current) el.scrollTop = el.scrollHeight;
   }, [feed.blocks]);
 
   const onScroll = () => {
     const el = feedRef.current;
-    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (el.scrollTop < 120) loadOlder(); // near top → load older page
   };
 
   const send = async () => {
@@ -148,7 +188,7 @@ export function SessionPane({
       </header>
 
       {/* event feed + pending approvals */}
-      <div ref={feedRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
+      <div ref={feedRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl px-4 pb-8 pt-4 md:px-6">
           {/* pending approvals */}
           {approvalEntries.map(([id, ap]) => (

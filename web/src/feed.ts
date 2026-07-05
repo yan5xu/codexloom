@@ -74,56 +74,61 @@ function secs(ms: any): string {
   return `${Math.round((typeof ms === "number" ? ms : 0) / 1000)}s`;
 }
 
+// buildHistoryBlocks converts rollout history turns into renderable Blocks.
+// Shared by the initial seed (__history__) and scroll-up prepend.
+function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
+  const blocks: Block[] = [];
+  for (let i = 0; i < turns.length; i++) {
+    const items = turns[i].items || [];
+    for (let j = 0; j < items.length; j++) {
+      const it = items[j];
+      const id = `${keyPrefix}-${i}-${j}`;
+      switch (it.type) {
+        case "user":
+          blocks.push({ kind: "user", ts: "", text: it.text || "" });
+          break;
+        case "answer":
+          blocks.push({ kind: "agent", id, text: it.text || "", streaming: false });
+          break;
+        case "thinking":
+          blocks.push({ kind: "think", id, text: it.text || "", done: true });
+          break;
+        case "command":
+          blocks.push({
+            kind: "command", id,
+            command: it.command || "",
+            status: it.status || "completed",
+            exitCode: it.exitCode ?? null,
+            durationMs: it.durationMs ?? null,
+            output: it.output || "",
+          });
+          break;
+        case "file_change":
+          blocks.push({ kind: "file", id, status: "completed", changes: it.changes || [] });
+          break;
+      }
+    }
+  }
+  return blocks;
+}
+
 export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
   const t = ev.type || "";
   const d = ev.data || {};
 
   switch (t) {
     case "__history__": {
-      // Seed past turns read from the codex rollout file (mirror/idle sessions
-      // have no live event log). Builds blocks directly from history items.
-      // Guard: if real live content already arrived (an in-progress turn
-      // streamed in before this async seed resolved), do NOT wipe it. Only
-      // "sys" markers like "— live —" don't count as content.
+      // Seed past turns from the rollout. Guard: if real live content already
+      // arrived (in-progress turn streamed in before this async seed resolved),
+      // do NOT wipe it. Only "sys" markers like "— live —" don't count.
       if (state.blocks.some((b) => b.kind !== "sys")) return state;
-      let s: FeedState = { blocks: [], index: {}, approvals: {} };
-      const turns = (d as any).turns || [];
-      for (let i = 0; i < turns.length; i++) {
-        const items = turns[i].items || [];
-        for (let j = 0; j < items.length; j++) {
-          const it = items[j];
-          const id = `h${i}-${j}`;
-          switch (it.type) {
-            case "user":
-              s = push(s, { kind: "user", ts: "", text: it.text || "" });
-              break;
-            case "answer":
-              s = push(s, { kind: "agent", id, text: it.text || "", streaming: false });
-              break;
-            case "thinking":
-              s = push(s, { kind: "think", id, text: it.text || "", done: true });
-              break;
-            case "command":
-              s = push(s, {
-                kind: "command", id,
-                command: it.command || "",
-                status: it.status || "completed",
-                exitCode: it.exitCode ?? null,
-                durationMs: it.durationMs ?? null,
-                output: it.output || "",
-              });
-              break;
-            case "file_change":
-              s = push(s, {
-                kind: "file", id,
-                status: "completed",
-                changes: it.changes || [],
-              });
-              break;
-          }
-        }
-      }
-      return s;
+      const blocks = buildHistoryBlocks((d as any).turns || [], "h");
+      return { blocks, index: {}, approvals: {} };
+    }
+    case "__history_prepend__": {
+      // Scroll-up lazy load: older turns prepended before the current feed.
+      const older = buildHistoryBlocks((d as any).turns || [], `p${(d as any).offset || 0}`);
+      return { ...state, blocks: [...older, ...state.blocks] };
     }
     case "hub/live":
       return sys(state, ev.ts, "dim", "— live —");

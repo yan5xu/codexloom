@@ -1,3 +1,5 @@
+import { Send, Square } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { api, type Session } from "./types";
 import { emptyFeed, reduceFeed } from "./feed";
@@ -221,11 +223,18 @@ export function SessionPane({
         </div>
       </div>
 
-      {/* composer — mirrors AgentComposer: shimmer divider + rounded-2xl ring container */}
-      <div className="relative shrink-0 bg-background px-4 pb-3 pt-2 md:px-6">
-        <div className="shimmer-divider absolute inset-x-0 top-0 h-px" />
-        <div className="mx-auto flex max-w-3xl items-end gap-2.5">
-          <div className="flex flex-1 items-end rounded-2xl bg-card p-1.5 shadow-card ring-1 ring-border/60 transition focus-within:ring-primary/40">
+      {/* composer — faithful AgentComposer layout: shimmer divider, rounded-2xl
+          ring container, icon send/stop, centered hint. */}
+      <div className="relative shrink-0 bg-background px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:px-6 md:py-3 md:pb-3">
+        <div
+          className="absolute inset-x-0 top-0 h-px"
+          style={{
+            background:
+              "linear-gradient(90deg, transparent, oklch(0.88 0.01 78 / 0.4) 20%, oklch(0.88 0.01 78 / 0.4) 80%, transparent)",
+          }}
+        />
+        <div className="mx-auto max-w-3xl">
+          <div className="flex flex-col gap-2 rounded-2xl bg-card p-2 shadow-[0_4px_20px_rgba(0,0,0,0.02)] ring-1 ring-black/[0.04] transition-all duration-150 focus-within:ring-black/[0.08]">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -235,18 +244,37 @@ export function SessionPane({
                   send();
                 }
               }}
-              placeholder="Send a task to this session…  (Enter to send · Shift+Enter for newline)"
-              className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2.5 py-2 text-[13.5px] outline-none placeholder:text-muted-foreground/50"
+              placeholder={`Send a task to ${session.name}…`}
+              className="max-h-[200px] min-h-11 resize-none overflow-y-auto bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/50"
             />
-            <button
-              onClick={send}
-              disabled={!input.trim()}
-              className="mb-0.5 mr-0.5 shrink-0 rounded-xl bg-primary px-4 py-2 text-[13px] font-medium text-primary-foreground transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground/40"
-            >
-              send
-            </button>
+            <div className="flex items-center justify-end px-1">
+              {running ? (
+                <button
+                  onClick={interrupt}
+                  className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-[0_4px_12px_rgba(139,92,246,0.2)] transition-all duration-150 hover:bg-primary/90"
+                >
+                  <Square className="size-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={send}
+                  disabled={!input.trim()}
+                  className={cn(
+                    "flex size-9 shrink-0 items-center justify-center rounded-xl transition-all duration-150",
+                    input.trim()
+                      ? "cursor-pointer bg-primary text-primary-foreground shadow-[0_4px_12px_rgba(139,92,246,0.2)] hover:bg-primary/90"
+                      : "cursor-not-allowed bg-muted text-muted-foreground/40",
+                  )}
+                >
+                  <Send className="size-4" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
+        <p className="mt-1.5 text-center font-mono text-[10px] text-muted-foreground/50">
+          Enter to send · Shift+Enter for new line
+        </p>
       </div>
     </main>
   );

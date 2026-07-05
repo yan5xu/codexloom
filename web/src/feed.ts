@@ -79,6 +79,48 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
   const d = ev.data || {};
 
   switch (t) {
+    case "__history__": {
+      // Seed past turns read from the codex rollout file (mirror/idle sessions
+      // have no live event log). Builds blocks directly from history items.
+      let s: FeedState = { blocks: [], index: {}, approvals: {} };
+      const turns = (d as any).turns || [];
+      for (let i = 0; i < turns.length; i++) {
+        const items = turns[i].items || [];
+        for (let j = 0; j < items.length; j++) {
+          const it = items[j];
+          const id = `h${i}-${j}`;
+          switch (it.type) {
+            case "user":
+              s = push(s, { kind: "user", ts: "", text: it.text || "" });
+              break;
+            case "answer":
+              s = push(s, { kind: "agent", id, text: it.text || "", streaming: false });
+              break;
+            case "thinking":
+              s = push(s, { kind: "think", id, text: it.text || "", done: true });
+              break;
+            case "command":
+              s = push(s, {
+                kind: "command", id,
+                command: it.command || "",
+                status: it.status || "completed",
+                exitCode: it.exitCode ?? null,
+                durationMs: it.durationMs ?? null,
+                output: it.output || "",
+              });
+              break;
+            case "file_change":
+              s = push(s, {
+                kind: "file", id,
+                status: "completed",
+                changes: it.changes || [],
+              });
+              break;
+          }
+        }
+      }
+      return s;
+    }
     case "hub/live":
       return sys(state, ev.ts, "dim", "— live —");
     case "hub/session-created":

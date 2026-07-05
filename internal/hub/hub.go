@@ -344,6 +344,18 @@ func (h *Hub) ReadEvents(key string, since int64, tail int) ([]store.Event, erro
 	return h.st.ReadEvents(meta.ID, since, tail)
 }
 
+// LastSeq returns the highest event seq for the session (0 if none). Used by
+// the SSE handler to skip replay (live-only) when history is served separately.
+func (h *Hub) LastSeq(key string) int64 {
+	h.mu.Lock()
+	meta := h.resolveLocked(key)
+	h.mu.Unlock()
+	if meta == nil {
+		return 0
+	}
+	return h.st.LastSeq(meta.ID)
+}
+
 // ---- runtime management ----
 
 // getRuntimeLocked returns a live runtime, spawning codex if needed.

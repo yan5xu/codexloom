@@ -18,9 +18,26 @@ export function SessionPane({
   const feedRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
-  // Live event stream: replay last 500 then follow.
+  // Seed past turns from the codex rollout file (single source of history —
+  // works for mirror/idle sessions with no live event log), then follow live.
   useEffect(() => {
-    const es = new EventSource(`/api/sessions/${session.id}/events?tail=500`);
+    let cancelled = false;
+    api("GET", `/api/sessions/${session.id}/history?count=100`)
+      .then((h) => {
+        if (!cancelled) dispatch({ type: "__history__", ts: "", data: h } as any);
+      })
+      .catch(() => {
+        /* ignore — live stream still works */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.id]);
+
+  // Live event stream: replay=0 → history is the single source of the past,
+  // events carry only new activity after open (no duplication with history).
+  useEffect(() => {
+    const es = new EventSource(`/api/sessions/${session.id}/events?replay=0`);
     es.onmessage = (e) => {
       try {
         dispatch(JSON.parse(e.data) as HubEvent);

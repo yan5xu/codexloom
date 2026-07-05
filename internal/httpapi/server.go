@@ -157,6 +157,12 @@ func (s *Server) sessionEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
 
+	// replay=0 → history is served separately via /history (from rollout);
+	// skip event-log replay and stream only new activity from now on.
+	if r.URL.Query().Get("replay") == "0" {
+		since = s.hub.LastSeq(key)
+	}
+
 	// Subscribe BEFORE replay so nothing emitted during replay is lost.
 	ch, cancel, err := s.hub.Subscribe(key)
 	if err != nil {

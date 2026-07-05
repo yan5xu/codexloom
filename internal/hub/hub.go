@@ -22,9 +22,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yan5xu/codex-hub/internal/codex"
@@ -363,6 +367,13 @@ func (h *Hub) getRuntimeLocked(meta *Session) (*runtime, error) {
 	if rt, ok := h.runtimes[meta.ID]; ok && !rt.client.Closed() {
 		return rt, nil
 	}
+	// Force takeover: a codex thread can be driven by only one process. Before
+	// spawning our own driver, terminate any foreign process (edge's my-codex,
+	// an orphan, another codex-hub instance) holding this thread's rollout, so
+	// we become the sole driver — fixes "shows running but can't interrupt".
+	if meta.ThreadID != "" {
+		h.reapForeignHoldersLocked(meta.ThreadID)
+	}
 	client, err := codex.Spawn()
 	if err != nil {
 		return nil, errf(500, "spawn codex: %s", err)
@@ -385,6 +396,57 @@ func (h *Hub) getRuntimeLocked(meta *Session) (*runtime, error) {
 	h.runtimes[meta.ID] = rt
 	go h.initRuntime(meta.ID, rt)
 	return rt, nil
+}
+
+// reapForeignHoldersLocked terminates any process (not one of codex-hub's own
+// codex subprocesses) that currently holds this thread's rollout file open —
+// e.g. pinix-edge's my-codex, an orphaned codex, or a stale instance. This
+// makes codex-hub the exclusive driver of the thread. Detection is via lsof on
+// the rollout path (verified: a live codex/my-codex holds exactly one rollout
+// handle mappable to its threadId). Called under h.mu; kept fast (SIGTERM, no
+// blocking wait) so it never stalls the hub lock.
+func (h *Hub) reapForeignHoldersLocked(threadID string) {
+	roll, err := rollout.FindRollout(threadID)
+	if err != nil || roll == "" {
+		return
+	}
+	own := map[int]bool{os.Getpid(): true}
+	for _, rt := range h.runtimes {
+		if rt.client != nil {
+			if pid := rt.client.Pid(); pid > 0 {
+				own[pid] = true
+			}
+		}
+	}
+	for _, pid := range lsofPids(roll) {
+		if pid <= 0 || own[pid] {
+			continue
+		}
+		log.Printf("[hub] takeover thread %s: terminating foreign holder pid %d", threadID, pid)
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+	}
+}
+
+// lsofPids returns the PIDs holding the given file open (nil on any error or if
+// lsof is unavailable — takeover then degrades to best-effort, no crash).
+func lsofPids(path string) []int {
+	out, err := exec.Command("lsof", "-t", path).Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if pid, err := strconv.Atoi(line); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // initRuntime runs without the hub lock (talks to codex).

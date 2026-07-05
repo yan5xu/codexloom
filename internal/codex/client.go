@@ -47,6 +47,15 @@ type pendingResult struct {
 	err    error
 }
 
+// Pid returns the codex subprocess PID (0 if not started). Used by the hub to
+// tell its own codex processes apart from foreign holders of a thread.
+func (c *Client) Pid() int {
+	if c.cmd != nil && c.cmd.Process != nil {
+		return c.cmd.Process.Pid
+	}
+	return 0
+}
+
 type Client struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser

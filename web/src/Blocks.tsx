@@ -1,3 +1,4 @@
+import { MarkdownContent } from "./pages/agent/markdown";
 import type { Block } from "./feed";
 
 // Maps sys-line classes onto the warm cashmere semantic palette.
@@ -42,11 +43,11 @@ export function BlockView({ block }: { block: Block }) {
             )}
           </div>
           <div
-            className={`whitespace-pre-wrap break-words border-l-2 border-primary/30 pl-3 text-sm leading-relaxed ${
+            className={`border-l-2 border-primary/30 pl-3 text-sm leading-relaxed ${
               block.streaming ? "cursor-blink" : ""
             }`}
           >
-            {block.text}
+            <MarkdownContent content={block.text} streaming={block.streaming} />
           </div>
         </div>
       );

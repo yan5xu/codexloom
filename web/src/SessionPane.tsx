@@ -146,7 +146,7 @@ export function SessionPane({
     <main className="flex min-w-0 flex-1 flex-col bg-background">
       {/* header — serif title, status pill, mono meta; soft warm shadow, no hard border */}
       <header
-        className="flex shrink-0 items-center gap-3 px-4 py-2.5 md:px-6"
+        className="flex shrink-0 items-center gap-3 py-2.5 pl-14 pr-4 md:px-6"
         style={{ boxShadow: "0 4px 12px -6px oklch(0.2 0.03 78 / 0.12)" }}
       >
         <div className="min-w-0">

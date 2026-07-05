@@ -1,3 +1,4 @@
+import { Menu } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Session } from "./types";
 import { SessionPane } from "./SessionPane";
@@ -5,6 +6,7 @@ import { SessionPane } from "./SessionPane";
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [newName, setNewName] = useState("");
   const [newCwd, setNewCwd] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -80,8 +82,19 @@ export default function App() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* sidebar — session list (mirrors the topic list: rounded pills, color-only layering) */}
-      <aside className="flex w-[272px] shrink-0 flex-col bg-sidebar/60">
+      {/* backdrop — only on mobile when the drawer is open */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      {/* sidebar — static column on md+, slide-in drawer on mobile */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col bg-sidebar shadow-xl transition-transform duration-200 md:static md:z-auto md:translate-x-0 md:bg-sidebar/60 md:shadow-none ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
         <div className="px-4 pb-2 pt-4">
           <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground/70">codex · hub</p>
           <h2 className="mt-0.5 font-serif text-xl leading-tight tracking-tight">Sessions</h2>
@@ -102,7 +115,10 @@ export default function App() {
             return (
               <button
                 key={s.id}
-                onClick={() => setCurrent(s.id)}
+                onClick={() => {
+                  setCurrent(s.id);
+                  setSidebarOpen(false);
+                }}
                 className={`group relative block w-full overflow-hidden rounded-xl px-2.5 py-2 text-left transition-colors ${
                   active ? "bg-primary/[0.07]" : "hover:bg-foreground/[0.03]"
                 }`}
@@ -165,6 +181,15 @@ export default function App() {
           </button>
         </div>
       </aside>
+
+      {/* mobile drawer toggle — floats over the main content on small screens */}
+      <button
+        onClick={() => setSidebarOpen(true)}
+        aria-label="open sessions"
+        className="fixed left-3 top-3 z-20 flex size-9 items-center justify-center rounded-xl bg-card/90 shadow-card ring-1 ring-border/50 backdrop-blur md:hidden"
+      >
+        <Menu className="size-4" />
+      </button>
 
       {/* main */}
       {selected ? (

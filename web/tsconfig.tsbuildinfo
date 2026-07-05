@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/blocks.tsx","./src/sessionpane.tsx","./src/feed.ts","./src/main.tsx","./src/types.ts"],"version":"5.8.3"}
+{"root":["./src/app.tsx","./src/blocks.tsx","./src/sessionpane.tsx","./src/feed.ts","./src/main.tsx","./src/types.ts","./src/components/ui/button.tsx","./src/components/ui/dialog.tsx","./src/components/ui/separator.tsx","./src/lib/format.ts","./src/lib/utils.ts"],"version":"5.8.3"}

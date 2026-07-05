@@ -409,6 +409,7 @@ func cmdWatch(a args) {
 type watchState struct {
 	streamOpen  bool
 	streamThink bool
+	streamed    map[string]bool // itemIds whose text already streamed via deltas
 }
 
 func (st *watchState) closeStream() {
@@ -437,6 +438,12 @@ func renderEvent(st *watchState, seq int64, ts, typ string, data json.RawMessage
 			return
 		}
 		isThink := strings.Contains(typ, "reasoning")
+		if st.streamed == nil {
+			st.streamed = map[string]bool{}
+		}
+		if id, ok := d["itemId"].(string); ok && !isThink {
+			st.streamed[id] = true
+		}
 		if !st.streamOpen || st.streamThink != isThink {
 			st.closeStream()
 			if isThink {
@@ -526,6 +533,9 @@ func renderItem(st *watchState, t, phase string, item map[string]any) {
 		}
 	case "agentMessage":
 		if phase == "item/completed" {
+			if st.streamed[str(item, "id")] {
+				return // already streamed via deltas
+			}
 			ph := str(item, "phase")
 			if ph == "final_answer" || ph == "" {
 				fmt.Printf("%s %s %s\n", t, green("codex>"), strings.TrimSpace(str(item, "text")))

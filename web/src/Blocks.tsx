@@ -1,3 +1,4 @@
+import { UserBubble, AssistantBubble } from "./pages/agent/MessageBubbles";
 import { MarkdownContent } from "./pages/agent/markdown";
 import type { Block } from "./feed";
 
@@ -15,42 +16,31 @@ function tsShort(ts: string) {
 
 export function BlockView({ block }: { block: Block }) {
   switch (block.kind) {
-    // User turn — plain text with a tracked uppercase label (mirrors UserBubble).
+    // User turn — rendered by the ported UserBubble (verbatim topic component).
     case "user":
       return (
-        <div className="py-3">
-          <div className="mb-1 flex items-center gap-2">
-            <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
-              you
-            </span>
-            <span className="font-mono text-[10px] text-muted-foreground/50">{tsShort(block.ts)}</span>
-          </div>
-          <div className="whitespace-pre-wrap break-words text-sm">{block.text}</div>
-        </div>
+        <UserBubble
+          message={{ id: "u", topic_id: "", role: "user", content: block.text, created_at: block.ts }}
+        />
       );
 
-    // Agent reply — final answer carries a primary left-border accent.
-    case "agent":
+    // Agent reply — rendered by the ported AssistantBubble (verbatim topic
+    // component). A minimal single-iteration group carries the text.
+    case "agent": {
+      const msg = { id: block.id, topic_id: "", role: "assistant" as const, content: block.text, created_at: "" };
       return (
-        <div className="py-3">
-          <div className="mb-1.5 flex items-center gap-2">
-            <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-primary">agent</span>
-            {block.streaming && (
-              <span className="flex items-center gap-1.5 font-mono text-[10px] text-primary/70">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                streaming
-              </span>
-            )}
-          </div>
-          <div
-            className={`border-l-2 border-primary/30 pl-3 text-sm leading-relaxed ${
-              block.streaming ? "cursor-blink" : ""
-            }`}
-          >
-            <MarkdownContent content={block.text} streaming={block.streaming} />
-          </div>
-        </div>
+        <AssistantBubble
+          group={{
+            type: "assistant",
+            message: msg,
+            steps: [],
+            iterations: [{ thinking: null, text: block.text, tools: [] }],
+            usage: null,
+          }}
+          streaming={block.streaming}
+        />
       );
+    }
 
     // Reasoning — collapsible, sunken muted tone.
     case "think":

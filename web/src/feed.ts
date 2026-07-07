@@ -5,6 +5,19 @@ import type { HubEvent } from "./types";
 
 export type Block =
   | { kind: "user"; ts: string; text: string }
+  | {
+      kind: "agentMessage";
+      id: string;
+      ts: string;
+      variant: "req" | "res" | "notify";
+      from: string;
+      to: string;
+      subject: string;
+      body: string;
+      response: string;
+      replyTo?: string;
+      replyCommand?: string;
+    }
   | { kind: "agent"; id: string; text: string; streaming: boolean }
   | { kind: "think"; id: string; text: string; done: boolean }
   | {
@@ -95,6 +108,44 @@ function secs(ms: any): string {
   return `${Math.round((typeof ms === "number" ? ms : 0) / 1000)}s`;
 }
 
+function childText(root: Element, name: string): string {
+  return root.getElementsByTagName(name)[0]?.textContent?.trim() || "";
+}
+
+function agentMessageBlock(text: string, ts: string): Block | null {
+  const raw = (text || "").trim();
+  if (!raw.startsWith("<agent_message")) return null;
+  try {
+    const doc = new DOMParser().parseFromString(raw, "application/xml");
+    const root = doc.documentElement;
+    if (!root || root.nodeName !== "agent_message" || doc.getElementsByTagName("parsererror").length > 0) {
+      return null;
+    }
+    const response = root.getAttribute("response") || "";
+    const replyTo = childText(root, "reply_to");
+    const variant = replyTo ? "res" : response === "required" ? "req" : "notify";
+    return {
+      kind: "agentMessage",
+      id: root.getAttribute("id") || `msg-${Math.random().toString(16).slice(2)}`,
+      ts,
+      variant,
+      from: childText(root, "from"),
+      to: childText(root, "to"),
+      subject: childText(root, "subject"),
+      body: childText(root, "body"),
+      response,
+      replyTo: replyTo || undefined,
+      replyCommand: childText(root, "reply_command") || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function userBlock(ts: string, text: string): Block {
+  return agentMessageBlock(text, ts) || { kind: "user", ts, text };
+}
+
 // buildHistoryBlocks converts rollout history turns into renderable Blocks.
 // Shared by the initial seed (__history__) and scroll-up prepend.
 function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
@@ -106,7 +157,7 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
       const id = `${keyPrefix}-${i}-${j}`;
       switch (it.type) {
         case "user":
-          blocks.push({ kind: "user", ts: "", text: it.text || "" });
+          blocks.push(userBlock("", it.text || ""));
           break;
         case "answer":
           blocks.push({ kind: "agent", id, text: it.text || "", streaming: false });
@@ -162,7 +213,7 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
     case "hub/session-created":
       return sys(state, ev.ts, "dim", `session created · ${d.cwd}`);
     case "hub/user-message":
-      return push(state, { kind: "user", ts: ev.ts, text: d.text || "" });
+      return push(state, userBlock(ev.ts, d.text || ""));
     case "hub/turn-started":
       return sys(state, ev.ts, "dim", `turn started ${d.turnId || ""}`);
     case "hub/turn-completed":
@@ -290,7 +341,7 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
         if (state.index[key] !== undefined) return state;
         return push(
           state,
-          { kind: "raw", id: itemId, type: item.type, json: JSON.stringify(item, null, 2).slice(0, 3000) },
+          { kind: "raw", id: itemId, type: item.type, json: JSON.stringify(item, null, 2) },
           key,
         );
       }

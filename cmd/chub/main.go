@@ -134,6 +134,8 @@ func main() {
 		cmdRename(a)
 	case "send":
 		cmdSend(a)
+	case "msg":
+		cmdMsg(a)
 	case "watch":
 		cmdWatch(a)
 	case "interrupt":
@@ -160,6 +162,8 @@ func printHelp() {
   chub get <name|id>
   chub rename <name|id> <new-name>
   chub send <name|id> "<task>" [--timeout SEC]
+  chub msg <to> [body] --from <agent> --subject <text> [--response required|none]
+  chub msg --reply-to <message-id> --from <agent> [--subject <text>] [body]
   chub watch <name|id> [--tail N]
   chub interrupt <name|id>
   chub history <name|id> [--count N]
@@ -269,6 +273,99 @@ func cmdSend(a args) {
 		turnID = "(pending)"
 	}
 	fmt.Printf("%s turn %s — follow with: chub watch %s\n", green("dispatched"), turnID, a.positional[0])
+}
+
+func cmdMsg(a args) {
+	from := strings.TrimSpace(a.flags["from"])
+	replyTo := strings.TrimSpace(a.flags["reply-to"])
+	subject := strings.TrimSpace(a.flags["subject"])
+	response := strings.TrimSpace(a.flags["response"])
+	if response == "" {
+		response = "required"
+	}
+	if from == "" {
+		usage(`msg <to> [body] --from <agent> --subject <text> [--response required|none]`)
+	}
+	if response != "required" && response != "none" {
+		fail(fmt.Errorf("--response must be required or none"))
+	}
+
+	to := ""
+	bodyArgs := a.positional
+	if replyTo == "" {
+		if len(a.positional) < 1 {
+			usage(`msg <to> [body] --from <agent> --subject <text> [--response required|none]`)
+		}
+		to = a.positional[0]
+		bodyArgs = a.positional[1:]
+		if subject == "" {
+			usage(`msg <to> [body] --from <agent> --subject <text> [--response required|none]`)
+		}
+	} else if len(a.positional) > 0 {
+		bodyArgs = a.positional
+	}
+
+	body, err := readMsgBody(a, bodyArgs)
+	if err != nil {
+		fail(err)
+	}
+	if strings.TrimSpace(body) == "" {
+		usage(`msg <to> [body] --from <agent> --subject <text> [--body <text>|--body-file <path>]`)
+	}
+
+	payload := map[string]any{
+		"from":     from,
+		"to":       to,
+		"subject":  subject,
+		"body":     body,
+		"response": response,
+		"replyTo":  replyTo,
+	}
+	if t := a.flags["timeout"]; t != "" {
+		var sec int
+		fmt.Sscanf(t, "%d", &sec)
+		payload["timeoutSec"] = sec
+	}
+	resp, err := api("POST", "/api/comms/messages", payload)
+	if err != nil {
+		fail(err)
+	}
+	msg, _ := resp["message"].(map[string]any)
+	id := str(msg, "id")
+	toName := str(msg, "to")
+	turnID := str(resp, "turnId")
+	if turnID == "" {
+		turnID = "(pending)"
+	}
+	fmt.Printf("%s %s %s %s — turn %s\n", green("sent"), id, dim("to"), bold(toName), turnID)
+	if str(msg, "response") == "required" {
+		fmt.Printf("reply with: chub msg --reply-to %s --from %s --body \"...\"\n", id, toName)
+	}
+}
+
+func readMsgBody(a args, bodyArgs []string) (string, error) {
+	if body := a.flags["body"]; body != "" {
+		return body, nil
+	}
+	if path := a.flags["body-file"]; path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	if len(bodyArgs) > 0 {
+		return strings.Join(bodyArgs, " "), nil
+	}
+	info, err := os.Stdin.Stat()
+	if err == nil && (info.Mode()&os.ModeCharDevice) == 0 {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	return "", nil
 }
 
 func cmdInterrupt(a args) {

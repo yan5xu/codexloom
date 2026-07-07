@@ -1,11 +1,13 @@
-import { Menu, RotateCw } from "lucide-react";
+import { Menu, MessageSquare, RotateCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Session } from "./types";
+import { MessagesPane } from "./MessagesPane";
 import { SessionPane } from "./SessionPane";
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
+  const [view, setView] = useState<"sessions" | "messages">("sessions");
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [newName, setNewName] = useState("");
   const [newCwd, setNewCwd] = useState("");
@@ -111,8 +113,14 @@ export default function App() {
   // view is directly linkable (and headless-screenshot-able).
   const hashApplied = useRef(false);
   useEffect(() => {
-    if (hashApplied.current || sessions.length === 0) return;
+    if (hashApplied.current) return;
     const h = decodeURIComponent(window.location.hash.slice(1));
+    if (h === "messages") {
+      setView("messages");
+      hashApplied.current = true;
+      return;
+    }
+    if (sessions.length === 0) return;
     if (h) {
       const s = sessions.find((x) => x.id === h || x.name === h);
       if (s) setCurrent(s.id);
@@ -122,9 +130,17 @@ export default function App() {
 
   const selectSession = (id: string) => {
     setCurrent(id);
+    setView("sessions");
     setSidebarOpen(false);
     const s = sessions.find((x) => x.id === id);
     if (s) window.location.hash = encodeURIComponent(s.name);
+  };
+
+  const selectMessages = () => {
+    setView("messages");
+    setCurrent(null);
+    setSidebarOpen(false);
+    window.location.hash = "messages";
   };
 
   const updateSession = (updated: Session) => {
@@ -134,25 +150,27 @@ export default function App() {
     }
   };
 
-  const selected = sessions.find((s) => s.id === current) || null;
+  const selected = view === "sessions" ? sessions.find((s) => s.id === current) || null : null;
   const restartState = restartStatus?.state || "idle";
   const restartPending = restartState === "waiting" || restartState === "restarting";
   const activeCount = sessions.filter((s) => s.status === "running").length;
   const idleCount = sessions.filter((s) => s.status === "idle").length;
 
   useEffect(() => {
-    if (!selected) return;
+    if (view !== "sessions" || !selected) return;
     const nextHash = "#" + encodeURIComponent(selected.name);
     if (window.location.hash !== nextHash) {
       window.history.replaceState(null, "", nextHash);
     }
-  }, [selected?.id, selected?.name]);
+  }, [selected?.id, selected?.name, view]);
 
   useEffect(() => {
     if (restartState === "waiting") {
       document.title = "Restart waiting · codex-hub";
     } else if (restartState === "restarting") {
       document.title = "Restarting · codex-hub";
+    } else if (view === "messages") {
+      document.title = "Messages · codex-hub";
     } else if (selected) {
       const marker = selected.status === "running" ? "● " : selected.lastError ? "! " : "";
       document.title = `${marker}${selected.name} · codex-hub`;
@@ -161,7 +179,7 @@ export default function App() {
     } else {
       document.title = "codex-hub";
     }
-  }, [activeCount, restartState, selected]);
+  }, [activeCount, restartState, selected, view]);
 
   // Middle-truncate long paths so the trailing folder (what distinguishes
   // same-named projects) stays visible.
@@ -219,6 +237,24 @@ export default function App() {
         </div>
 
         <div className="flex items-center justify-between px-4 pb-1 pt-3">
+          <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
+            Comms
+          </span>
+        </div>
+
+        <div className="px-2 pb-2">
+          <button
+            onClick={selectMessages}
+            className={`flex h-9 w-full items-center gap-2 rounded-xl px-2.5 text-left text-[13px] font-medium transition-colors ${
+              view === "messages" ? "bg-primary/[0.12] text-foreground ring-1 ring-primary/20" : "text-foreground/85 hover:bg-foreground/[0.04]"
+            }`}
+          >
+            <MessageSquare className="size-3.5 text-primary" />
+            Messages
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between px-4 pb-1 pt-1">
           <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
             Threads
           </span>
@@ -342,7 +378,9 @@ export default function App() {
       </button>
 
       {/* main */}
-      {selected ? (
+      {view === "messages" ? (
+        <MessagesPane sessions={sessions} onError={showToast} />
+      ) : selected ? (
         <SessionPane
           key={selected.id}
           session={selected}

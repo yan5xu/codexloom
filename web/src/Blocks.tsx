@@ -24,6 +24,69 @@ export function BlockView({ block }: { block: Block }) {
         />
       );
 
+    case "agentMessage": {
+      const style =
+        block.variant === "req"
+          ? {
+              label: "REQ",
+              chip: "bg-warning/10 text-warning",
+              border: "border-warning/30",
+              accent: "bg-warning",
+            }
+          : block.variant === "res"
+            ? {
+                label: "RES",
+                chip: "bg-success/10 text-success",
+                border: "border-success/30",
+                accent: "bg-success",
+              }
+            : {
+                label: "NOTIFY",
+                chip: "bg-primary/10 text-primary",
+                border: "border-primary/25",
+                accent: "bg-primary",
+              };
+      return (
+        <article className={`card relative my-2 overflow-hidden rounded-xl border ${style.border} bg-card shadow-card`}>
+          <div className={`absolute inset-y-0 left-0 w-1 ${style.accent}`} />
+          <div className="px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`rounded-md px-2 py-0.5 font-mono text-[10.5px] font-semibold ${style.chip}`}>
+                    {style.label}
+                  </span>
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
+                    {block.from} -&gt; {block.to}
+                  </span>
+                </div>
+                <h3 className="mt-1 truncate text-[14px] font-semibold text-foreground">
+                  {block.subject || "(no subject)"}
+                </h3>
+              </div>
+              <div className="shrink-0 text-right font-mono text-[10.5px] text-muted-foreground">
+                <div>{tsShort(block.ts)}</div>
+                <div className="mt-0.5">{block.id}</div>
+              </div>
+            </div>
+            {block.replyTo && (
+              <div className="mt-2 font-mono text-[11px] text-muted-foreground">
+                reply to {block.replyTo}
+              </div>
+            )}
+            <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/35 px-3 py-2 font-mono text-[12.5px] leading-relaxed text-foreground/85">
+              {block.body}
+            </pre>
+            {block.replyCommand && (
+              <pre className="mt-2 overflow-auto rounded-lg bg-background/70 px-3 py-2 font-mono text-[11.5px] text-muted-foreground ring-1 ring-border/60">
+                {block.replyCommand}
+              </pre>
+            )}
+          </div>
+        </article>
+      );
+    }
+
     // Agent reply — rendered by the ported AssistantBubble (verbatim topic
     // component). A minimal single-iteration group carries the text.
     case "agent": {
@@ -80,9 +143,24 @@ export function BlockView({ block }: { block: Block }) {
               </span>
             )}
           </summary>
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap border-t border-border bg-muted/40 px-3.5 py-2.5 font-mono text-[12px] text-muted-foreground">
-            {block.output || "(no output)"}
-          </pre>
+          <div className="space-y-2 border-t border-border bg-muted/30 px-3.5 py-2.5">
+            <div className="space-y-1">
+              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground/60">
+                request
+              </div>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-background/65 px-3 py-2 font-mono text-[12px] text-foreground/85">
+                {block.command}
+              </pre>
+            </div>
+            <div className="space-y-1">
+              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground/60">
+                output
+              </div>
+              <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-background/65 px-3 py-2 font-mono text-[12px] text-muted-foreground">
+                {block.output || "(no output)"}
+              </pre>
+            </div>
+          </div>
         </details>
       );
     }

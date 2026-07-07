@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"log"
 	"os"
@@ -108,6 +109,41 @@ type RunningSession struct {
 	CurrentTask string `json:"currentTask"`
 }
 
+type AgentMessage struct {
+	ID                 string `json:"id"`
+	From               string `json:"from"`
+	To                 string `json:"to"`
+	Subject            string `json:"subject"`
+	Body               string `json:"body"`
+	Response           string `json:"response"`
+	ReplyTo            string `json:"replyTo,omitempty"`
+	Status             string `json:"status"`
+	CreatedAt          string `json:"createdAt"`
+	UpdatedAt          string `json:"updatedAt"`
+	DeliveredSessionID string `json:"deliveredSessionId,omitempty"`
+	DeliveredTurnID    string `json:"deliveredTurnId,omitempty"`
+}
+
+type CommParams struct {
+	From       string        `json:"from"`
+	To         string        `json:"to"`
+	Subject    string        `json:"subject"`
+	Body       string        `json:"body"`
+	Response   string        `json:"response"`
+	ReplyTo    string        `json:"replyTo"`
+	Timeout    time.Duration `json:"-"`
+	TimeoutSec int           `json:"timeoutSec"`
+}
+
+type CommResult struct {
+	Message *AgentMessage `json:"message"`
+	TurnID  string        `json:"turnId,omitempty"`
+}
+
+type commRecord struct {
+	Message AgentMessage `json:"message"`
+}
+
 type approval struct {
 	rpcID  json.RawMessage
 	method string
@@ -149,6 +185,8 @@ type Hub struct {
 
 	mu         sync.Mutex
 	sessions   map[string]*Session
+	comms      map[string]*AgentMessage
+	commOrder  []string
 	seqs       map[string]int64
 	runtimes   map[string]*runtime
 	subs       map[string]map[*subscriber]struct{}
@@ -159,6 +197,7 @@ func New(st *store.Store) *Hub {
 	h := &Hub{
 		st:         st,
 		sessions:   map[string]*Session{},
+		comms:      map[string]*AgentMessage{},
 		seqs:       map[string]int64{},
 		runtimes:   map[string]*runtime{},
 		subs:       map[string]map[*subscriber]struct{}{},
@@ -169,6 +208,9 @@ func New(st *store.Store) *Hub {
 	}
 	if h.sessions == nil {
 		h.sessions = map[string]*Session{}
+	}
+	if err := h.loadComms(); err != nil {
+		log.Printf("[hub] load comms: %v", err)
 	}
 	// Mirror pinix-edge's registry: edge-created sessions become visible here
 	// (read-only) and their rollout history is immediately viewable.
@@ -199,6 +241,45 @@ func New(st *store.Store) *Hub {
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+func (h *Hub) loadComms() error {
+	return h.st.ReadComms(func(raw json.RawMessage) {
+		var rec commRecord
+		if err := json.Unmarshal(raw, &rec); err != nil || rec.Message.ID == "" {
+			return
+		}
+		msg := rec.Message
+		if _, exists := h.comms[msg.ID]; !exists {
+			h.commOrder = append(h.commOrder, msg.ID)
+		}
+		h.comms[msg.ID] = &msg
+	})
+}
+
+func (h *Hub) appendCommLocked(msg *AgentMessage) {
+	rec := commRecord{Message: *msg}
+	if err := h.st.AppendComm(rec); err != nil {
+		log.Printf("[hub] append comm: %v", err)
+	}
+	if _, exists := h.comms[msg.ID]; !exists {
+		h.commOrder = append(h.commOrder, msg.ID)
+	}
+	cp := *msg
+	h.comms[msg.ID] = &cp
+	h.emitGlobalLocked("hub/comms-message", map[string]any{"message": cp})
+}
+
+func (h *Hub) emitGlobalLocked(typ string, data any) {
+	ev := store.Event{TS: now(), Type: typ, Data: toRaw(data)}
+	for sub := range h.globalSubs {
+		select {
+		case sub.ch <- ev:
+		default:
+			delete(h.globalSubs, sub)
+			sub.close()
+		}
+	}
+}
 
 func (h *Hub) persistLocked() {
 	// Persist only sessions codex-hub owns. Edge mirrors are re-imported from
@@ -319,15 +400,7 @@ func (h *Hub) emitStatusLocked(meta *Session, status string) {
 func (h *Hub) EmitGlobal(typ string, data map[string]any) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ev := store.Event{TS: now(), Type: typ, Data: toRaw(data)}
-	for sub := range h.globalSubs {
-		select {
-		case sub.ch <- ev:
-		default:
-			delete(h.globalSubs, sub)
-			sub.close()
-		}
-	}
+	h.emitGlobalLocked(typ, data)
 }
 
 // Subscribe returns a channel of live events for a session plus a cancel func.
@@ -751,6 +824,237 @@ func (h *Hub) ListSessions() []SessionView {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func (h *Hub) ListComms(agent, status string) []AgentMessage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	agent = strings.TrimSpace(agent)
+	status = strings.TrimSpace(status)
+	out := []AgentMessage{}
+	for i := len(h.commOrder) - 1; i >= 0; i-- {
+		msg := h.comms[h.commOrder[i]]
+		if msg == nil {
+			continue
+		}
+		if agent != "" && msg.From != agent && msg.To != agent {
+			continue
+		}
+		if status != "" && msg.Status != status {
+			continue
+		}
+		out = append(out, *msg)
+	}
+	return out
+}
+
+func (h *Hub) SendAgentMessage(p CommParams) (CommResult, error) {
+	if p.Timeout == 0 && p.TimeoutSec > 0 {
+		p.Timeout = time.Duration(p.TimeoutSec) * time.Second
+	}
+	if p.ReplyTo != "" {
+		return h.replyAgentMessage(p)
+	}
+	return h.createAgentMessage(p)
+}
+
+func (h *Hub) createAgentMessage(p CommParams) (CommResult, error) {
+	from, to, err := h.validateCommEndpoints(p.From, p.To)
+	if err != nil {
+		return CommResult{}, err
+	}
+	subject := strings.TrimSpace(p.Subject)
+	body := strings.TrimSpace(p.Body)
+	if subject == "" {
+		return CommResult{}, errf(400, "subject is required")
+	}
+	if body == "" {
+		return CommResult{}, errf(400, "body is required")
+	}
+	response := strings.TrimSpace(p.Response)
+	if response == "" {
+		response = "required"
+	}
+	if response != "required" && response != "none" {
+		return CommResult{}, errf(400, "response must be required or none")
+	}
+	id := newMessageID()
+	status := "closed"
+	if response == "required" {
+		status = "open"
+	}
+	msg := &AgentMessage{
+		ID:        id,
+		From:      from.Name,
+		To:        to.Name,
+		Subject:   subject,
+		Body:      body,
+		Response:  response,
+		Status:    status,
+		CreatedAt: now(),
+		UpdatedAt: now(),
+	}
+	return h.deliverAgentMessage(msg, p.Timeout)
+}
+
+func (h *Hub) replyAgentMessage(p CommParams) (CommResult, error) {
+	fromName := strings.TrimSpace(p.From)
+	body := strings.TrimSpace(p.Body)
+	if fromName == "" {
+		return CommResult{}, errf(400, "from is required")
+	}
+	if body == "" {
+		return CommResult{}, errf(400, "body is required")
+	}
+
+	h.mu.Lock()
+	orig := h.comms[p.ReplyTo]
+	if orig == nil {
+		h.mu.Unlock()
+		return CommResult{}, errf(404, "message not found: %s", p.ReplyTo)
+	}
+	origID := orig.ID
+	origFrom := orig.From
+	origTo := orig.To
+	origSubject := orig.Subject
+	from := h.resolveLocked(fromName)
+	to := h.resolveLocked(origFrom)
+	if from == nil {
+		h.mu.Unlock()
+		return CommResult{}, errf(404, "from session not found: %s", fromName)
+	}
+	if from.Name != origTo {
+		h.mu.Unlock()
+		return CommResult{}, errf(400, "message %s expects replies from %s", origID, origTo)
+	}
+	if to == nil {
+		h.mu.Unlock()
+		return CommResult{}, errf(404, "original sender session not found: %s", origFrom)
+	}
+	subject := strings.TrimSpace(p.Subject)
+	if subject == "" {
+		subject = "Re: " + origSubject
+	}
+	msg := &AgentMessage{
+		ID:        newMessageID(),
+		From:      from.Name,
+		To:        to.Name,
+		Subject:   subject,
+		Body:      body,
+		Response:  "none",
+		ReplyTo:   origID,
+		Status:    "closed",
+		CreatedAt: now(),
+		UpdatedAt: now(),
+	}
+	h.mu.Unlock()
+
+	result, err := h.deliverAgentMessage(msg, p.Timeout)
+	if err != nil {
+		return CommResult{}, err
+	}
+
+	h.mu.Lock()
+	if current := h.comms[origID]; current != nil && current.Status == "open" {
+		current.Status = "answered"
+		current.UpdatedAt = now()
+		h.appendCommLocked(current)
+	}
+	h.mu.Unlock()
+	return result, nil
+}
+
+func (h *Hub) validateCommEndpoints(fromKey, toKey string) (*Session, *Session, error) {
+	fromKey = strings.TrimSpace(fromKey)
+	toKey = strings.TrimSpace(toKey)
+	if fromKey == "" {
+		return nil, nil, errf(400, "from is required")
+	}
+	if toKey == "" {
+		return nil, nil, errf(400, "to is required")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	from := h.resolveLocked(fromKey)
+	if from == nil {
+		return nil, nil, errf(404, "from session not found: %s", fromKey)
+	}
+	to := h.resolveLocked(toKey)
+	if to == nil {
+		return nil, nil, errf(404, "to session not found: %s", toKey)
+	}
+	return from, to, nil
+}
+
+func (h *Hub) deliverAgentMessage(msg *AgentMessage, timeout time.Duration) (CommResult, error) {
+	envelope := formatAgentEnvelope(msg)
+	result, err := h.SendTask(msg.To, envelope, timeout)
+	if err != nil {
+		return CommResult{}, err
+	}
+	msg.DeliveredSessionID = result.SessionID
+	msg.DeliveredTurnID = result.TurnID
+	msg.UpdatedAt = now()
+
+	h.mu.Lock()
+	h.appendCommLocked(msg)
+	h.mu.Unlock()
+	return CommResult{Message: msg, TurnID: result.TurnID}, nil
+}
+
+func newMessageID() string {
+	idBytes := make([]byte, 8)
+	_, _ = rand.Read(idBytes)
+	return "msg_" + hex.EncodeToString(idBytes)
+}
+
+func formatAgentEnvelope(msg *AgentMessage) string {
+	var b strings.Builder
+	b.WriteString(`<agent_message version="1" id="`)
+	b.WriteString(xmlEscape(msg.ID))
+	b.WriteString(`" response="`)
+	b.WriteString(xmlEscape(msg.Response))
+	b.WriteString(`" status="`)
+	b.WriteString(xmlEscape(msg.Status))
+	b.WriteString(`">` + "\n")
+	writeXMLText(&b, "from", msg.From)
+	writeXMLText(&b, "to", msg.To)
+	writeXMLText(&b, "subject", msg.Subject)
+	if msg.ReplyTo != "" {
+		writeXMLText(&b, "reply_to", msg.ReplyTo)
+	}
+	if msg.Response == "required" {
+		writeXMLText(&b, "reply_command", "chub msg --reply-to "+msg.ID+" --from "+msg.To+" --body \"...\"")
+	}
+	writeXMLCDATA(&b, "body", msg.Body)
+	b.WriteString("</agent_message>")
+	return b.String()
+}
+
+func xmlEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
+}
+
+func writeXMLText(b *strings.Builder, tag, value string) {
+	b.WriteString("  <")
+	b.WriteString(tag)
+	b.WriteString(">")
+	b.WriteString(xmlEscape(value))
+	b.WriteString("</")
+	b.WriteString(tag)
+	b.WriteString(">\n")
+}
+
+func writeXMLCDATA(b *strings.Builder, tag, value string) {
+	b.WriteString("  <")
+	b.WriteString(tag)
+	b.WriteString("><![CDATA[")
+	b.WriteString(strings.ReplaceAll(value, "]]>", "]]]]><![CDATA[>"))
+	b.WriteString("]]></")
+	b.WriteString(tag)
+	b.WriteString(">\n")
 }
 
 func (h *Hub) GetSession(key string) (SessionView, error) {

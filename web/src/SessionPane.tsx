@@ -362,7 +362,7 @@ export function SessionPane({
                 <span className="font-mono text-[12px]">{ap.method}</span>
               </div>
               <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-xl bg-muted/50 px-3 py-2 font-mono text-[12px] text-muted-foreground">
-                {JSON.stringify(ap.params, null, 2)?.slice(0, 1500)}
+                {JSON.stringify(ap.params, null, 2)}
               </pre>
               <button
                 onClick={() => resolveApproval(id, "accept")}

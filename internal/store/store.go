@@ -3,6 +3,7 @@
 // Layout (default ~/.codex-hub, override with CODEX_HUB_DATA):
 //
 //	sessions.json        the registry: name → (threadId, cwd) plus runtime meta
+//	comms.ndjson         append-only agent-to-agent communication log
 //	events/<id>.ndjson   append-only per-session event log, one JSON per line
 //
 // sessions.json is a small REGISTRY, not a history store: session history lives
@@ -105,6 +106,8 @@ func LoadEdgeAgents() ([]EdgeAgent, error) {
 
 func (s *Store) sessionsFile() string { return filepath.Join(s.dir, "sessions.json") }
 
+func (s *Store) commsFile() string { return filepath.Join(s.dir, "comms.ndjson") }
+
 func (s *Store) eventsFile(sessionID string) string {
 	return filepath.Join(s.dir, "events", sessionID+".ndjson")
 }
@@ -132,6 +135,41 @@ func (s *Store) SaveSessions(v any) error {
 		return err
 	}
 	return os.Rename(tmp, s.sessionsFile())
+}
+
+func (s *Store) AppendComm(v any) error {
+	f, err := os.OpenFile(s.commsFile(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(append(data, '\n'))
+	return err
+}
+
+func (s *Store) ReadComms(fn func(json.RawMessage)) error {
+	f, err := os.Open(s.commsFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		fn(json.RawMessage(append([]byte(nil), line...)))
+	}
+	return sc.Err()
 }
 
 func (s *Store) AppendEvent(sessionID string, ev Event) error {

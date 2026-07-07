@@ -32,6 +32,21 @@ export interface Session {
   lastSeq: number;
 }
 
+export interface AgentMessage {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  body: string;
+  response: "required" | "none";
+  replyTo?: string;
+  status: "open" | "answered" | "closed";
+  createdAt: string;
+  updatedAt: string;
+  deliveredSessionId?: string;
+  deliveredTurnId?: string;
+}
+
 export async function api(method: string, path: string, body?: unknown) {
   const resp = await fetch(path, {
     method,

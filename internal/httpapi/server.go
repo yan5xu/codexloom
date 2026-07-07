@@ -130,6 +130,30 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, 202, result)
 	})
 
+	mux.HandleFunc("GET /api/comms", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{
+			"messages": s.hub.ListComms(r.URL.Query().Get("agent"), r.URL.Query().Get("status")),
+		})
+	})
+
+	mux.HandleFunc("POST /api/comms/messages", func(w http.ResponseWriter, r *http.Request) {
+		if s.isRestartPending() {
+			writeErr(w, &hub.HubError{Status: 409, Message: "restart pending; wait for hub to restart before sending new agent messages"})
+			return
+		}
+		var body hub.CommParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		result, err := s.hub.SendAgentMessage(body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 202, result)
+	})
+
 	mux.HandleFunc("POST /api/sessions/{key}/interrupt", func(w http.ResponseWriter, r *http.Request) {
 		result, err := s.hub.Interrupt(r.PathValue("key"), "")
 		if err != nil {

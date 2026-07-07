@@ -15,6 +15,7 @@ const sample = `{"timestamp":"2026-07-03T07:01:11.489Z","type":"session_meta","p
 {"timestamp":"2026-07-03T07:01:19.873Z","type":"event_msg","payload":{"type":"agent_message","message":"thinking out loud","phase":"commentary"}}
 {"timestamp":"2026-07-03T07:01:19.877Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"c1","arguments":"{\"cmd\":\"echo hi\",\"workdir\":\"/repo\"}"}}
 {"timestamp":"2026-07-03T07:01:20.063Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"hi\nProcess exited with code 0\n"}}
+{"timestamp":"2026-07-03T07:01:21.000Z","type":"response_item","payload":{"type":"function_call","name":"view_image","call_id":"img1","arguments":"{\"path\":\"/tmp/screenshot.png\",\"detail\":\"high\"}"}}
 {"timestamp":"2026-07-03T07:05:44.694Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"c2","success":true,"changes":{"/repo/x.md":{"type":"add","content":"# x"}}}}
 {"timestamp":"2026-07-03T07:06:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"UNIQUE-FINAL-ANSWER-42","phase":"final_answer"}}
 {"timestamp":"2026-07-03T08:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
@@ -59,8 +60,8 @@ func TestReadParsesTurnsAndItems(t *testing.T) {
 	for _, it := range t1.Items {
 		types[it["type"].(string)]++
 	}
-	// user, thinking(commentary), command, file_change, answer(final)
-	for _, want := range []string{"user", "thinking", "command", "file_change", "answer"} {
+	// user, thinking(commentary), command, image, file_change, answer(final)
+	for _, want := range []string{"user", "thinking", "command", "image", "file_change", "answer"} {
 		if types[want] == 0 {
 			t.Errorf("turn1 missing item type %q (got %v)", want, types)
 		}
@@ -78,6 +79,16 @@ func TestReadParsesTurnsAndItems(t *testing.T) {
 	}
 	if cmd["exitCode"] != 0 {
 		t.Errorf("exitCode = %v, want 0", cmd["exitCode"])
+	}
+
+	var image map[string]any
+	for _, it := range t1.Items {
+		if it["type"] == "image" {
+			image = it
+		}
+	}
+	if image["path"] != "/tmp/screenshot.png" {
+		t.Errorf("image path = %v, want /tmp/screenshot.png", image["path"])
 	}
 
 	// final answer text preserved verbatim.

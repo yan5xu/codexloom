@@ -283,6 +283,19 @@ func (tr *Transcript) handleResponseItem(payload json.RawMessage, outputs map[st
 		}
 		return
 	}
+	if p.Type == "function_call" && p.Name == "view_image" {
+		var argv struct {
+			Path string `json:"path"`
+		}
+		_ = json.Unmarshal([]byte(p.Arguments), &argv)
+		if argv.Path != "" {
+			tr.cur().Items = append(tr.cur().Items, map[string]any{
+				"type": "image",
+				"path": argv.Path,
+			})
+		}
+		return
+	}
 	// Only exec_command function calls render as shell commands; apply_patch is
 	// covered by event_msg/patch_apply_end, other tools are internal.
 	if p.Type != "function_call" || p.Name != "exec_command" {

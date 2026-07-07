@@ -23,7 +23,7 @@ export type Block =
       changes: { path: string; kind: string; diff: string }[];
     }
   | { kind: "sys"; ts: string; cls: "ok" | "warn" | "err" | "dim"; text: string }
-  | { kind: "image"; id: string; data: string }
+  | { kind: "image"; id: string; data: string; path?: string }
   | { kind: "raw"; id: string; type: string; json: string };
 
 export interface FeedState {
@@ -77,6 +77,20 @@ function imageData(value: any): string {
   return `data:image/png;base64,${value}`;
 }
 
+function imagePath(value: any): string {
+  if (typeof value !== "string" || !value) return "";
+  return `/api/images?path=${encodeURIComponent(value)}`;
+}
+
+function imageSrc(item: any): { data: string; path?: string } | null {
+  const data = imageData(item.data || item.result);
+  if (data) return { data };
+  const path = item.path || item.filePath;
+  const src = imagePath(path);
+  if (!src) return null;
+  return { data: src, path };
+}
+
 function secs(ms: any): string {
   return `${Math.round((typeof ms === "number" ? ms : 0) / 1000)}s`;
 }
@@ -114,7 +128,10 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
           blocks.push({ kind: "file", id, status: "completed", changes: it.changes || [] });
           break;
         case "image":
-          blocks.push({ kind: "image", id, data: imageData(it.data || it.result) });
+          {
+            const image = imageSrc(it);
+            if (image) blocks.push({ kind: "image", id, ...image });
+          }
           break;
       }
     }
@@ -256,14 +273,15 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
         return update(state, key, (b) => (b.kind === "file" ? { ...b, status, changes } : b));
       }
       case "imageGeneration":
-      case "image_generation_call": {
+      case "image_generation_call":
+      case "imageView": {
         const key = `i:${itemId}`;
-        const data = imageData(item.result || item.data);
-        if (!data) return state;
+        const image = imageSrc(item);
+        if (!image) return state;
         if (state.index[key] === undefined) {
-          return push(state, { kind: "image", id: itemId, data }, key);
+          return push(state, { kind: "image", id: itemId, ...image }, key);
         }
-        return update(state, key, (b) => (b.kind === "image" ? { ...b, data } : b));
+        return update(state, key, (b) => (b.kind === "image" ? { ...b, ...image } : b));
       }
       default: {
         // userMessage items duplicate hub/user-message; drop them.

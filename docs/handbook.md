@@ -242,6 +242,7 @@ kill：
 - event log 不是历史真相源。不要从 `events/*.ndjson` 重建完整对话历史。
 - `/history` 依赖 rollout 文件存在。刚创建但还未产生/flush rollout 的 session 会返回空历史，不算错误。
 - rollout 解析是基于 codex 当前文件格式的适配层。codex 升级后若 event/item 形状变化，历史展示可能漏项，需要补 `internal/rollout` 和前端 block 映射。
+- `imageGeneration` 和 `imageView` 是两类图片：前者通常是 base64/data URI；后者是本机绝对路径，Web 必须走 `/api/images?path=...` 由 hub 代理读取。刷新后若图片消失，优先检查 rollout parser 是否把 `view_image`/`imageView` 转成 history image item。
 - command output 和 diff 展示会截断到约 4000 字符。
 - session name 只允许 `[a-zA-Z0-9_-]+`。
 - 当前没有鉴权，服务默认是本地操作台。暴露到 Tailscale 地址前，要明确信任网络边界。
@@ -345,6 +346,7 @@ POST   /api/sessions/{key}/messages
 POST   /api/sessions/{key}/interrupt
 GET    /api/sessions/{key}/history?count=N&offset=M
 GET    /api/sessions/{key}/events?since=SEQ&tail=N&replay=0
+GET    /api/images?path=/absolute/image/path.png
 POST   /api/sessions/{key}/approvals/{approvalId}
 POST   /api/admin/restart
 GET    /api/admin/restart/status

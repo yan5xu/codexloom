@@ -171,6 +171,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/restart/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"restart": s.restartSnapshot()})
 	})
+	mux.HandleFunc("GET /api/images", s.serveImage)
 
 	mux.HandleFunc("/", s.serveWeb)
 
@@ -303,6 +304,44 @@ func (s *Server) serveWeb(w http.ResponseWriter, r *http.Request) {
 		path = "index.html" // SPA fallback
 	}
 	http.ServeFileFS(w, r, s.web, path)
+}
+
+func (s *Server) serveImage(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeErr(w, &hub.HubError{Status: 400, Message: "path is required"})
+		return
+	}
+	if !filepath.IsAbs(path) {
+		writeErr(w, &hub.HubError{Status: 400, Message: "path must be absolute"})
+		return
+	}
+	clean := filepath.Clean(path)
+	f, err := os.Open(clean)
+	if err != nil {
+		writeErr(w, &hub.HubError{Status: 404, Message: "image not found"})
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		writeErr(w, &hub.HubError{Status: 404, Message: "image not found"})
+		return
+	}
+	head := make([]byte, 512)
+	n, _ := f.Read(head)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		writeErr(w, err)
+		return
+	}
+	contentType := http.DetectContentType(head[:n])
+	if !strings.HasPrefix(contentType, "image/") {
+		writeErr(w, &hub.HubError{Status: 415, Message: "path is not an image"})
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	http.ServeContent(w, r, filepath.Base(clean), info.ModTime(), f)
 }
 
 func (s *Server) adminRestart(w http.ResponseWriter, r *http.Request) {

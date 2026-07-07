@@ -125,13 +125,15 @@ export function BlockView({ block }: { block: Block }) {
         </details>
       );
 
-    // Generated image — rendered inline from its base64 data URI.
+    // Image item — rendered inline from a generated data URI or a hub-served
+    // local image path.
     case "image":
       return (
         <div className="my-3 overflow-hidden rounded-xl border border-border/60 bg-card shadow-card">
           <img
             src={block.data}
-            alt="generated"
+            alt={block.path || "generated"}
+            title={block.path}
             className="block h-auto max-h-[70vh] w-full object-contain"
           />
         </div>

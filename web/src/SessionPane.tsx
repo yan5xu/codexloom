@@ -1,4 +1,4 @@
-import { Send, Square } from "lucide-react";
+import { Send, SlidersHorizontal, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { api, type Session } from "./types";
@@ -10,13 +10,21 @@ export function SessionPane({
   session,
   onKilled,
   onError,
+  onSessionUpdated,
 }: {
   session: Session;
   onKilled: () => void;
   onError: (msg: string) => void;
+  onSessionUpdated: (session: Session) => void;
 }) {
   const [feed, dispatch] = useReducer(reduceFeed, emptyFeed);
   const [input, setInput] = useState("");
+  const [configOpen, setConfigOpen] = useState(false);
+  const [modelDraft, setModelDraft] = useState(session.model || "");
+  const [effortDraft, setEffortDraft] = useState(session.effort || "");
+  const [sandboxDraft, setSandboxDraft] = useState(session.sandbox || "danger-full-access");
+  const [approvalDraft, setApprovalDraft] = useState(session.approvalPolicy || "never");
+  const [savingConfig, setSavingConfig] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const loadedRef = useRef(0); // turns loaded so far
@@ -25,6 +33,13 @@ export function SessionPane({
   const keepScrollRef = useRef<number | null>(null); // scrollHeight before a prepend
 
   const PAGE = 25;
+
+  useEffect(() => {
+    setModelDraft(session.model || "");
+    setEffortDraft(session.effort || "");
+    setSandboxDraft(session.sandbox || "danger-full-access");
+    setApprovalDraft(session.approvalPolicy || "never");
+  }, [session.id, session.model, session.effort, session.sandbox, session.approvalPolicy]);
 
   // Seed the newest page of past turns from the rollout (single source of
   // history; works for mirror/idle sessions with no live event log).
@@ -139,8 +154,31 @@ export function SessionPane({
     }
   };
 
+  const saveConfig = async () => {
+    if (running || savingConfig) return;
+    setSavingConfig(true);
+    try {
+      const data = await api("PATCH", `/api/sessions/${session.id}/config`, {
+        model: modelDraft.trim(),
+        effort: effortDraft,
+        sandbox: sandboxDraft,
+        approvalPolicy: approvalDraft,
+      });
+      onSessionUpdated(data.session);
+      setConfigOpen(false);
+    } catch (err: any) {
+      onError(err.message);
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
   const approvalEntries = Object.entries(feed.approvals);
   const running = session.status === "running";
+  const modelLabel = session.model || "default model";
+  const effortLabel = session.effort || "default effort";
+  const sandboxLabel = session.sandbox || "danger-full-access";
+  const approvalLabel = session.approvalPolicy || "never";
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-background">
@@ -153,6 +191,20 @@ export function SessionPane({
           <h1 className="truncate font-serif text-xl leading-none tracking-tight">{session.name}</h1>
           <div className="mt-1 truncate font-mono text-[10px] uppercase tracking-widest text-muted-foreground/80">
             {session.cwd} · {session.threadId}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              {modelLabel}
+            </span>
+            <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              think {effortLabel}
+            </span>
+            <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              {sandboxLabel}
+            </span>
+            <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              approval {approvalLabel}
+            </span>
           </div>
         </div>
         <span
@@ -173,6 +225,93 @@ export function SessionPane({
           {session.currentTask ? ` — ${session.currentTask.slice(0, 42)}` : ""}
         </span>
         <div className="flex-1" />
+        <div className="relative">
+          <button
+            onClick={() => setConfigOpen((v) => !v)}
+            className="flex size-8 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title="session config"
+          >
+            <SlidersHorizontal className="size-4" />
+          </button>
+          {configOpen && (
+            <div className="absolute right-0 top-10 z-20 w-80 rounded-xl border border-border bg-card p-3 shadow-card">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Session Config
+              </div>
+              <label className="mb-2 block">
+                <span className="mb-1 block text-[11px] text-muted-foreground">Model</span>
+                <input
+                  value={modelDraft}
+                  onChange={(e) => setModelDraft(e.target.value)}
+                  disabled={running}
+                  placeholder="default"
+                  spellCheck={false}
+                  className="h-8 w-full rounded-lg bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </label>
+              <label className="mb-2 block">
+                <span className="mb-1 block text-[11px] text-muted-foreground">Thinking Effort</span>
+                <select
+                  value={effortDraft}
+                  onChange={(e) => setEffortDraft(e.target.value)}
+                  disabled={running}
+                  className="h-8 w-full rounded-lg bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-primary/40 disabled:opacity-60"
+                >
+                  <option value="">default</option>
+                  <option value="minimal">minimal</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+              </label>
+              <label className="mb-2 block">
+                <span className="mb-1 block text-[11px] text-muted-foreground">Sandbox</span>
+                <select
+                  value={sandboxDraft}
+                  onChange={(e) => setSandboxDraft(e.target.value)}
+                  disabled={running}
+                  className="h-8 w-full rounded-lg bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-primary/40 disabled:opacity-60"
+                >
+                  <option value="danger-full-access">danger-full-access</option>
+                  <option value="workspace-write">workspace-write</option>
+                  <option value="read-only">read-only</option>
+                </select>
+              </label>
+              <label className="mb-3 block">
+                <span className="mb-1 block text-[11px] text-muted-foreground">Approval Policy</span>
+                <select
+                  value={approvalDraft}
+                  onChange={(e) => setApprovalDraft(e.target.value)}
+                  disabled={running}
+                  className="h-8 w-full rounded-lg bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-primary/40 disabled:opacity-60"
+                >
+                  <option value="never">never</option>
+                  <option value="on-request">on-request</option>
+                </select>
+              </label>
+              {running && (
+                <div className="mb-2 rounded-lg bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+                  Config can be changed after this turn finishes.
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setConfigOpen(false)}
+                  className="rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveConfig}
+                  disabled={running || savingConfig}
+                  className="rounded-lg bg-primary px-2.5 py-1.5 text-[12px] font-medium text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingConfig ? "Saving" : "Save"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
         {running && (
           <button
             onClick={interrupt}

@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ const (
 	defaultInactivity = 30 * time.Minute
 	absoluteTurnCap   = 4 * time.Hour
 	subscriberBuffer  = 1024
+	edgeCreatedAt     = "1970-01-01T00:00:00Z"
 )
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -70,6 +72,7 @@ type Session struct {
 	Sandbox        string       `json:"sandbox"`
 	ApprovalPolicy string       `json:"approvalPolicy"`
 	Model          string       `json:"model,omitempty"`
+	Effort         string       `json:"effort,omitempty"`
 	Status         string       `json:"status"`
 	CurrentTask    string       `json:"currentTask"`
 	CurrentTurnID  string       `json:"currentTurnId"`
@@ -97,6 +100,12 @@ type ApprovalView struct {
 	Method     string          `json:"method"`
 	Params     json.RawMessage `json:"params"`
 	TS         string          `json:"ts"`
+}
+
+type RunningSession struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	CurrentTask string `json:"currentTask"`
 }
 
 type approval struct {
@@ -232,7 +241,7 @@ func (h *Hub) importEdgeLocked() {
 			ID: id, Name: a.Name, Cwd: a.Cwd, ThreadID: a.ThreadID,
 			Sandbox: "danger-full-access", ApprovalPolicy: "never",
 			Status: "idle", Source: "edge",
-			CreatedAt: now(), UpdatedAt: now(),
+			CreatedAt: edgeCreatedAt, UpdatedAt: now(),
 		}
 	}
 }
@@ -285,13 +294,31 @@ func (h *Hub) emitLocked(sessionID, typ string, data any) store.Event {
 
 func (h *Hub) emitStatusLocked(meta *Session, status string) {
 	data, _ := json.Marshal(map[string]any{
-		"id":          meta.ID,
-		"name":        meta.Name,
-		"status":      status,
-		"currentTask": meta.CurrentTask,
-		"lastError":   meta.LastError,
+		"id":             meta.ID,
+		"name":           meta.Name,
+		"status":         status,
+		"currentTask":    meta.CurrentTask,
+		"lastError":      meta.LastError,
+		"model":          meta.Model,
+		"effort":         meta.Effort,
+		"sandbox":        meta.Sandbox,
+		"approvalPolicy": meta.ApprovalPolicy,
 	})
 	ev := store.Event{TS: now(), Type: "hub/session-status", Data: data}
+	for sub := range h.globalSubs {
+		select {
+		case sub.ch <- ev:
+		default:
+			delete(h.globalSubs, sub)
+			sub.close()
+		}
+	}
+}
+
+func (h *Hub) EmitGlobal(typ string, data map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ev := store.Event{TS: now(), Type: typ, Data: toRaw(data)}
 	for sub := range h.globalSubs {
 		select {
 		case sub.ch <- ev:
@@ -713,6 +740,15 @@ func (h *Hub) ListSessions() []SessionView {
 	for _, meta := range h.sessions {
 		out = append(out, h.viewLocked(meta))
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt > out[j].CreatedAt
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
@@ -726,12 +762,39 @@ func (h *Hub) GetSession(key string) (SessionView, error) {
 	return h.viewLocked(meta), nil
 }
 
+func (h *Hub) RunningSessions() []RunningSession {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := []RunningSession{}
+	for _, meta := range h.sessions {
+		if meta.Status != "running" {
+			continue
+		}
+		out = append(out, RunningSession{ID: meta.ID, Name: meta.Name, CurrentTask: meta.CurrentTask})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
 type CreateParams struct {
 	Name           string `json:"name"`
 	Cwd            string `json:"cwd"`
 	Sandbox        string `json:"sandbox"`
 	ApprovalPolicy string `json:"approvalPolicy"`
 	Model          string `json:"model"`
+	Effort         string `json:"effort"`
+}
+
+type ConfigParams struct {
+	Model          *string `json:"model"`
+	Effort         *string `json:"effort"`
+	Sandbox        *string `json:"sandbox"`
+	ApprovalPolicy *string `json:"approvalPolicy"`
 }
 
 func (h *Hub) CreateSession(p CreateParams) (SessionView, error) {
@@ -747,6 +810,15 @@ func (h *Hub) CreateSession(p CreateParams) (SessionView, error) {
 	if p.ApprovalPolicy == "" {
 		p.ApprovalPolicy = "never"
 	}
+	p.Model = strings.TrimSpace(p.Model)
+	p.Effort = strings.TrimSpace(p.Effort)
+	if p.Effort != "" {
+		switch p.Effort {
+		case "minimal", "low", "medium", "high":
+		default:
+			return SessionView{}, errf(400, "effort must be one of: minimal, low, medium, high")
+		}
+	}
 	idBytes := make([]byte, 4)
 	_, _ = rand.Read(idBytes)
 	id := hex.EncodeToString(idBytes)
@@ -758,7 +830,7 @@ func (h *Hub) CreateSession(p CreateParams) (SessionView, error) {
 	}
 	meta := &Session{
 		ID: id, Name: p.Name, Cwd: p.Cwd,
-		Sandbox: p.Sandbox, ApprovalPolicy: p.ApprovalPolicy, Model: p.Model,
+		Sandbox: p.Sandbox, ApprovalPolicy: p.ApprovalPolicy, Model: p.Model, Effort: p.Effort,
 		Status: "idle", CreatedAt: now(), UpdatedAt: now(),
 	}
 	h.sessions[id] = meta
@@ -787,6 +859,41 @@ func (h *Hub) CreateSession(p CreateParams) (SessionView, error) {
 	h.emitLocked(id, "hub/session-created", map[string]any{
 		"id": id, "name": meta.Name, "cwd": meta.Cwd, "threadId": meta.ThreadID,
 	})
+	h.emitStatusLocked(meta, meta.Status)
+	return h.viewLocked(meta), nil
+}
+
+func (h *Hub) UpdateConfig(key string, p ConfigParams) (SessionView, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	meta := h.resolveLocked(key)
+	if meta == nil {
+		return SessionView{}, errf(404, "session not found: %s", key)
+	}
+	if meta.Status == "running" {
+		return SessionView{}, errf(409, "session %q is running; config changes apply between turns", meta.Name)
+	}
+	meta.Source = "" // editing config adopts an edge mirror into codex-hub's registry
+	if p.Model != nil {
+		meta.Model = strings.TrimSpace(*p.Model)
+	}
+	if p.Effort != nil {
+		effort := strings.TrimSpace(*p.Effort)
+		switch effort {
+		case "", "minimal", "low", "medium", "high":
+			meta.Effort = effort
+		default:
+			return SessionView{}, errf(400, "effort must be one of: minimal, low, medium, high")
+		}
+	}
+	if p.Sandbox != nil {
+		meta.Sandbox = strings.TrimSpace(*p.Sandbox)
+	}
+	if p.ApprovalPolicy != nil {
+		meta.ApprovalPolicy = strings.TrimSpace(*p.ApprovalPolicy)
+	}
+	meta.UpdatedAt = now()
+	h.persistLocked()
 	h.emitStatusLocked(meta, meta.Status)
 	return h.viewLocked(meta), nil
 }
@@ -858,7 +965,7 @@ func (h *Hub) SendTask(key, text string, inactivity time.Duration) (SendResult, 
 	h.persistLocked()
 	h.emitLocked(sessionID, "hub/user-message", map[string]any{"text": text})
 	h.emitStatusLocked(meta, "running")
-	threadID, approvalPolicy, model := meta.ThreadID, meta.ApprovalPolicy, meta.Model
+	threadID, approvalPolicy, model, effort := meta.ThreadID, meta.ApprovalPolicy, meta.Model, meta.Effort
 	h.mu.Unlock()
 
 	go h.watchdog(sessionID, turn, inactivity)
@@ -870,6 +977,9 @@ func (h *Hub) SendTask(key, text string, inactivity time.Duration) (SendResult, 
 	}
 	if model != "" {
 		params["model"] = model
+	}
+	if effort != "" {
+		params["effort"] = effort
 	}
 	result, err := rt.client.Request("turn/start", params, 30*time.Second)
 	if err != nil {

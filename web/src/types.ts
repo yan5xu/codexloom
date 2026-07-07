@@ -17,6 +17,10 @@ export interface Session {
   name: string;
   cwd: string;
   threadId: string;
+  sandbox: string;
+  approvalPolicy: string;
+  model?: string;
+  effort?: string;
   status: string;
   currentTask: string;
   currentTurnId: string;

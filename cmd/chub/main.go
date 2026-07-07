@@ -153,7 +153,7 @@ func main() {
 func printHelp() {
 	fmt.Printf(`chub — codex-hub CLI (hub: %s)
 
-  chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--model M]
+  chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--model M] [--effort minimal|low|medium|high]
   chub list
   chub get <name|id>
   chub send <name|id> "<task>" [--timeout SEC]
@@ -179,6 +179,7 @@ func cmdCreate(a args) {
 		"approvalPolicy": a.flags["approval"],
 		"sandbox":        a.flags["sandbox"],
 		"model":          a.flags["model"],
+		"effort":         a.flags["effort"],
 	})
 	if err != nil {
 		fail(err)

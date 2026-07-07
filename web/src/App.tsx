@@ -11,6 +11,7 @@ export default function App() {
   const [newCwd, setNewCwd] = useState("");
   const [toast, setToast] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [restartStatus, setRestartStatus] = useState<any>({ state: "idle" });
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const showToast = (msg: string) => {
@@ -36,6 +37,8 @@ export default function App() {
         const evt = JSON.parse(e.data);
         if (evt.type === "hub/sessions") {
           setSessions(evt.data.sessions);
+        } else if (evt.type === "hub/restart-status") {
+          setRestartStatus(evt.data.restart || { state: "idle" });
         } else if (evt.type === "hub/session-status") {
           const d = evt.data;
           if (d.status === "killed") {
@@ -50,7 +53,16 @@ export default function App() {
               }
               return prev.map((s) =>
                 s.id === d.id
-                  ? { ...s, status: d.status, currentTask: d.currentTask || "", lastError: d.lastError || "" }
+                  ? {
+                      ...s,
+                      status: d.status,
+                      currentTask: d.currentTask || "",
+                      lastError: d.lastError || "",
+                      model: d.model ?? s.model,
+                      effort: d.effort ?? s.effort,
+                      sandbox: d.sandbox ?? s.sandbox,
+                      approvalPolicy: d.approvalPolicy ?? s.approvalPolicy,
+                    }
                   : s,
               );
             });
@@ -83,8 +95,9 @@ export default function App() {
     if (restarting) return;
     setRestarting(true);
     try {
-      await api("POST", "/api/admin/restart");
-      showToast("restart command started");
+      const data = await api("POST", "/api/admin/restart");
+      setRestartStatus(data.restart || { state: "restarting" });
+      showToast(data.restart?.message || "restart requested");
     } catch (err: any) {
       showToast(err.message);
     } finally {
@@ -112,13 +125,41 @@ export default function App() {
     if (s) window.location.hash = encodeURIComponent(s.name);
   };
 
+  const updateSession = (updated: Session) => {
+    setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+  };
+
   const selected = sessions.find((s) => s.id === current) || null;
+  const restartState = restartStatus?.state || "idle";
+  const restartPending = restartState === "waiting" || restartState === "restarting";
+  const activeCount = sessions.filter((s) => s.status === "running").length;
+  const idleCount = sessions.filter((s) => s.status === "idle").length;
+
+  useEffect(() => {
+    if (restartState === "waiting") {
+      document.title = "Restart waiting · codex-hub";
+    } else if (restartState === "restarting") {
+      document.title = "Restarting · codex-hub";
+    } else if (selected) {
+      const marker = selected.status === "running" ? "● " : selected.lastError ? "! " : "";
+      document.title = `${marker}${selected.name} · codex-hub`;
+    } else if (activeCount > 0) {
+      document.title = `(${activeCount}) codex-hub`;
+    } else {
+      document.title = "codex-hub";
+    }
+  }, [activeCount, restartState, selected]);
 
   // Middle-truncate long paths so the trailing folder (what distinguishes
   // same-named projects) stays visible.
   const midPath = (p: string) => {
     if (p.length <= 34) return p;
     return p.slice(0, 14) + "…" + p.slice(-18);
+  };
+
+  const clipTask = (task: string) => {
+    if (task.length <= 46) return task;
+    return task.slice(0, 43) + "…";
   };
 
   return (
@@ -143,6 +184,27 @@ export default function App() {
 
         <div className="mx-3 h-px bg-border/40" />
 
+        <div className="mx-3 mt-3 grid grid-cols-3 overflow-hidden rounded-lg border border-border/60 bg-background/65">
+          <div className="px-2 py-1.5">
+            <div className="font-mono text-[10px] font-semibold leading-none text-foreground">
+              {sessions.length}
+            </div>
+            <div className="mt-0.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground">total</div>
+          </div>
+          <div className="border-l border-border/50 px-2 py-1.5">
+            <div className="font-mono text-[10px] font-semibold leading-none text-warning">
+              {activeCount}
+            </div>
+            <div className="mt-0.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground">active</div>
+          </div>
+          <div className="border-l border-border/50 px-2 py-1.5">
+            <div className="font-mono text-[10px] font-semibold leading-none text-success">
+              {idleCount}
+            </div>
+            <div className="mt-0.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground">idle</div>
+          </div>
+        </div>
+
         <div className="flex items-center justify-between px-4 pb-1 pt-3">
           <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
             Threads
@@ -153,11 +215,14 @@ export default function App() {
         <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
           {sessions.map((s) => {
             const active = s.id === current;
+            const detail = s.currentTask ? clipTask(s.currentTask) : midPath(s.cwd);
+            const detailTitle = s.currentTask ? `${s.cwd}\n${s.currentTask}` : s.cwd;
             return (
               <button
                 key={s.id}
                 onClick={() => selectSession(s.id)}
-                className={`group relative block w-full overflow-hidden rounded-xl px-2.5 py-2 text-left transition-colors ${
+                title={detailTitle}
+                className={`group relative block h-[50px] w-full overflow-hidden rounded-xl px-2.5 py-2 text-left transition-colors ${
                   active ? "bg-primary/[0.12] ring-1 ring-primary/20" : "hover:bg-foreground/[0.04]"
                 }`}
               >
@@ -179,14 +244,14 @@ export default function App() {
                   </span>
                 </div>
                 <div
-                  title={s.cwd}
-                  className="mt-0.5 truncate pl-4 font-mono text-[10.5px] text-muted-foreground"
+                  className={`mt-0.5 truncate pl-4 ${
+                    s.currentTask
+                      ? "text-[11px] font-medium text-warning/90"
+                      : "font-mono text-[10.5px] text-muted-foreground"
+                  }`}
                 >
-                  {midPath(s.cwd)}
+                  {detail}
                 </div>
-                {s.currentTask && (
-                  <div className="mt-0.5 truncate pl-4 text-[11px] text-warning/90">{s.currentTask}</div>
-                )}
               </button>
             );
           })}
@@ -201,13 +266,34 @@ export default function App() {
         <div className="border-t border-border/50 bg-sidebar/80 px-3 pb-5 pt-3 shadow-[0_-4px_12px_-8px_rgba(0,0,0,0.08)]">
           <button
             onClick={restartHub}
-            disabled={restarting}
+            disabled={restarting || restartPending}
             title="Restart Hub to load the already built version"
             className="mb-3 flex h-8 w-full items-center justify-center gap-2 rounded-xl bg-background text-[12.5px] font-medium text-muted-foreground ring-1 ring-border transition hover:text-foreground hover:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <RotateCw className={`size-3.5 ${restarting ? "animate-spin" : ""}`} />
-            Restart Hub
+            <RotateCw className={`size-3.5 ${restarting || restartPending ? "animate-spin" : ""}`} />
+            {restartState === "waiting" ? "Restart Waiting" : restartState === "restarting" ? "Restarting" : "Restart Hub"}
           </button>
+          {restartState !== "idle" && (
+            <div
+              className={`mb-3 rounded-xl px-2.5 py-2 text-[11.5px] ${
+                restartState === "failed"
+                  ? "bg-destructive/10 text-destructive"
+                  : "bg-warning/10 text-warning"
+              }`}
+            >
+              <div className="font-medium">{restartStatus.message || restartState}</div>
+              {restartStatus.running?.length > 0 && (
+                <div className="mt-1 space-y-0.5 font-mono text-[10.5px] opacity-90">
+                  {restartStatus.running.slice(0, 3).map((s: any) => (
+                    <div key={s.id} className="truncate">
+                      {s.name}
+                    </div>
+                  ))}
+                  {restartStatus.running.length > 3 && <div>+{restartStatus.running.length - 3} more</div>}
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex flex-col gap-2">
           <input
             value={newName}
@@ -247,6 +333,7 @@ export default function App() {
         <SessionPane
           key={selected.id}
           session={selected}
+          onSessionUpdated={updateSession}
           onKilled={() => setCurrent(null)}
           onError={showToast}
         />

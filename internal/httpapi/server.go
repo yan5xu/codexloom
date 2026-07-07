@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,13 +26,26 @@ import (
 )
 
 type Server struct {
-	hub *hub.Hub
-	st  *store.Store
-	web fs.FS
+	hub       *hub.Hub
+	st        *store.Store
+	web       fs.FS
+	restartMu sync.Mutex
+	restart   restartState
 }
 
 func New(h *hub.Hub, st *store.Store, web fs.FS) *Server {
-	return &Server{hub: h, st: st, web: web}
+	return &Server{hub: h, st: st, web: web, restart: restartState{State: "idle"}}
+}
+
+type restartState struct {
+	State        string               `json:"state"`
+	Message      string               `json:"message,omitempty"`
+	Running      []hub.RunningSession `json:"running,omitempty"`
+	PID          int                  `json:"pid,omitempty"`
+	Reloader     string               `json:"reloader,omitempty"`
+	LogPath      string               `json:"logPath,omitempty"`
+	ChildLogPath string               `json:"childLogPath,omitempty"`
+	UpdatedAt    string               `json:"updatedAt"`
 }
 
 func (s *Server) Handler() http.Handler {
@@ -72,6 +86,20 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, 200, map[string]any{"session": session})
 	})
 
+	mux.HandleFunc("PATCH /api/sessions/{key}/config", func(w http.ResponseWriter, r *http.Request) {
+		var body hub.ConfigParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		session, err := s.hub.UpdateConfig(r.PathValue("key"), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"session": session})
+	})
+
 	mux.HandleFunc("DELETE /api/sessions/{key}", func(w http.ResponseWriter, r *http.Request) {
 		result, err := s.hub.KillSession(r.PathValue("key"))
 		if err != nil {
@@ -82,6 +110,10 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/sessions/{key}/messages", func(w http.ResponseWriter, r *http.Request) {
+		if s.isRestartPending() {
+			writeErr(w, &hub.HubError{Status: 409, Message: "restart pending; wait for hub to restart before sending new tasks"})
+			return
+		}
 		var body struct {
 			Text       string `json:"text"`
 			TimeoutSec int    `json:"timeoutSec"`
@@ -136,6 +168,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/sessions/{key}/events", s.sessionEvents)
 	mux.HandleFunc("GET /api/events", s.globalEvents)
+	mux.HandleFunc("GET /api/admin/restart/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"restart": s.restartSnapshot()})
+	})
 
 	mux.HandleFunc("/", s.serveWeb)
 
@@ -232,6 +267,8 @@ func (s *Server) globalEvents(w http.ResponseWriter, r *http.Request) {
 	sseHeaders(w)
 	snapshot, _ := json.Marshal(map[string]any{"sessions": s.hub.ListSessions()})
 	writeSSE(w, store.Event{TS: time.Now().UTC().Format(time.RFC3339Nano), Type: "hub/sessions", Data: snapshot})
+	restartSnapshot, _ := json.Marshal(map[string]any{"restart": s.restartSnapshot()})
+	writeSSE(w, store.Event{TS: time.Now().UTC().Format(time.RFC3339Nano), Type: "hub/restart-status", Data: restartSnapshot})
 	flusher.Flush()
 
 	ping := time.NewTicker(15 * time.Second)
@@ -274,6 +311,33 @@ func (s *Server) adminRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if state := s.restartSnapshot(); state.State == "waiting" || state.State == "restarting" {
+		writeJSON(w, 202, map[string]any{"restart": state})
+		return
+	}
+
+	running := s.hub.RunningSessions()
+	if len(running) > 0 {
+		if state, started := s.markRestartWaiting(running); !started {
+			writeJSON(w, 202, map[string]any{"restart": state})
+			return
+		}
+		go s.waitForIdleAndRestart()
+		writeJSON(w, 202, map[string]any{"restart": s.restartSnapshot()})
+		return
+	}
+
+	info, err := s.startReloader()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.setRestartState(info)
+	s.emitRestartState()
+	writeJSON(w, 202, map[string]any{"restart": info})
+}
+
+func (s *Server) startReloader() (restartState, error) {
 	logPath := strings.TrimSpace(os.Getenv("CODEX_HUB_RESTART_LOG"))
 	if logPath == "" {
 		logPath = "/tmp/codex-hub-reloader.log"
@@ -285,21 +349,18 @@ func (s *Server) adminRestart(w http.ResponseWriter, r *http.Request) {
 
 	exe, err := os.Executable()
 	if err != nil {
-		writeErr(w, &hub.HubError{Status: 500, Message: "resolve executable: " + err.Error()})
-		return
+		return restartState{}, &hub.HubError{Status: 500, Message: "resolve executable: " + err.Error()}
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		writeErr(w, &hub.HubError{Status: 500, Message: "resolve working directory: " + err.Error()})
-		return
+		return restartState{}, &hub.HubError{Status: 500, Message: "resolve working directory: " + err.Error()}
 	}
 	reloader := strings.TrimSpace(os.Getenv("CODEX_HUB_RELOADER"))
 	if reloader == "" {
 		reloader = filepath.Join(filepath.Dir(exe), "codex-hub-reloader")
 	}
 	if _, err := os.Stat(reloader); err != nil {
-		writeErr(w, &hub.HubError{Status: 500, Message: "reloader not found: " + reloader})
-		return
+		return restartState{}, &hub.HubError{Status: 500, Message: "reloader not found: " + reloader}
 	}
 
 	args := []string{
@@ -317,20 +378,104 @@ func (s *Server) adminRestart(w http.ResponseWriter, r *http.Request) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
-		writeErr(w, &hub.HubError{Status: 500, Message: "start reloader: " + err.Error()})
-		return
+		return restartState{}, &hub.HubError{Status: 500, Message: "start reloader: " + err.Error()}
 	}
 	pid := cmd.Process.Pid
 	_ = cmd.Process.Release()
 
-	writeJSON(w, 202, map[string]any{
-		"ok":           true,
-		"pid":          pid,
-		"reloader":     reloader,
-		"logPath":      logPath,
-		"childLogPath": childLogPath,
-		"message":      "reloader process started",
-	})
+	return restartState{
+		State:        "restarting",
+		Message:      "reloader process started",
+		PID:          pid,
+		Reloader:     reloader,
+		LogPath:      logPath,
+		ChildLogPath: childLogPath,
+		UpdatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (s *Server) waitForIdleAndRestart() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		running := s.hub.RunningSessions()
+		if len(running) == 0 {
+			break
+		}
+		s.updateRestartWaiting(running)
+		<-ticker.C
+	}
+	info, err := s.startReloader()
+	if err != nil {
+		state := restartState{
+			State:     "failed",
+			Message:   err.Error(),
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		s.setRestartState(state)
+		s.emitRestartState()
+		return
+	}
+	s.setRestartState(info)
+	s.emitRestartState()
+}
+
+func (s *Server) markRestartWaiting(running []hub.RunningSession) (restartState, bool) {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	if s.restart.State == "waiting" || s.restart.State == "restarting" {
+		return s.restart, false
+	}
+	s.restart = restartState{
+		State:     "waiting",
+		Message:   "waiting for running sessions to finish",
+		Running:   running,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	s.emitRestartStateLocked()
+	return s.restart, true
+}
+
+func (s *Server) updateRestartWaiting(running []hub.RunningSession) {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	if s.restart.State != "waiting" {
+		return
+	}
+	s.restart.Running = running
+	s.restart.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	s.emitRestartStateLocked()
+}
+
+func (s *Server) setRestartState(state restartState) {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	s.restart = state
+	if s.restart.UpdatedAt == "" {
+		s.restart.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+}
+
+func (s *Server) restartSnapshot() restartState {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	return s.restart
+}
+
+func (s *Server) isRestartPending() bool {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	return s.restart.State == "waiting" || s.restart.State == "restarting"
+}
+
+func (s *Server) emitRestartState() {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	s.emitRestartStateLocked()
+}
+
+func (s *Server) emitRestartStateLocked() {
+	s.hub.EmitGlobal("hub/restart-status", map[string]any{"restart": s.restart})
 }
 
 // ---- helpers ----
@@ -409,7 +554,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Codex-Hub-Admin-Token")
 			w.WriteHeader(204)
 			return

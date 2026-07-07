@@ -177,16 +177,17 @@ React/Vite/TypeScript/Tailwind 前端。
 
 ### Session 配置
 
-Web header 会显示当前 session 的 model、thinking effort、sandbox 和 approval policy。model/effort 空值表示使用 codex 默认值。
+Web header 会显示当前 session 的名称、model、thinking effort、sandbox 和 approval policy。model/effort 空值表示使用 codex 默认值。
 
 `PATCH /api/sessions/{key}/config` 可以修改：
 
+- `name`：只能使用 `[a-zA-Z0-9_-]+`，不能与其他 session name/id 冲突
 - `model`
 - `effort`：`minimal` / `low` / `medium` / `high`
 - `sandbox`
 - `approvalPolicy`
 
-配置只允许在 session 空闲时修改；running 时返回 409。修改后写入 `sessions.json`，下一次 `turn/start` 生效。Codex app-server 会把 turn-level overrides 作为同一 thread 后续 turn 的默认设置。
+配置只允许在 session 空闲时修改；running 时返回 409。修改后写入 `sessions.json`，并通过 `hub/session-status` 广播。名称变更立即影响 Web/CLI 的 `{key}` 解析和 URL hash；model/effort/sandbox/approval 下一次 `turn/start` 生效。Codex app-server 会把 turn-level overrides 作为同一 thread 后续 turn 的默认设置。
 
 ### 查看历史
 

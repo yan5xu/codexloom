@@ -20,6 +20,7 @@ export function SessionPane({
   const [feed, dispatch] = useReducer(reduceFeed, emptyFeed);
   const [input, setInput] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState(session.name);
   const [modelDraft, setModelDraft] = useState(session.model || "");
   const [effortDraft, setEffortDraft] = useState(session.effort || "");
   const [sandboxDraft, setSandboxDraft] = useState(session.sandbox || "danger-full-access");
@@ -35,11 +36,12 @@ export function SessionPane({
   const PAGE = 25;
 
   useEffect(() => {
+    setNameDraft(session.name);
     setModelDraft(session.model || "");
     setEffortDraft(session.effort || "");
     setSandboxDraft(session.sandbox || "danger-full-access");
     setApprovalDraft(session.approvalPolicy || "never");
-  }, [session.id, session.model, session.effort, session.sandbox, session.approvalPolicy]);
+  }, [session.id, session.name, session.model, session.effort, session.sandbox, session.approvalPolicy]);
 
   // Seed the newest page of past turns from the rollout (single source of
   // history; works for mirror/idle sessions with no live event log).
@@ -156,9 +158,19 @@ export function SessionPane({
 
   const saveConfig = async () => {
     if (running || savingConfig) return;
+    const nextName = nameDraft.trim();
+    if (!nextName) {
+      onError("name is required");
+      return;
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(nextName)) {
+      onError("name must match [a-zA-Z0-9_-]+");
+      return;
+    }
     setSavingConfig(true);
     try {
       const data = await api("PATCH", `/api/sessions/${session.id}/config`, {
+        name: nextName,
         model: modelDraft.trim(),
         effort: effortDraft,
         sandbox: sandboxDraft,
@@ -238,6 +250,17 @@ export function SessionPane({
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                 Session Config
               </div>
+              <label className="mb-2 block">
+                <span className="mb-1 block text-[11px] text-muted-foreground">Name</span>
+                <input
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  disabled={running}
+                  placeholder="session-name"
+                  spellCheck={false}
+                  className="h-8 w-full rounded-lg bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-primary/40 disabled:opacity-60"
+                />
+              </label>
               <label className="mb-2 block">
                 <span className="mb-1 block text-[11px] text-muted-foreground">Model</span>
                 <input

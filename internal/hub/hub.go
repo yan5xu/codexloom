@@ -303,6 +303,7 @@ func (h *Hub) emitStatusLocked(meta *Session, status string) {
 		"effort":         meta.Effort,
 		"sandbox":        meta.Sandbox,
 		"approvalPolicy": meta.ApprovalPolicy,
+		"updatedAt":      meta.UpdatedAt,
 	})
 	ev := store.Event{TS: now(), Type: "hub/session-status", Data: data}
 	for sub := range h.globalSubs {
@@ -791,6 +792,7 @@ type CreateParams struct {
 }
 
 type ConfigParams struct {
+	Name           *string `json:"name"`
 	Model          *string `json:"model"`
 	Effort         *string `json:"effort"`
 	Sandbox        *string `json:"sandbox"`
@@ -873,25 +875,55 @@ func (h *Hub) UpdateConfig(key string, p ConfigParams) (SessionView, error) {
 	if meta.Status == "running" {
 		return SessionView{}, errf(409, "session %q is running; config changes apply between turns", meta.Name)
 	}
-	meta.Source = "" // editing config adopts an edge mirror into codex-hub's registry
+
+	nextName := meta.Name
+	nextModel := meta.Model
+	nextEffort := meta.Effort
+	nextSandbox := meta.Sandbox
+	nextApprovalPolicy := meta.ApprovalPolicy
+
+	if p.Name != nil {
+		name := strings.TrimSpace(*p.Name)
+		if name == "" {
+			return SessionView{}, errf(400, "name is required")
+		}
+		if !nameRe.MatchString(name) {
+			return SessionView{}, errf(400, "name must match [a-zA-Z0-9_-]+")
+		}
+		for _, existing := range h.sessions {
+			if existing.ID == meta.ID {
+				continue
+			}
+			if existing.ID == name || existing.Name == name {
+				return SessionView{}, errf(409, "session %q already exists", name)
+			}
+		}
+		nextName = name
+	}
 	if p.Model != nil {
-		meta.Model = strings.TrimSpace(*p.Model)
+		nextModel = strings.TrimSpace(*p.Model)
 	}
 	if p.Effort != nil {
 		effort := strings.TrimSpace(*p.Effort)
 		switch effort {
 		case "", "minimal", "low", "medium", "high":
-			meta.Effort = effort
+			nextEffort = effort
 		default:
 			return SessionView{}, errf(400, "effort must be one of: minimal, low, medium, high")
 		}
 	}
 	if p.Sandbox != nil {
-		meta.Sandbox = strings.TrimSpace(*p.Sandbox)
+		nextSandbox = strings.TrimSpace(*p.Sandbox)
 	}
 	if p.ApprovalPolicy != nil {
-		meta.ApprovalPolicy = strings.TrimSpace(*p.ApprovalPolicy)
+		nextApprovalPolicy = strings.TrimSpace(*p.ApprovalPolicy)
 	}
+	meta.Source = "" // editing config adopts an edge mirror into codex-hub's registry
+	meta.Name = nextName
+	meta.Model = nextModel
+	meta.Effort = nextEffort
+	meta.Sandbox = nextSandbox
+	meta.ApprovalPolicy = nextApprovalPolicy
 	meta.UpdatedAt = now()
 	h.persistLocked()
 	h.emitStatusLocked(meta, meta.Status)

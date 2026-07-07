@@ -55,6 +55,7 @@ export default function App() {
                 s.id === d.id
                   ? {
                       ...s,
+                      name: d.name ?? s.name,
                       status: d.status,
                       currentTask: d.currentTask || "",
                       lastError: d.lastError || "",
@@ -62,6 +63,7 @@ export default function App() {
                       effort: d.effort ?? s.effort,
                       sandbox: d.sandbox ?? s.sandbox,
                       approvalPolicy: d.approvalPolicy ?? s.approvalPolicy,
+                      updatedAt: d.updatedAt ?? s.updatedAt,
                     }
                   : s,
               );
@@ -127,6 +129,9 @@ export default function App() {
 
   const updateSession = (updated: Session) => {
     setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+    if (updated.id === current) {
+      window.location.hash = encodeURIComponent(updated.name);
+    }
   };
 
   const selected = sessions.find((s) => s.id === current) || null;
@@ -134,6 +139,14 @@ export default function App() {
   const restartPending = restartState === "waiting" || restartState === "restarting";
   const activeCount = sessions.filter((s) => s.status === "running").length;
   const idleCount = sessions.filter((s) => s.status === "idle").length;
+
+  useEffect(() => {
+    if (!selected) return;
+    const nextHash = "#" + encodeURIComponent(selected.name);
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+  }, [selected?.id, selected?.name]);
 
   useEffect(() => {
     if (restartState === "waiting") {

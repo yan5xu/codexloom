@@ -130,6 +130,8 @@ func main() {
 		cmdList()
 	case "get":
 		cmdGet(a)
+	case "rename":
+		cmdRename(a)
 	case "send":
 		cmdSend(a)
 	case "watch":
@@ -156,6 +158,7 @@ func printHelp() {
   chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--model M] [--effort minimal|low|medium|high]
   chub list
   chub get <name|id>
+  chub rename <name|id> <new-name>
   chub send <name|id> "<task>" [--timeout SEC]
   chub watch <name|id> [--tail N]
   chub interrupt <name|id>
@@ -231,6 +234,20 @@ func cmdGet(a args) {
 	}
 	out, _ := json.MarshalIndent(resp["session"], "", "  ")
 	fmt.Println(string(out))
+}
+
+func cmdRename(a args) {
+	if len(a.positional) < 2 {
+		usage("rename <name|id> <new-name>")
+	}
+	resp, err := api("PATCH", "/api/sessions/"+url.PathEscape(a.positional[0])+"/config", map[string]any{
+		"name": a.positional[1],
+	})
+	if err != nil {
+		fail(err)
+	}
+	s, _ := resp["session"].(map[string]any)
+	fmt.Printf("%s %s -> %s (%s)\n", green("renamed"), a.positional[0], bold(str(s, "name")), str(s, "id"))
 }
 
 func cmdSend(a args) {

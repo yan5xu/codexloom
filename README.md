@@ -66,9 +66,10 @@ make release   # 构建 web 控制台 + 两个二进制(bin/codex-hub, bin/chub)
 ## CLI 用法
 
 ```sh
-chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--model M]
+chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--model M] [--effort minimal|low|medium|high]
 chub list                      # 所有 session 及状态
 chub get <name|id>             # session 详情(JSON)
+chub rename <name|id> <new-name>  # 修改 session 名称
 chub send <name|id> "<task>"   # 派任务,异步,立即返回
 chub watch <name|id> [--tail N]  # 终端实时跟随事件流(Ctrl-C 只断观察,任务照跑)
 chub interrupt <name|id>       # 中断当前任务

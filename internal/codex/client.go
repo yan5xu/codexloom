@@ -76,7 +76,15 @@ type Client struct {
 
 // Spawn starts `codex app-server`. Callbacks must be set before Start.
 func Spawn() (*Client, error) {
-	cmd := exec.Command("/Users/cp/.nvm/versions/node/v25.2.1/bin/codex", "app-server")
+	codexBin := os.Getenv("CODEX_BIN")
+	if codexBin == "" {
+		var err error
+		codexBin, err = exec.LookPath("codex")
+		if err != nil {
+			return nil, fmt.Errorf("codex not found in PATH; set CODEX_BIN env or install @openai/codex globally")
+		}
+	}
+	cmd := exec.Command(codexBin, "app-server")
 	env := os.Environ()
 	filtered := env[:0]
 	for _, kv := range env {

@@ -76,7 +76,7 @@ type Client struct {
 
 // Spawn starts `codex app-server`. Callbacks must be set before Start.
 func Spawn() (*Client, error) {
-	cmd := exec.Command("codex", "app-server")
+	cmd := exec.Command("/Users/cp/.nvm/versions/node/v25.2.1/bin/codex", "app-server")
 	env := os.Environ()
 	filtered := env[:0]
 	for _, kv := range env {

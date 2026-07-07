@@ -10,9 +10,14 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/yan5xu/codex-hub/internal/hub"
@@ -37,6 +42,8 @@ func (s *Server) Handler() http.Handler {
 			"ok": true, "dataDir": s.st.Dir(), "sessions": len(s.hub.ListSessions()),
 		})
 	})
+
+	mux.HandleFunc("POST /api/admin/restart", s.adminRestart)
 
 	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"sessions": s.hub.ListSessions()})
@@ -261,7 +268,90 @@ func (s *Server) serveWeb(w http.ResponseWriter, r *http.Request) {
 	http.ServeFileFS(w, r, s.web, path)
 }
 
+func (s *Server) adminRestart(w http.ResponseWriter, r *http.Request) {
+	if !allowAdminRequest(r) {
+		writeErr(w, &hub.HubError{Status: 403, Message: "admin restart is only allowed from localhost unless CODEX_HUB_ADMIN_TOKEN is configured"})
+		return
+	}
+
+	logPath := strings.TrimSpace(os.Getenv("CODEX_HUB_RESTART_LOG"))
+	if logPath == "" {
+		logPath = "/tmp/codex-hub-reloader.log"
+	}
+	childLogPath := strings.TrimSpace(os.Getenv("CODEX_HUB_LOG"))
+	if childLogPath == "" {
+		childLogPath = "/tmp/codex-hub.log"
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		writeErr(w, &hub.HubError{Status: 500, Message: "resolve executable: " + err.Error()})
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		writeErr(w, &hub.HubError{Status: 500, Message: "resolve working directory: " + err.Error()})
+		return
+	}
+	reloader := strings.TrimSpace(os.Getenv("CODEX_HUB_RELOADER"))
+	if reloader == "" {
+		reloader = filepath.Join(filepath.Dir(exe), "codex-hub-reloader")
+	}
+	if _, err := os.Stat(reloader); err != nil {
+		writeErr(w, &hub.HubError{Status: 500, Message: "reloader not found: " + reloader})
+		return
+	}
+
+	args := []string{
+		"-pid", strconv.Itoa(os.Getpid()),
+		"-exe", exe,
+		"-cwd", cwd,
+		"-log", logPath,
+		"-child-log", childLogPath,
+		"--",
+	}
+	args = append(args, os.Args[1:]...)
+	cmd := exec.Command(reloader, args...)
+	cmd.Env = os.Environ()
+	cmd.Dir = cwd
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		writeErr(w, &hub.HubError{Status: 500, Message: "start reloader: " + err.Error()})
+		return
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+
+	writeJSON(w, 202, map[string]any{
+		"ok":           true,
+		"pid":          pid,
+		"reloader":     reloader,
+		"logPath":      logPath,
+		"childLogPath": childLogPath,
+		"message":      "reloader process started",
+	})
+}
+
 // ---- helpers ----
+
+func allowAdminRequest(r *http.Request) bool {
+	token := os.Getenv("CODEX_HUB_ADMIN_TOKEN")
+	if token != "" {
+		header := r.Header.Get("X-Codex-Hub-Admin-Token")
+		if header == "" {
+			header = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+		return header == token
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func sseHeaders(w http.ResponseWriter) {
 	h := w.Header()
@@ -320,7 +410,7 @@ func withCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Codex-Hub-Admin-Token")
 			w.WriteHeader(204)
 			return
 		}

@@ -128,11 +128,11 @@ export function BlockView({ block }: { block: Block }) {
     // Generated image — rendered inline from its base64 data URI.
     case "image":
       return (
-        <div className="my-2">
+        <div className="my-3 overflow-hidden rounded-xl border border-border/60 bg-card shadow-card">
           <img
             src={block.data}
             alt="generated"
-            className="max-h-80 max-w-sm rounded-xl border border-border/60 shadow-card"
+            className="block h-auto max-h-[70vh] w-full object-contain"
           />
         </div>
       );

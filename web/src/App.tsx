@@ -1,4 +1,4 @@
-import { Menu } from "lucide-react";
+import { Menu, RotateCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Session } from "./types";
 import { SessionPane } from "./SessionPane";
@@ -10,6 +10,7 @@ export default function App() {
   const [newName, setNewName] = useState("");
   const [newCwd, setNewCwd] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const showToast = (msg: string) => {
@@ -75,6 +76,19 @@ export default function App() {
       setCurrent(data.session.id);
     } catch (err: any) {
       showToast(err.message);
+    }
+  };
+
+  const restartHub = async () => {
+    if (restarting) return;
+    setRestarting(true);
+    try {
+      await api("POST", "/api/admin/restart");
+      showToast("restart command started");
+    } catch (err: any) {
+      showToast(err.message);
+    } finally {
+      setRestarting(false);
     }
   };
 
@@ -185,6 +199,15 @@ export default function App() {
 
         {/* new session — floating panel separated from the scrolling list */}
         <div className="border-t border-border/50 bg-sidebar/80 px-3 pb-5 pt-3 shadow-[0_-4px_12px_-8px_rgba(0,0,0,0.08)]">
+          <button
+            onClick={restartHub}
+            disabled={restarting}
+            title="Restart Hub to load the already built version"
+            className="mb-3 flex h-8 w-full items-center justify-center gap-2 rounded-xl bg-background text-[12.5px] font-medium text-muted-foreground ring-1 ring-border transition hover:text-foreground hover:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RotateCw className={`size-3.5 ${restarting ? "animate-spin" : ""}`} />
+            Restart Hub
+          </button>
           <div className="flex flex-col gap-2">
           <input
             value={newName}

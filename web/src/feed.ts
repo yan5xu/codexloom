@@ -71,6 +71,12 @@ function kindString(k: any): string {
   return "";
 }
 
+function imageData(value: any): string {
+  if (typeof value !== "string" || !value) return "";
+  if (value.startsWith("data:image/")) return value;
+  return `data:image/png;base64,${value}`;
+}
+
 function secs(ms: any): string {
   return `${Math.round((typeof ms === "number" ? ms : 0) / 1000)}s`;
 }
@@ -108,7 +114,7 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
           blocks.push({ kind: "file", id, status: "completed", changes: it.changes || [] });
           break;
         case "image":
-          blocks.push({ kind: "image", id, data: it.data || "" });
+          blocks.push({ kind: "image", id, data: imageData(it.data || it.result) });
           break;
       }
     }
@@ -248,6 +254,16 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
           return push(state, { kind: "file", id: itemId, status, changes }, key);
         }
         return update(state, key, (b) => (b.kind === "file" ? { ...b, status, changes } : b));
+      }
+      case "imageGeneration":
+      case "image_generation_call": {
+        const key = `i:${itemId}`;
+        const data = imageData(item.result || item.data);
+        if (!data) return state;
+        if (state.index[key] === undefined) {
+          return push(state, { kind: "image", id: itemId, data }, key);
+        }
+        return update(state, key, (b) => (b.kind === "image" ? { ...b, data } : b));
       }
       default: {
         // userMessage items duplicate hub/user-message; drop them.

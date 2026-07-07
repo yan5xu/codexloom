@@ -6,9 +6,10 @@ all: build
 web:
 	cd web && npm install && npm run build
 
-# Build both binaries (embeds whatever is currently in internal/webui/dist).
+# Build binaries (codex-hub embeds whatever is currently in internal/webui/dist).
 build:
 	go build -o bin/codex-hub ./cmd/codex-hub
+	go build -o bin/codex-hub-reloader ./cmd/codex-hub-reloader
 	go build -o bin/chub ./cmd/chub
 
 # Full build: web console + binaries.

@@ -153,7 +153,8 @@ gateway 是独立长生命周期进程，不嵌入 CodexLoom：
 ```text
 Parall websocket/poll ─┐
 Lark event consume ────┼── gateway adapter ── CodexLoom Integration API
-future Slack socket ───┘
+future Slack socket ────┤
+future Teams channel ───┘
 ```
 
 这样平台 SDK 闪退不会拖垮 CodexHost，gateway 也可以独立升级。共享 connector protocol 提供：
@@ -181,6 +182,13 @@ future Slack socket ───┘
 - mention 必须使用平台结构化 mention，不把正文里的 `@名字` 当真实触发。
 - 飞书群机器人 webhook 只能主动推送，缺少完整事件订阅时应建成 send-only Connection，不伪装成
   双向 Bot。
+
+### Slack / Microsoft Teams（TODO）
+
+- 领域模型、Connection、Address、Conversation Membership 与 gateway 边界沿用现有抽象。
+- Slack 和 Teams adapter 尚未实现，不能在 UI 或 README 中标记为当前可用。
+- 接入时应优先使用平台原生事件流、thread/reply、mention 和 reaction/read-state 能力，不退化为
+  只能发送文本的通用 webhook。
 
 ## 信任与权限
 
@@ -228,4 +236,4 @@ WebUI：
 - 当前一个 Agent 只有一个主 Codex Thread，Membership 不是独立上下文隔离。
 - gateway 最终投递受平台 API、权限和 backend 策略约束。
 - 飞书/Parall 的 read、reaction、ack 能力不完全对称，统一领域只保证业务语义，不伪造平台能力。
-- Slack 仅有领域抽象和 connector 边界，尚未实现 adapter。
+- Slack 与 Microsoft Teams 仅有领域抽象和 connector 边界，尚未实现 adapter。

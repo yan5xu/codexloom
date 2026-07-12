@@ -1,7 +1,7 @@
-// feed.ts — turns the raw hub event stream into renderable blocks.
+// feed.ts turns the raw CodexLoom event stream into renderable blocks.
 // Items are keyed by itemId so streamed deltas, item/updated and
 // item/completed all land on the same block.
-import type { HubEvent } from "./types";
+import type { LoomEvent } from "./types";
 
 export type Block =
   | { kind: "user"; ts: string; text: string }
@@ -14,9 +14,41 @@ export type Block =
       to: string;
       subject: string;
       body: string;
+      raw: string;
       response: string;
       replyTo?: string;
       replyCommand?: string;
+    }
+  | {
+      kind: "externalMessage";
+      id: string;
+      inboxItemId: string;
+      ts: string;
+      provider: string;
+      addressId: string;
+      senderId: string;
+      sender: string;
+      conversationId: string;
+      conversationType?: string;
+      threadId?: string;
+      membershipId?: string;
+      membershipName?: string;
+      membershipVersion?: number;
+      expectation: string;
+      replyPolicy: string;
+      replyInstruction?: string;
+      replyCommand?: string;
+      noReplyCommand?: string;
+      body: string;
+      raw: string;
+      attachments: Array<{
+        id?: string;
+        name?: string;
+        mimeType?: string;
+        size?: string;
+        url?: string;
+        path?: string;
+      }>;
     }
   | { kind: "agent"; id: string; text: string; streaming: boolean }
   | { kind: "think"; id: string; text: string; done: boolean }
@@ -112,6 +144,18 @@ function childText(root: Element, name: string): string {
   return root.getElementsByTagName(name)[0]?.textContent?.trim() || "";
 }
 
+function childElement(root: Element, name: string): Element | null {
+  return root.getElementsByTagName(name)[0] || null;
+}
+
+function agentMessageBody(root: Element): string {
+  const body = childText(root, "body");
+  // Older chub callers commonly passed multiline text as literal `\\n` sequences.
+  // Interpret that legacy shape for display only; raw keeps the exact envelope.
+  if (body.includes("\n") || !body.includes("\\n")) return body;
+  return body.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n");
+}
+
 function agentMessageBlock(text: string, ts: string): Block | null {
   const raw = (text || "").trim();
   if (!raw.startsWith("<agent_message")) return null;
@@ -132,7 +176,8 @@ function agentMessageBlock(text: string, ts: string): Block | null {
       from: childText(root, "from"),
       to: childText(root, "to"),
       subject: childText(root, "subject"),
-      body: childText(root, "body"),
+      body: agentMessageBody(root),
+      raw,
       response,
       replyTo: replyTo || undefined,
       replyCommand: childText(root, "reply_command") || undefined,
@@ -142,8 +187,75 @@ function agentMessageBlock(text: string, ts: string): Block | null {
   }
 }
 
+function externalMessageBlock(text: string, ts: string): Block | null {
+  const raw = (text || "").trim();
+  if (!raw.startsWith("<inbox_message")) return null;
+  try {
+    const doc = new DOMParser().parseFromString(raw, "application/xml");
+    const root = doc.documentElement;
+    if (!root || root.nodeName !== "inbox_message" || doc.getElementsByTagName("parsererror").length > 0) {
+      return null;
+    }
+    const origin = childElement(root, "origin");
+    const sender = childElement(root, "sender");
+    const conversation = childElement(root, "conversation");
+    const membership = childElement(root, "membership");
+    const rawVersion = membership?.getAttribute("version") || "";
+    const membershipVersion = Number.parseInt(rawVersion, 10);
+    const attachments = Array.from(root.getElementsByTagName("attachment")).map((attachment) => ({
+      id: attachment.getAttribute("id") || undefined,
+      name: attachment.getAttribute("name") || undefined,
+      mimeType: attachment.getAttribute("mime_type") || undefined,
+      size: attachment.getAttribute("size") || undefined,
+      url: attachment.getAttribute("url") || undefined,
+      path: attachment.getAttribute("path") || undefined,
+    }));
+    return {
+      kind: "externalMessage",
+      id: root.getAttribute("id") || `imsg-${Math.random().toString(16).slice(2)}`,
+      inboxItemId: root.getAttribute("inbox_item_id") || "",
+      ts,
+      provider: origin?.getAttribute("provider") || "external",
+      addressId: origin?.getAttribute("address_id") || "",
+      senderId: sender?.getAttribute("id") || "",
+      sender: sender?.textContent?.trim() || sender?.getAttribute("id") || "Unknown sender",
+      conversationId: conversation?.getAttribute("id") || "",
+      conversationType: conversation?.getAttribute("type") || undefined,
+      threadId: conversation?.getAttribute("thread_id") || undefined,
+      membershipId: membership?.getAttribute("id") || undefined,
+      membershipName: membership?.getAttribute("name") || undefined,
+      membershipVersion: Number.isFinite(membershipVersion) ? membershipVersion : undefined,
+      expectation: root.getAttribute("expectation") || "optional",
+      replyPolicy: childText(root, "reply_policy"),
+      replyInstruction: childText(root, "reply_instruction") || undefined,
+      replyCommand: childText(root, "reply_command") || undefined,
+      noReplyCommand: childText(root, "no_reply_command") || undefined,
+      body: childText(root, "body"),
+      raw,
+      attachments,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function userBlock(ts: string, text: string): Block {
-  return agentMessageBlock(text, ts) || { kind: "user", ts, text };
+  return agentMessageBlock(text, ts) || externalMessageBlock(text, ts) || { kind: "user", ts, text };
+}
+
+export function summarizeTask(text: string): string {
+  const external = externalMessageBlock(text, "");
+  if (external?.kind === "externalMessage") {
+    const destination = external.membershipName || external.conversationId;
+    return [external.provider.toUpperCase(), external.sender, destination].filter(Boolean).join(" · ");
+  }
+  const agentMessage = agentMessageBlock(text, "");
+  if (agentMessage?.kind === "agentMessage") {
+    const variant = agentMessage.variant.toUpperCase();
+    const route = [agentMessage.from, agentMessage.to].filter(Boolean).join(" → ");
+    return [variant, route, agentMessage.subject].filter(Boolean).join(" · ");
+  }
+  return text;
 }
 
 // buildHistoryBlocks converts rollout history turns into renderable Blocks.
@@ -190,8 +302,15 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
   return blocks;
 }
 
-export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
-  const t = ev.type || "";
+export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
+	const rawType = ev.type || "";
+	const t = rawType === "hub/session-created"
+		? "loom/agent-created"
+		: rawType === "hub/session-killed"
+			? "loom/agent-archived"
+			: rawType.startsWith("hub/")
+				? `loom/${rawType.slice("hub/".length)}`
+				: rawType;
   const d = ev.data || {};
 
   switch (t) {
@@ -208,29 +327,30 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
       const older = buildHistoryBlocks((d as any).turns || [], `p${(d as any).offset || 0}`);
       return { ...state, blocks: [...older, ...state.blocks] };
     }
-    case "hub/live":
+    case "loom/live":
       return sys(state, ev.ts, "dim", "— live —");
-    case "hub/session-created":
-      return sys(state, ev.ts, "dim", `session created · ${d.cwd}`);
-    case "hub/user-message":
+    case "loom/agent-created":
+      return sys(state, ev.ts, "dim", `agent created · ${d.cwd}`);
+    case "loom/user-message":
       return push(state, userBlock(ev.ts, d.text || ""));
-    case "hub/turn-started":
+    case "loom/turn-started":
       return sys(state, ev.ts, "dim", `turn started ${d.turnId || ""}`);
-    case "hub/turn-completed":
+    case "loom/turn-completed":
       return sys(finishStreaming(state), ev.ts, "ok", `✔ turn completed (${secs(d.durationMs)})`);
-    case "hub/turn-interrupted":
+    case "loom/turn-interrupted":
       return sys(finishStreaming(state), ev.ts, "warn", `■ interrupted ${d.reason || d.error || ""}`);
-    case "hub/turn-failed":
+    case "loom/turn-failed":
       return sys(finishStreaming(state), ev.ts, "err", `✖ failed: ${d.error || ""}`);
-    case "hub/error":
-      return sys(state, ev.ts, "err", `hub error: ${d.message || ""}`);
-    case "hub/session-killed":
-      return sys(state, ev.ts, "warn", "session killed");
-    case "hub/approval-requested": {
+    case "loom/error":
+    case "loom/host-error":
+      return sys(state, ev.ts, "err", `CodexLoom error: ${d.message || ""}`);
+    case "loom/agent-archived":
+      return sys(state, ev.ts, "warn", "agent archived");
+    case "loom/approval-requested": {
       const approvals = { ...state.approvals, [d.approvalId]: { method: d.method, params: d.params } };
       return sys({ ...state, approvals }, ev.ts, "warn", `⚠ approval requested: ${d.method}`);
     }
-    case "hub/approval-resolved": {
+    case "loom/approval-resolved": {
       const approvals = { ...state.approvals };
       delete approvals[d.approvalId];
       return sys(
@@ -335,7 +455,7 @@ export function reduceFeed(state: FeedState, ev: HubEvent): FeedState {
         return update(state, key, (b) => (b.kind === "image" ? { ...b, ...image } : b));
       }
       default: {
-        // userMessage items duplicate hub/user-message; drop them.
+        // userMessage items duplicate the CodexLoom user-message event.
         if (t !== "item/completed" || !item.type || item.type === "userMessage") return state;
         const key = `r:${itemId}`;
         if (state.index[key] !== undefined) return state;

@@ -47,8 +47,7 @@ type pendingResult struct {
 	err    error
 }
 
-// Pid returns the codex subprocess PID (0 if not started). Used by the hub to
-// tell its own codex processes apart from foreign holders of a thread.
+// Pid returns the shared Codex app-server PID (0 if not started).
 func (c *Client) Pid() int {
 	if c.cmd != nil && c.cmd.Process != nil {
 		return c.cmd.Process.Pid
@@ -74,9 +73,29 @@ type Client struct {
 	OnClose         func()
 }
 
+type SpawnOptions struct {
+	Bin string
+	Env map[string]string
+}
+
+type ClientInfo struct {
+	Name    string
+	Title   string
+	Version string
+}
+
 // Spawn starts `codex app-server`. Callbacks must be set before Start.
 func Spawn() (*Client, error) {
-	codexBin := os.Getenv("CODEX_BIN")
+	return SpawnWithOptions(SpawnOptions{})
+}
+
+// SpawnWithOptions starts an app-server with process-local environment
+// overrides. CodexLoom uses one such client as its shared CodexHost.
+func SpawnWithOptions(options SpawnOptions) (*Client, error) {
+	codexBin := strings.TrimSpace(options.Bin)
+	if codexBin == "" {
+		codexBin = os.Getenv("CODEX_BIN")
+	}
 	if codexBin == "" {
 		var err error
 		codexBin, err = exec.LookPath("codex")
@@ -95,6 +114,15 @@ func Spawn() (*Client, error) {
 			continue
 		}
 		filtered = append(filtered, kv)
+	}
+	for key, value := range options.Env {
+		prefix := key + "="
+		for i := len(filtered) - 1; i >= 0; i-- {
+			if strings.HasPrefix(filtered[i], prefix) {
+				filtered = append(filtered[:i], filtered[i+1:]...)
+			}
+		}
+		filtered = append(filtered, prefix+value)
 	}
 	cmd.Env = filtered
 
@@ -275,8 +303,21 @@ func (c *Client) RespondError(id json.RawMessage, code int, message string) erro
 }
 
 func (c *Client) Initialize() error {
+	return c.InitializeAs(ClientInfo{Name: "codex-loom", Title: "CodexLoom", Version: "0.1.0"})
+}
+
+func (c *Client) InitializeAs(info ClientInfo) error {
+	if strings.TrimSpace(info.Name) == "" {
+		info.Name = "codex-loom"
+	}
+	if strings.TrimSpace(info.Title) == "" {
+		info.Title = info.Name
+	}
+	if strings.TrimSpace(info.Version) == "" {
+		info.Version = "0.1.0"
+	}
 	_, err := c.Request("initialize", map[string]any{
-		"clientInfo":   map[string]any{"name": "codex-hub", "title": "Codex Hub", "version": "0.1.0"},
+		"clientInfo":   map[string]any{"name": info.Name, "title": info.Title, "version": info.Version},
 		"capabilities": map[string]any{"experimentalApi": true},
 	}, 20*time.Second)
 	if err != nil {

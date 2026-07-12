@@ -1,6 +1,4 @@
 bin/
 node_modules/
-internal/webui/dist/*
-!internal/webui/dist/.gitkeep
 web/dist/
 .DS_Store

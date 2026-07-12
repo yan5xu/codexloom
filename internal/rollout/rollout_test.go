@@ -18,6 +18,7 @@ const sample = `{"timestamp":"2026-07-03T07:01:11.489Z","type":"session_meta","p
 {"timestamp":"2026-07-03T07:01:21.000Z","type":"response_item","payload":{"type":"function_call","name":"view_image","call_id":"img1","arguments":"{\"path\":\"/tmp/screenshot.png\",\"detail\":\"high\"}"}}
 {"timestamp":"2026-07-03T07:05:44.694Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"c2","success":true,"changes":{"/repo/x.md":{"type":"add","content":"# x"}}}}
 {"timestamp":"2026-07-03T07:06:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"UNIQUE-FINAL-ANSWER-42","phase":"final_answer"}}
+{"timestamp":"2026-07-03T07:06:01.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}
 {"timestamp":"2026-07-03T08:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
 {"timestamp":"2026-07-03T08:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"second task"}}
 {"timestamp":"2026-07-03T08:00:02.000Z","type":"event_msg","payload":{"type":"turn_aborted"}}
@@ -112,5 +113,34 @@ func TestFindRolloutMissing(t *testing.T) {
 	t.Setenv("CODEX_SESSIONS_DIR", t.TempDir())
 	if _, err := FindRollout("nope"); err == nil {
 		t.Fatal("expected error for missing rollout")
+	}
+}
+
+func TestLatestTurnDetectsRunning(t *testing.T) {
+	const threadID = "test-thread-running"
+	dir := t.TempDir()
+	day := filepath.Join(dir, "2026", "07", "03")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(day, "rollout-2026-07-03T15-01-11-"+threadID+".jsonl")
+	data := `{"timestamp":"2026-07-03T08:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-running"}}
+{"timestamp":"2026-07-03T08:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"keep working"}}
+{"timestamp":"2026-07-03T08:00:02.000Z","type":"event_msg","payload":{"type":"agent_message","message":"still doing it","phase":"commentary"}}
+`
+	if err := os.WriteFile(f, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_SESSIONS_DIR", dir)
+
+	latest, err := LatestTurn(threadID)
+	if err != nil {
+		t.Fatalf("LatestTurn: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("latest is nil")
+	}
+	if latest.ID != "turn-running" || latest.Status != "running" || latest.Task != "keep working" {
+		t.Fatalf("latest = %#v, want running turn with task", latest)
 	}
 }

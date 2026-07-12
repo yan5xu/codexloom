@@ -1,15 +1,16 @@
-import { MessageSquare, Reply, Send } from "lucide-react";
+import { MessageSquare, Reply, Send, SkipForward, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { api, type AgentMessage, type Session } from "./types";
+import { api, type AgentMessage, type Agent } from "./types";
 
 interface Props {
-  sessions: Session[];
+  agents: Agent[];
   onError: (msg: string) => void;
+  initialTo?: string;
 }
 
-export function MessagesPane({ sessions, onError }: Props) {
+export function MessagesPane({ agents, onError, initialTo }: Props) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [filter, setFilter] = useState<"open" | "all">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "queued" | "failed">("all");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [subject, setSubject] = useState("");
@@ -29,7 +30,7 @@ export function MessagesPane({ sessions, onError }: Props) {
     es.onmessage = (e) => {
       try {
         const evt = JSON.parse(e.data);
-        if (evt.type === "hub/comms-message") refresh().catch(() => {});
+        if (evt.type === "loom/comms-message") refresh().catch(() => {});
       } catch {
         /* ignore */
       }
@@ -38,9 +39,13 @@ export function MessagesPane({ sessions, onError }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!from && sessions.length > 0) setFrom(sessions[0].name);
-    if (!to && sessions.length > 1) setTo(sessions[1].name);
-  }, [sessions, from, to]);
+    if (!from && agents.length > 0) setFrom(agents[0].name);
+    if (!to && agents.length > 1) setTo(agents[1].name);
+  }, [agents, from, to]);
+
+  useEffect(() => {
+    if (initialTo) setTo(initialTo);
+  }, [initialTo]);
 
   const repliesByParent = useMemo(() => {
     const m = new Map<string, AgentMessage[]>();
@@ -59,10 +64,14 @@ export function MessagesPane({ sessions, onError }: Props) {
   const visible = useMemo(() => {
     const roots = messages.filter((m) => !m.replyTo);
     if (filter === "open") return roots.filter((m) => m.status === "open");
+    if (filter === "queued") return roots.filter((m) => m.deliveryStatus === "queued" || m.deliveryStatus === "delivering");
+    if (filter === "failed") return roots.filter((m) => m.deliveryStatus === "failed");
     return roots;
   }, [messages, filter]);
   const rootMessages = useMemo(() => messages.filter((m) => !m.replyTo), [messages]);
   const openCount = rootMessages.filter((m) => m.status === "open").length;
+  const queuedCount = rootMessages.filter((m) => m.deliveryStatus === "queued" || m.deliveryStatus === "delivering").length;
+  const failedCount = rootMessages.filter((m) => m.deliveryStatus === "failed").length;
 
   const beginReply = (msg: AgentMessage) => {
     setReplyTo(msg);
@@ -110,10 +119,42 @@ export function MessagesPane({ sessions, onError }: Props) {
     }
   };
 
+  const cancelMessage = async (msg: AgentMessage) => {
+    try {
+      await api("POST", `/api/comms/messages/${encodeURIComponent(msg.id)}/cancel`);
+      await refresh();
+    } catch (err: any) {
+      onError(err.message);
+    }
+  };
+
+  const closeWithoutReply = async (msg: AgentMessage) => {
+    try {
+      await api("POST", `/api/comms/messages/${encodeURIComponent(msg.id)}/no-reply`, { from: msg.to });
+      await refresh();
+    } catch (err: any) {
+      onError(err.message);
+    }
+  };
+
   const statusClass = (status: AgentMessage["status"]) => {
     if (status === "open") return "bg-warning/10 text-warning";
     if (status === "answered") return "bg-success/10 text-success";
     return "bg-muted text-muted-foreground";
+  };
+
+  const deliveryClass = (status: AgentMessage["deliveryStatus"]) => {
+    if (status === "delivered") return "bg-success/10 text-success";
+    if (status === "queued" || status === "delivering") return "bg-warning/10 text-warning";
+    if (status === "failed") return "bg-destructive/10 text-destructive";
+    return "bg-muted text-muted-foreground";
+  };
+
+  const filterCount = (f: typeof filter) => {
+    if (f === "open") return openCount;
+    if (f === "queued") return queuedCount;
+    if (f === "failed") return failedCount;
+    return rootMessages.length;
   };
 
   const fmt = (ts: string) => {
@@ -124,26 +165,26 @@ export function MessagesPane({ sessions, onError }: Props) {
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-background">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/80 px-5 backdrop-blur">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/80 pl-14 pr-3 backdrop-blur md:px-5">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <MessageSquare className="size-4 text-primary" />
             <h1 className="truncate font-serif text-xl tracking-tight">Messages</h1>
           </div>
-          <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+          <div className="mt-0.5 hidden font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground md:block">
             agent communication history
           </div>
         </div>
         <div className="flex rounded-lg border border-border bg-background p-0.5">
-          {(["open", "all"] as const).map((f) => (
+          {(["all", "open", "queued", "failed"] as const).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className={`h-7 rounded-md px-3 text-[12px] font-medium capitalize ${
+              className={`h-7 whitespace-nowrap rounded-md px-2 text-[12px] font-medium capitalize sm:px-3 ${
                 filter === f ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {f} <span className="font-mono opacity-70">{f === "open" ? openCount : rootMessages.length}</span>
+              {f} <span className="hidden font-mono opacity-70 sm:inline">{filterCount(f)}</span>
             </button>
           ))}
         </div>
@@ -170,7 +211,7 @@ export function MessagesPane({ sessions, onError }: Props) {
                   className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40"
                 >
                   <option value="">select</option>
-                  {sessions.map((s) => (
+                  {agents.map((s) => (
                     <option key={s.id} value={s.name}>
                       {s.name}
                     </option>
@@ -186,7 +227,7 @@ export function MessagesPane({ sessions, onError }: Props) {
                   className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40 disabled:opacity-70"
                 >
                   <option value="">select</option>
-                  {sessions.map((s) => (
+                  {agents.map((s) => (
                     <option key={s.id} value={s.name}>
                       {s.name}
                     </option>
@@ -248,6 +289,9 @@ export function MessagesPane({ sessions, onError }: Props) {
                     <span className={`rounded-md px-2 py-1 text-[11px] font-medium ${statusClass(msg.status)}`}>
                       {msg.status}
                     </span>
+                    <span className={`rounded-md px-2 py-1 text-[11px] font-medium ${deliveryClass(msg.deliveryStatus)}`}>
+                      {msg.deliveryStatus}
+                    </span>
                     <span className="font-mono text-[10.5px] text-muted-foreground">{fmt(msg.createdAt)}</span>
                   </div>
                 </div>
@@ -258,16 +302,37 @@ export function MessagesPane({ sessions, onError }: Props) {
                   <div className="font-mono text-[10.5px] text-muted-foreground">
                     response {msg.response}
                     {msg.deliveredTurnId ? ` · turn ${msg.deliveredTurnId}` : ""}
+                    {msg.lastDeliveryError ? ` · ${msg.lastDeliveryError}` : ""}
                   </div>
-                  {msg.status === "open" && (
+                  <div className="flex items-center gap-2">
+                  {msg.deliveryStatus === "queued" && (
                     <button
-                      onClick={() => beginReply(msg)}
+                      onClick={() => cancelMessage(msg)}
                       className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-[12px] font-medium text-muted-foreground hover:text-foreground"
                     >
-                      <Reply className="size-3.5" />
-                      Reply
+                      <XCircle className="size-3.5" />
+                      Cancel
                     </button>
                   )}
+                  {msg.status === "open" && msg.deliveryStatus === "delivered" && (
+                    <>
+                      <button
+                        onClick={() => closeWithoutReply(msg)}
+                        className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        <SkipForward className="size-3.5" />
+                        No reply
+                      </button>
+                      <button
+                        onClick={() => beginReply(msg)}
+                        className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        <Reply className="size-3.5" />
+                        Reply
+                      </button>
+                    </>
+                  )}
+                  </div>
                 </div>
                 {(repliesByParent.get(msg.id) || []).length > 0 && (
                   <div className="mt-3 space-y-2 border-t border-border pt-3">
@@ -277,11 +342,20 @@ export function MessagesPane({ sessions, onError }: Props) {
                           <div className="font-mono text-[11px] text-muted-foreground">
                             {reply.from} -&gt; {reply.to} · {reply.id}
                           </div>
-                          <div className="font-mono text-[10.5px] text-muted-foreground">{fmt(reply.createdAt)}</div>
+                          <div className="flex items-center gap-2">
+                            <span className={`rounded-md px-2 py-1 text-[10.5px] font-medium ${deliveryClass(reply.deliveryStatus)}`}>
+                              {reply.deliveryStatus}
+                            </span>
+                            <div className="font-mono text-[10.5px] text-muted-foreground">{fmt(reply.createdAt)}</div>
+                          </div>
                         </div>
                         <pre className="mt-2 whitespace-pre-wrap font-mono text-[12.5px] text-foreground/85">
                           {reply.body}
                         </pre>
+                        <div className="mt-1 font-mono text-[10.5px] text-muted-foreground">
+                          {reply.deliveredTurnId ? `turn ${reply.deliveredTurnId}` : ""}
+                          {reply.lastDeliveryError ? ` · ${reply.lastDeliveryError}` : ""}
+                        </div>
                       </div>
                     ))}
                   </div>

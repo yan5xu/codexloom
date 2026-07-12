@@ -1,407 +1,485 @@
-# codex-hub 开发手册
+# CodexLoom 开发手册
 
-这份手册记录 codex-hub 的产品心智模型、架构、数据流、限制和开发流程。它不是 README 的复述，而是开发时要用来判断改动是否正确的工作手册。后续踩到的坑、验证方法和运行约束都要继续补进这里。
+这份手册记录 CodexLoom 的产品心智、DDD 边界、运行架构、数据流、危险边界和验证流程。
+它由 CodexLoom 维护者持续更新；遇到事故或踩坑后，应把可复用的约束补到这里。
 
-## 产品心智模型
+## 产品定义
 
-codex-hub 是一个本地常驻的 code agent 操作台。它把 codex session 当成独立主体持有，而不是把 session 绑定到某个 CLI、网页、AI 调用方或浏览器连接上。
+CodexLoom 是建立在 Codex 之上的 Agent 治理与组织集成平台。
 
-核心目标：
+- 日常使用 Agent：Codex Desktop/Mobile 或 CodexLoom WebUI。
+- 自动化使用 Agent：`loom` CLI 和 HTTP/SSE API。
+- 治理 Agent：Profile、模型配置、Team Map、Relationships、Messages、Schedules、备份。
+- 组织集成：同一个 Agent 可以绑定多个飞书、Parall 或其他 IM Address，并在不同群里拥有
+  不同 Conversation Membership。
 
-- 一个 session 有自己的名字、工作目录、threadId、运行态和上下文。
-- 人、Web 控制台、`chub` CLI、其他 AI agent 都通过同一套 HTTP API 操作同一个 session。
-- 调用方断开不会杀 session；`chub watch` 的 Ctrl-C 只断观察，任务继续跑。
-- 多个观察者可以同时订阅同一个 session 的实时事件。
-- hub 重启后，session 注册表和 codex 真实历史仍可恢复。
+Agent 不是一次性 task，也不等于一次 Turn。它是稳定、可多轮交互的长期主体。Codex Thread
+是 Agent 的主要上下文和执行载体；未来即使迁移 Thread，Agent ID、Profile、关系与 Address
+也不应变化。
 
-最重要的架构原则：codex-hub 是 codex thread/rollout 之上的薄壳，不维护自己的平行历史。历史的单一真相源是 codex 自己写的 rollout 文件。
+## 统一语言
+
+- **Agent**：稳定治理实体，拥有 `agentId`、名称、Profile、关系和外部地址。
+- **Thread**：Agent 的主要 Codex 历史和上下文绑定，标识为 `threadId`。
+- **Turn**：Thread 上的一次执行；一个 Thread 同时只有一个 active Turn。
+- **Item**：Turn 内的输入、输出、推理、命令、文件变更、图片等事件。
+- **CodexHost**：CodexLoom 维护的共享 `codex app-server` 进程。
+- **Profile**：长期协作身份、Domain 和 Scope，不是本轮任务描述。
+- **Relationship**：Agent 间显式长期关系。
+- **Agent Message**：Agent 间需要或不需要回复的结构化通信。
+- **Connection**：到外部平台账号或租户的连接。
+- **Address**：某个 Agent 在一个 Connection 上的外部身份。
+- **Conversation Membership**：Agent 在具体群或 DM 中的目的、角色、策略和边界。
+- **Inbox / Outbox**：跨内部和外部来源的收件处理与发送账本。
+- **Schedule**：以 `scheduler` 系统身份定时生成 Agent Message 的长期规则。
+
+`Session`、`chub`、`codex-hub` 只在兼容 API、旧二进制、历史 wire value 或真实旧 launchd
+label 中出现。新代码、UI 文案和文档叙述使用 Agent、Thread、Turn、Item、Loom。
+
+## DDD 边界
+
+### Agent Governance
+
+聚合根是 Agent。它维护稳定 ID、名称、工作目录、Codex Thread 绑定、模型配置、Profile 与
+归档状态。Agent 名称可变，其他领域只能持有稳定 `agentId`。
+
+不变量：
+
+- 名称匹配 `[a-zA-Z0-9_-]+` 且不能与其他 Agent 名称或 ID 冲突。
+- 一个 Agent 首期绑定一个主 Thread。
+- 运行中的 Agent 不能修改会影响下一 Turn 的配置。
+- 归档 Agent 前先调用 Codex `thread/archive`；失败不能静默丢注册表。
+
+### Codex Runtime
+
+负责 CodexHost 生命周期、Thread start/resume/name、Turn start/interrupt、Item 通知和审批。
+它不拥有 Profile、Team 或外部平台语义。
+
+不变量：
+
+- 一个 CodexLoom 实例只有一个共享 CodexHost。
+- 不在持有 `Hub.mu` 时调用 `client.Request`；reader callback 也需要该锁。
+- 所有 JSON-RPC 通知必须按 `threadId` 路由到 Agent。
+- Remote 打开未注册的既有 Thread 时，在 `turn/started` 上即时收养，不能丢后续 Item。
+- Host 崩溃只中断 active Turn；Agent 和 Thread 绑定继续持久化，下一次操作重建 Host。
+
+### Communication
+
+负责 Agent Message、response required/none、reply/no-reply、按目标排队和 Messages 历史。
+它是通信账本，不是 Codex 对话历史。
+
+不变量：
+
+- 目标 Agent busy 时消息保持 queued；Turn 结束立刻且一次只投递一条。
+- `required` 必须由 reply 或 no-reply 明确关闭。
+- 消息保存发送/接收双方稳定 Agent ID，并保留发送时名称快照。
+- XML envelope 由 Loom 生成，调用方不手写。
+
+### Platform Integration
+
+负责 Connection、Address、Conversation Membership、Inbox、Handling Attempt、Outbox 和
+gateway connector protocol。凭据只保存 `env:` / `keychain:` 引用，不保存明文。
+
+不变量：
+
+- 平台账号不是 Agent；Address 才是 Agent 在平台上的身份。
+- 一个 Agent 可拥有多个平台 Address。
+- 群聊行为由 Membership 定义；不能只看 Agent Profile。
+- 入站事件按 provider external key 幂等；出站按稳定 idempotency key 幂等。
+- gateway 是独立长生命周期进程，不和 CodexHost 同生共死。
+
+### Team
+
+Team 是组合读模型：Agent registry + Profile + 显式 Relationship + Messages 观察关系。Graph
+是关系导航，不是真相源，也不负责直接编辑原始消息证据。
+
+### Scheduler
+
+`scheduler` 是稳定系统身份，不是 Codex Agent。Schedule 触发后生成标准 Agent Message，仍走
+目标队列与回复协议，不直接绕过 Communication 调用 Turn。
+
+### Disaster Recovery
+
+负责一致的本地快照与重启前保护。快照必须是普通 tar.gz，服务不可用时仍能手工恢复。
 
 ## 模块职责
 
-### `cmd/codex-hub`
+### `cmd/codex-loom`
 
-Go daemon 入口。读取 `CODEX_HUB_PORT` / `CODEX_HUB_DATA`，打开 store，创建 hub，挂 HTTP API 和内嵌 Web UI，默认监听 `:4870`。
+构建规范服务二进制 `bin/codex-loom`。入口读取
+`CODEX_LOOM_PORT` / `CODEX_LOOM_DATA`，旧 `CODEX_HUB_*` 为 fallback；收到 SIGTERM 后调用
+`Hub.Shutdown()`，只关闭一次共享 CodexHost。
 
-收到 SIGINT/SIGTERM 时调用 `Hub.Shutdown()`，再关闭 HTTP server。
+### `cmd/loom`
 
-### `cmd/chub`
+同一实现构建 `bin/loom` 和兼容 `bin/chub`。规范命令：
 
-Go CLI。默认访问 `http://127.0.0.1:4870`，可用 `CHUB_URL` 覆盖。
+```sh
+loom agent create|list|get|rename|archive ...
+loom thread send|watch|history|interrupt ...
+loom profile|team|msg|inbox|outbox|integration|conversation|schedule|remote ...
+```
 
-它不直接碰 codex app-server，也不持有 session。所有操作都走 HTTP：
-
-- `create/list/get/send/watch/interrupt/history/approve/reject/kill`
-- `watch` 订阅 session SSE，断开只停止观察。
-- `history` 调 `/history`，读的是 rollout 解析结果，不是 live event log。
+CLI 不直接启动 Codex，也不读取业务数据文件，全部走 HTTP/SSE。
 
 ### `internal/hub`
 
-核心编排层，拥有 session 生命周期、codex runtime、审批、事件广播、中断和 watchdog。
-
-关键对象：
-
-- `Session`：持久化元数据，包含 `id/name/cwd/threadId/sandbox/approvalPolicy/model/effort/status/currentTask/currentTurnId/lastError/lastTurn/source`。
-- `runtime`：进程内运行态，包含一个 `codex.Client`、初始化状态、当前 turn、待审批请求。
-- `Hub`：内存 session map、每 session seq、runtime map、session 订阅者、全局订阅者。
-
-关键规则：
-
-- 不要在持有 `h.mu` 时调用 `client.Request`。codex reader goroutine 处理通知时也会回调 hub 并拿锁，持锁请求容易死锁。
-- 创建 session 会立即 spawn `codex app-server` 并 `thread/start`，拿到 threadId 后持久化。
-- 发送任务前若 session 是 pinix-edge mirror，会将 `Source` 清空并持久化，表示被 codex-hub 接管。
-- 同一 session 同时只能有一个 active turn；运行中重复 `send` 返回 409。
-- watchdog 每 5 秒检查，默认 30 分钟无活动 interrupt，绝对 4 小时上限 interrupt。
+领域编排层。`Agent` 是规范实体，`Session` 只作为源码兼容别名；`Hub.agents` 保存聚合根。
+`codex_host.go` 持有唯一 Host，并将通知按 Thread 路由；`remote.go` 只管理共享 Host 上的
+`remoteControl/*` 状态，不再维护第二个 app-server。
 
 ### `internal/codex`
 
-`codex app-server` 的 line-framed JSON-RPC 客户端。
+line-framed JSON-RPC 客户端。它负责 subprocess、initialize、pending response、server request、
+notification 和 close，不理解 Agent 领域。
 
-传输规则：
-
-- spawn `codex app-server`，stdio 每行一个 JSON-RPC 对象。
-- 启动前过滤 `CODEX_SANDBOX`、`CODEX_SANDBOX_NETWORK_DISABLED`、`CODEX_CI`，避免触发受管网络限制。
-- dispatch 顺序必须先识别 server-initiated request，再查 pending response。审批请求也有 `id` 和 `method`，双方 id 空间可能碰撞。
-
-生命周期：
-
-- `Initialize()` 发送 `initialize`，再发 `initialized` 通知，并等待约 100ms。
-- 请求超时后会删除 pending。
-- app-server stdout 关闭时标记 closed、失败所有 pending，并触发 `OnClose`。
-
-### `internal/store`
-
-本地持久化层，默认目录 `~/.codex-hub`，可用 `CODEX_HUB_DATA` 覆盖。
-
-布局：
-
-```text
-~/.codex-hub/
-  sessions.json
-  events/<session-id>.ndjson
-```
-
-职责边界：
-
-- `sessions.json` 是小注册表，保存 codex-hub 自己拥有的 sessions。
-- `events/*.ndjson` 是 live SSE 事件日志，只服务实时回放和断线续传。
-- store 不保存完整历史。完整历史在 codex rollout。
-- `sessions.json` 原子写入。
-- pinix-edge registry 只读：默认读取 `~/.pinix/code_agents/names.json`，可用 `PINIX_EDGE_NAMES` 覆盖。
+server-initiated request 也有 `id` 与 `method`，必须先于普通 response 识别；否则审批可能与
+client request ID 碰撞并被误消费。
 
 ### `internal/rollout`
 
-读取 codex 的真实历史文件：
+按 Thread 读取 Codex rollout，并投影为 history Turn/Item。它是 Agent 对话历史的读取适配器，
+不是写模型。
+
+### `internal/store`
+
+默认 `~/.codex-loom`，规范环境变量 `CODEX_LOOM_DATA`。布局：
 
 ```text
-~/.codex/sessions/YYYY/MM/DD/rollout-<ISO8601>-<threadId>.jsonl
+agents.json                 Agent registry
+sessions.json               旧二进制兼容镜像
+profiles.json
+team-links.json
+schedules.json
+comms.ndjson
+integrations.json
+messages.ndjson
+inbox.ndjson
+attempts.ndjson
+outbox.ndjson
+events/<agent-id>.ndjson
+gateway/*.json
+backups/
 ```
 
-`FindRollout(threadID)` 递归查找匹配 threadId 的 rollout，若有多个取词典序最新。`Read()` 解析为 transcript。
-
-解析策略：
-
-- `event_msg/task_started` 分 turn。
-- `event_msg/user_message` 作为干净用户输入，避免把注入上下文当用户消息。
-- `event_msg/agent_message` 根据 `phase` 区分 answer/thinking。
-- `response_item/function_call` 且 name 为 `exec_command` 时渲染 shell 命令。
-- `response_item/function_call_output` 通过 call_id 回连命令输出。
-- `event_msg/patch_apply_end` 渲染文件变更。
-- `image_generation_call` 会转成 data URI 供 UI 内联展示。
+Agent history 不在这里，仍在 `~/.codex/sessions/**/rollout-*.jsonl`。
 
 ### `internal/httpapi`
 
-HTTP API、SSE 和内嵌 Web UI。
+提供 REST、SSE、内嵌 WebUI、图片读取和管理 API。
 
-REST：
-
-- `/api/health`
-- `/api/sessions`
-- `/api/sessions/{key}`
-- `/api/sessions/{key}/messages`
-- `/api/sessions/{key}/interrupt`
-- `/api/sessions/{key}/history`
-- `/api/sessions/{key}/approvals/{approvalId}`
-- `/api/sessions/{key}/events`
-- `/api/events`
-
-SSE 细节：
-
-- session SSE 先订阅，再读历史事件回放，最后转实时，避免回放期间丢事件。
-- `Last-Event-ID` 优先，其次 `?since=SEQ`。
-- `?tail=N` 只回放最近 N 条事件。
-- `?replay=0` 表示前端已经用 rollout `/history` 加载历史，SSE 只从当前 last seq 之后接 live，避免历史和 live event log 重复。
-- 每 15 秒写一次 ping 注释。
-- 慢订阅者 channel 满时会被移除，客户端应重连并靠 seq 回放补齐。
-
-### `internal/webui`
-
-Go embed Web 构建产物。`web/` 通过 Vite 构建到 `internal/webui/dist`，Go binary 内嵌该目录。
-
-`FS()` 找不到 `index.html` 时返回 nil，HTTP 层会返回 `web console not built (run: make web)`。
+- 规范路由：`/api/agents/...`。
+- 兼容路由：`/api/sessions/...`。
+- 规范 Agent SSE 把旧持久化事件投影为 `loom/*`；Codex `turn/*` / `item/*` 保持原名。
+- 兼容 Session SSE 保持 `hub/*`。
+- 全局 SSE 同时输出规范和兼容事件，旧页面和新页面可跨版本重启继续工作。
 
 ### `web`
 
-React/Vite/TypeScript/Tailwind 前端。
+React/Vite/TypeScript/Tailwind 治理工作台。第一屏是实际工作台，不是 landing page。
 
-当前数据策略：
+- Sidebar：全局 active/idle 状态、Agent 列表和管理入口。
+- AgentPane：Thread history/live、Turn 输入、配置、Profile、Address 和 Membership。
+- Inbox/Messages：内部和外部消息统一观察，但保留 origin 区分和 raw XML。
+- Team：列表、Graph 和 Inspector；Graph 卡片可拖拽，位置稳定保存。
+- Remote：连接状态、配对码、二维码和设备列表。
+- automation：规范入口 `window.codexLoom`，`window.codexHub` 是兼容别名。
 
-- `App.tsx` 订阅 `/api/events`，拿全量 session snapshot 和 session status 更新。
-- `SessionPane.tsx` 先调 `/history?count=25&offset=0` 从 rollout 加载最新历史。
-- 滚到顶部时继续用 offset 分页加载更早 turns。
-- 同时打开 `/events?replay=0` 接 live，避免重复展示历史。
-- `feed.ts` 把 raw hub/codex events 归并成可渲染 blocks；stream delta、item updated、item completed 通过 itemId 合并。
+### `cmd/loom-gateway` 与 `gateway/`
+
+规范二进制名 `loom-gateway`。Go fake provider 用于协议与幂等测试；`parall.mjs`、`lark.mjs`
+负责真实平台 cursor、ack、reaction/read-state 和发送。环境变量优先 `CODEX_LOOM_*`，旧变量可用。
+
+## 共享 CodexHost
+
+### 为什么共享
+
+旧模型为每 Agent spawn 一个 app-server，Remote 又维护一个独立 app-server。这样 Web 驱动的
+Thread 与手机驱动的 Thread 不在同一通知总线上，手机消息只能在刷新 rollout 后看到；进程数
+也随 Agent 数增长。
+
+新模型只有一条 app-server 进程边界：
+
+```text
+CodexLoom HTTP connection ─┐
+Codex Remote websocket ────┼── shared app-server ── N Threads
+future local connections ──┘
+```
+
+Codex app-server 会将已加载 Thread 的事件附着到所有已初始化 connection。Loom 的 connection
+因此能直接收到 Remote Turn/Item 通知并通过 SSE 广播。
+
+共享 Host initialize 暂时保留 legacy client name `codex-hub-remote`。该值参与 Remote enrollment
+scope；直接改成 `codex-loom` 会让现有配对设备落到另一份 enrollment。它是 wire compatibility
+identity，不是产品名称，待官方提供显式 enrollment 迁移后再移除。
+
+### 路由
+
+1. 从通知顶层 `threadId`、`thread.id`、`turn.threadId` 或 `item.threadId` 提取 Thread。
+2. 查 Agent registry 的 Thread 绑定。
+3. 已知 Thread 复用对应 runtime bookkeeping；runtime 只保存 active Turn、审批和锁，不拥有进程。
+4. Remote 新建 Thread 时，`thread/started` 创建 source=`remote` Agent。
+5. Remote resume 未注册旧 Thread 时，`turn/started` 创建占位 Agent，确保后续 Item 不丢，再用
+   `thread/read(includeTurns:false)` 回填 cwd 和合法 Thread name。
+6. 本地并发 `thread/start` 通知若无法唯一匹配 pending Agent，不收养；等 JSON-RPC response 绑定，
+   防止生成重复 Agent。
+
+### 信任边界
+
+一个 Host 共享 `CODEX_HOME`、ChatGPT 登录、installation/enrollment 和本地权限。需要不同账号、
+sandbox 信任域或数据隔离时运行另一个 CodexLoom 实例与独立 `CODEX_HOME`。
+
+Remote APIs 是 Codex experimental API。不要直接修改 Codex SQLite、daemon PID 文件、私有
+websocket wire protocol 或隐藏环境变量。
+
+Remote enrollment 以 app-server `clientInfo.name` 为持久 scope。共享 Host 暂时保留旧 wire identity
+`codex-hub-remote`，只把可见 title 改为 CodexLoom，从而让已配对设备跨升级继续可用；这个旧值
+属于兼容边界，不是产品名称。
 
 ## 核心数据流
 
-### 创建 session
+### 创建 Agent
 
-1. 调用方 `POST /api/sessions`。
-2. hub 校验 name/cwd，默认 `sandbox=danger-full-access`、`approvalPolicy=never`。
-3. hub spawn `codex app-server`。
-4. codex client `initialize` / `initialized`。
-5. 无 threadId 时 `thread/start`。
-6. hub 保存 `sessions.json`。
-7. hub 写入 `hub/session-created` 到 `events/<id>.ndjson` 并广播。
+1. `POST /api/agents`。
+2. 创建稳定 Agent ID 和空 Thread binding。
+3. 确保共享 CodexHost 已 initialize。
+4. `thread/start`，收到 response 后绑定 `threadId`。
+5. `thread/name/set` 同步 Agent 名称到 Codex Thread title。
+6. 持久化 `agents.json` 和兼容 `sessions.json`。
+7. 发 Agent lifecycle 事件。
 
-### 发送任务
+### Web/CLI 启动 Turn
 
-1. 调用方 `POST /api/sessions/{key}/messages`。
-2. hub 确认没有 active turn。
-3. 若没有 runtime 或进程已死，spawn 并 `thread/resume`；rollout 不存在时回退 `thread/start`。
-4. 若是 edge mirror，清 `Source` 并持久化，表示接管。
-5. hub 记录 running 状态，写 `hub/user-message`，广播 global status。
-6. hub 启动 watchdog。
-7. 调 `turn/start`，透传 session 的 `model` / `effort` / `approvalPolicy`，请求返回后写 `hub/turn-started`。
-8. codex 后续通知经 `onNotification` 写入 event log 并广播。
-9. 收到 `turn/completed` / `turn/failed` / `turn/aborted` 后，hub 结束 turn，更新 session 为 idle，写 `hub/turn-*`。
+1. `POST /api/agents/{key}/turns`。
+2. 检查 Agent idle，并在每个 Turn 前幂等执行 `thread/resume`。共享 app-server 可以卸载空闲
+   Thread，runtime 存在不代表 Thread 仍驻留；不能复用旧的“每 Thread 一个进程”心智。
+3. Profile 版本尚未注入时，先加入 developer context；空 Profile 不注入。
+4. 外部 Conversation 有有效 Membership 时，加入该会话的 developer context。
+5. `turn/start` 透传 model、effort、approval policy。
+6. Codex 原生通知进入 event log 和 SSE。
+7. Turn 结束更新 Agent idle，并立即投递该 Agent 队列中的下一封消息。
 
-### Session 配置
+### Remote 启动 Turn
 
-Web header 会显示当前 session 的名称、model、thinking effort、sandbox 和 approval policy。model/effort 空值表示使用 codex 默认值。
+1. Codex Mobile/Desktop 经 Remote backend 连接共享 app-server。
+2. app-server 发 `turn/started`；Loom 按 Thread 找到或收养 Agent。
+3. `userMessage` Item 更新 `currentTask`；Agent 状态变 running。
+4. 所有 Item delta/completed 进入同一 Agent SSE。
+5. `turn/completed|failed|aborted` 更新 idle，WebUI/CLI 无需刷新。
 
-`PATCH /api/sessions/{key}/config` 可以修改：
+### History 与 Live
 
-- `name`：只能使用 `[a-zA-Z0-9_-]+`，不能与其他 session name/id 冲突
-- `model`
-- `effort`：`minimal` / `low` / `medium` / `high`
-- `sandbox`
-- `approvalPolicy`
+- History：`/thread/history` 直接解析 rollout，能看到 Desktop/Mobile/其他连接产生的完整历史。
+- Live：`/thread/events?replay=0` 只接打开后的事件，避免与 history 重复。
+- CLI watch 可按 seq 回放 live event tail，并用 `Last-Event-ID` 续传。
+- event log 不是完整历史，不能用它重建上下文。
 
-配置只允许在 session 空闲时修改；running 时返回 409。修改后写入 `sessions.json`，并通过 `hub/session-status` 广播。名称变更立即影响 Web/CLI 的 `{key}` 解析和 URL hash；model/effort/sandbox/approval 下一次 `turn/start` 生效。Codex app-server 会把 turn-level overrides 作为同一 thread 后续 turn 的默认设置。
+### Profile 注入
 
-### 查看历史
+Profile 只在用户通过 CLI/UI 显式设置后有版本。新版本在下一个 Turn 前注入 developer role；
+`profileVersionSeen` 防止每轮重复。compact 后是否重注入不能只看 rollout，应以 Codex 实际请求
+上下文能力为准；在 app-server 暂未暴露可靠“本次发给模型的完整 history”前，不要猜测 compact。
 
-1. 调用方 `GET /api/sessions/{key}/history?count=N&offset=M`。
-2. hub 只用 session 的 threadId。
-3. `rollout.Read(threadId)` 找 codex rollout 并解析。
-4. 从末尾按 `offset/count` 返回窗口。
+完整设计和写作方法见 [agent-profile.md](agent-profile.md)。
 
-这个路径不需要 spawn codex，也不依赖 codex-hub 自己的 ndjson event log。因此 imported/adopted/idle session 也能立即显示完整历史。
+### Agent 与外部消息
 
-### 实时观察
+Agent 内部 XML `<agent_message>` 和外部 `<inbox_message>` 在 Thread 中都使用专门 UI：
 
-1. 调用方打开 `/api/sessions/{key}/events`。
-2. HTTP 层先 `Hub.Subscribe(key)` 注册 live channel。
-3. 再从 `events/<id>.ndjson` 读取 `seq > since` 的事件。
-4. 写完回放后发送 `hub/live` 标记。
-5. 后续从 channel 写实时事件。
+- 明确区分 REQ / RES / NOTIFY 或 provider origin。
+- body 使用安全 Markdown renderer，不以 `<pre>` 显示 Markdown 源码。
+- raw XML 可展开，便于审查协议。
+- 旧调用方把换行写成字面量 `\n` 时，只在 display parser 兼容还原，不改 ledger。
+- 发送按钮在请求开始时立即禁用，成功后立即清空输入，避免网络响应期间重复点击。
 
-前端默认使用 `/events?replay=0`，因为历史已经从 rollout 加载；CLI `chub watch` 默认用 event log tail 回放最近 live 事件。
+## 数据迁移与兼容
 
-### 审批
+默认启动且仅存在 `~/.codex-hub` 时：原子 rename 到 `~/.codex-loom`，再建立旧路径软链接。
+旧 gateway、launchd plist 和二进制可继续访问同一数据。
 
-1. codex app-server 发 server request，方法名包含 `approval`。
-2. codex client 先按 server request 分发，不与 pending response 混淆。
-3. hub 生成 `ap-<rpc-id>`，保存在 runtime approvals。
-4. hub 写 `hub/approval-requested`。
-5. Web 或 CLI 调 approval API。
-6. hub 回应 codex `{"decision":"accept"}` 或 `{"decision":"cancel"}`。
+注册表迁移采用双文件：读取优先 `agents.json`、fallback `sessions.json`；写入同时更新两者。
+备份列表同时识别 `codex-loom-*.tar.gz` 与 `codex-hub-*.tar.gz`。
 
-注意：CLI 的 `reject` 最终会映射为 codex decision `cancel`。
+兼容不是永久双领域模型：新代码只能写 Agent 语义，旧 Session 名称集中在 HTTP/CLI/storage
+adapter 边界，并在未来明确版本窗口后删除。
 
-### 中断和 kill
+## 备份与恢复
 
-中断：
+规范快照：
 
-1. 优先调用 `turn/interrupt`，参数包含 `threadId`，有 turnId 时也带上。
-2. 如果 interrupt 请求失败，关闭 codex 进程兜底。
-3. codex 应发 `turn/completed(status=interrupted)`；若 3 秒内没来，hub 主动 finish bookkeeping。
+```text
+~/.codex-loom/backups/codex-loom-<UTC timestamp>-<reason>.tar.gz
+```
 
-kill：
+包含：
 
-1. 若 active turn 存在，先 interrupt。
-2. live client 可用时 best-effort `thread/archive`。
-3. 关闭 client，删除 runtime 和 session 注册表。
-4. 写 `hub/session-killed`，global status 发 killed。
+- `codex-loom/`：registry、Profile、Team、Schedules、Communication ledgers、live events。
+- `codex-sessions/`：当前可见 Agent 对应 rollout。
+- `pinix-edge/names.json`（存在时）。
+- `codex/config.toml`（存在时）。
+- `manifest.json`：Agent/Thread 清单、源路径、文件列表和 warning。
 
-## 已知限制和危险边界
+本地快照不等于异地备份。需要抗磁盘损坏时，把 backups 同步到另一个磁盘或远端。
 
-- 同一个 codex thread 同时只能由一个 driver 操作。codex-hub 在接管已有 thread 前会用 `lsof` 找 rollout 文件持有者，并对非本进程/非本 hub 子进程的 holder 发 SIGTERM。这可以修复“看起来 running 但无法 interrupt”的孤儿进程问题，但也意味着接管 edge mirror 会主动终止 pinix-edge 或其他持有该 rollout 的 codex 进程。
-- `lsof` 不可用或查不到 holder 时，接管退化为 best-effort，不会报错。
-- `sessions.json` 只持久化 codex-hub 自有 session。edge mirror 每次启动从 pinix-edge registry 重新导入，永不写回。
-- event log 不是历史真相源。不要从 `events/*.ndjson` 重建完整对话历史。
-- `/history` 依赖 rollout 文件存在。刚创建但还未产生/flush rollout 的 session 会返回空历史，不算错误。
-- rollout 解析是基于 codex 当前文件格式的适配层。codex 升级后若 event/item 形状变化，历史展示可能漏项，需要补 `internal/rollout` 和前端 block 映射。
-- `imageGeneration` 和 `imageView` 是两类图片：前者通常是 base64/data URI；后者是本机绝对路径，Web 必须走 `/api/images?path=...` 由 hub 代理读取。刷新后若图片消失，优先检查 rollout parser 是否把 `view_image`/`imageView` 转成 history image item。
-- command output 和 diff 展示会截断到约 4000 字符。
-- session name 只允许 `[a-zA-Z0-9_-]+`。
-- 当前没有鉴权，服务默认是本地操作台。暴露到 Tailscale 地址前，要明确信任网络边界。
-- 默认 approval policy 是 `never`，sandbox 是 `danger-full-access`，适合无人值守实战，但风险也真实存在。
-- hub 重启时把上次 running 的任务标记为 interrupted，并清理 current task。真实 thread 内容仍在 rollout 中。
+恢复：停 Loom，检查 manifest，将 `codex-loom/` 恢复到数据目录，将 `codex-sessions/` 恢复到
+`CODEX_SESSIONS_DIR` 或 `~/.codex/sessions`，再启动并验证 Agent/Thread 数量与 history。
+
+## 已知限制
+
+- Remote 是 experimental Codex API，backend 产品策略可能变化。
+- 未注册 Remote Thread 会先使用 `remote-<suffix>`，随后 `thread/read` 回填合法 name/cwd；名称
+  不符合 Agent 标识规则时仍保留占位名，维护者可在 Agent Config 改名。
+- Agent 首期只有一个主 Thread；Thread 迁移与多 Thread Agent 尚未建模。
+- Profile compact 后重注入策略缺少“实际模型请求 history”官方接口，不能保证精确。
+- event log 只用于 live，不保证包含 Desktop 在 Loom 离线期间发生的 Item；刷新后 history 可见。
+- 外部 gateway 各自负责 cursor 和平台 ack，Loom 无法替代平台端的最终投递保证。
+- Membership 是行为上下文，不是安全沙箱；高权限 Agent 不应绑定不可信外部群。
+- Graph 是 read projection；关系证据冲突时以显式 Relationship 和原始 Message ledger 为准。
 
 ## 开发流程
 
-### 常用命令
+### 改前检查
+
+1. `git status --short`，不要覆盖用户或其他 Agent 的工作。
+2. 先读调用链与测试；不要只改表面文案。
+3. 判断真相源：Agent registry、rollout、live event、Communication ledger、platform state 不可混用。
+4. 涉及 Codex 协议时查官方 app-server 文档和本地源码，不凭记忆。
+
+### 后端闭环
 
 ```sh
-go test ./...
-go build ./...
-make release
-./bin/codex-hub
-./bin/chub list
+/usr/local/go/bin/gofmt -w <changed-go-files>
+/usr/local/go/bin/go test ./...
+make build
 ```
 
-前端开发：
+共享 Host 改动还要真实验证：
+
+1. 独立 `CODEX_LOOM_DATA` 和端口启动 canary。
+2. 创建两个合成 Agent。
+3. 用进程树确认只有一个 `codex app-server` 子进程。
+4. 两个 Agent 各执行真实 Turn，验证 `/thread/history` 与 SSE。
+5. 协议与并发测试默认使用合成 Agent，不 resume 生产 Thread。
+6. 生产规模 UI 测试可以复制 Agent/Profile/Relationship/Communication ledger 到临时数据目录，
+   但必须保持 Remote disabled 且不启动 Turn。
+7. 只有精确复现 Thread 绑定问题时，确认目标 Agent idle、保证没有第二个写入者后，才允许短暂
+   resume 一条真实 Thread；完成一次探针后立即停 canary。
+
+### 前端闭环
+
+铁律：构建绿不等于完成。
 
 ```sh
-cd web
-npm run dev
+cd web && npm run build
+make build
 ```
 
-Vite dev server 代理 API 到 `:4870`，生产/常驻服务使用 Go embed 的 `internal/webui/dist`。
+然后：
 
-### 前端改动交付闭环
+1. 启动独立 canary，不复用生产 4870。
+2. `curl` 验证 health、HTML 和静态 asset。
+3. `/tmp/pinixc browser open <url> --profile default`。
+4. 已有 tabid 后无需再传 profile。
+5. 用 `window.codexLoom.state()` / pane automation 做结构化 assert。
+6. 截 desktop 和 mobile viewport；检查长名称、窄顶部、滚动、Graph、弹层和空/错/加载状态。
+7. 构建最终 dist 后再构建 Go embed binary。
+8. 用户触发生产 Restart Loom；重启后 curl + automation + screenshot 再验一次。
 
-前端改动不能只看 TypeScript 或 Vite build 通过。交付前必须走完整闭环：
+### Team Graph 经验
 
-1. `cd web && npm run build`
-2. 确认 `internal/webui/dist` 已更新并纳入提交。
-3. 重启常驻 hub：优先 `launchctl kickstart`；没有 launchd 管理时手动重启 `./bin/codex-hub`。
-4. `curl http://localhost:4870/api/health` 验证服务。
-5. 用浏览器真实打开 `http://localhost:4870`，通过截图或 DOM/eval 验证页面和关键交互。
+- React Flow 负责 pan/zoom/selection/drag，不手写 hit-test。
+- Graph 是拓扑导航，列表和 Inspector 仍是精确操作入口。
+- 布局要 deterministic；用户拖拽位置按 Agent stable ID 持久化，刷新不能随机跳。
+- 节点卡片只显示名称、状态、Domain 摘要和计数；长内容进 Inspector。
+- 默认过滤低权重边；选择节点时突出 1-hop 邻域。
+- 移动端默认列表，Graph 是可横向 pan 的工作区，Inspector 用 sheet。
+- 两 Agent fixture 只能验证交互，不能证明布局；至少再用 20+ Agent 和高边密度 ledger 截图。
+- automation 至少暴露 nodes/edges、selection、filters、visible IDs、fitView、focusAgent。
 
-如果只是文档或纯后端改动，不需要提交 dist，但仍要跑与改动匹配的真实验证。
+### 重启纪律
 
-### 重启与自更新
+承载当前开发 Agent 的服务不能由 Agent 直接 kill 自己。正确流程：
 
-codex-hub 不能由当前承载 agent 的 hub 进程直接 `kill` 自己或粗暴重启 `:4870`。这样会打断当前 session 的控制通道，导致正在执行的修复流程被中断。
+1. 完成 build。
+2. canary 验证。
+3. 告诉用户点击 Restart Loom。
+4. restart API 先做 `pre-restart` 备份。
+5. active Agent 存在时进入 waiting，拒绝新 Turn，等待全部结束。
+6. 独立 `codex-loom-reloader` 在 HTTP response 返回后 SIGTERM 旧服务并启动同一 executable。
 
-正确模型是外部进程接管重启：
-
-- 本地常驻服务优先交给 `launchd` 管理，重启通过 `launchctl kickstart -k <label>` 从进程外执行。
-- 开发验证先启动 canary 端口，例如 `./bin/codex-hub -port 4871 -data /tmp/codex-hub-canary`，确认新 binary 和内嵌前端可用后，再切换主服务。
-- Web UI 的“更新/重启”按钮调用受保护的 admin API，由 admin API 启动一个脱离当前进程生命周期的 helper 进程。handler 返回后，当前 hub 进程不应在请求栈内直接退出。
-- 按钮必须明确展示构建日志、目标 git revision/binary mtime、canary 健康检查结果和最终切换状态；失败时保留旧 `:4870` 服务继续运行。
-
-当前最小实现是“只重启，不 build”：
-
-- Web UI 的 `Restart Hub` 调 `POST /api/admin/restart`。
-- API 默认只允许 localhost 请求；若设置 `CODEX_HUB_ADMIN_TOKEN`，则要求 `X-Codex-Hub-Admin-Token` 或 `Authorization: Bearer <token>`。
-- 如果有 session 正在 running，restart API 不会立刻切换进程，而是进入 `waiting` 状态，UI 会显示正在等待的 session 名称。等待期间新的 `send` 请求返回 409，避免一边 drain 一边继续塞新任务。
-- 当所有 running session 结束后，hub 才会启动 reloader。状态可通过 `GET /api/admin/restart/status` 或 `/api/events` 里的 `hub/restart-status` 观察。
-- API 启动同目录的 `codex-hub-reloader` 进程，也可用 `CODEX_HUB_RELOADER` 指向自定义 reloader。
-- reloader 收到旧 hub PID、当前 `codex-hub` executable、工作目录和原启动参数；它先让 HTTP handler 返回，再 SIGTERM 旧进程，必要时 SIGKILL，最后启动新的 `codex-hub`。
-- reloader 日志默认写入 `/tmp/codex-hub-reloader.log`，可用 `CODEX_HUB_RESTART_LOG` 覆盖；新 hub stdout/stderr 默认写入 `/tmp/codex-hub.log`，可用 `CODEX_HUB_LOG` 覆盖。
-- 注意：优雅等待能力在新 binary 被加载后才生效。第一次从旧版本升级到带该功能的版本时，必须确认没有 running session，再用旧按钮或外部命令重启一次。
-
-后续完整“更新并重启”版本：
-
-1. Web UI 放一个本机可见的 admin 按钮。
-2. `POST /api/admin/reload` 只在 localhost 或带本机 token 时允许。
-3. 后端启动 updater 进程，updater 在仓库目录执行 `npm run build && make build`。
-4. updater 先用新 binary 起 canary 端口并 curl `/api/health`。
-5. canary 通过后，updater 再调用 reloader 切换主服务。
-
-不要实现“HTTP handler 里 sleep 后 `os.Exit(0)`”这种方案。它看似简单，但会造成请求未收尾、SSE 断流不可控、当前 agent 自己断电，并且失败时没有回滚面。
-
-### Agent 通信
-
-agent 之间不要手写 XML。统一走 `chub msg` 或 Web 的 Messages 视图，由 hub 生成标准 envelope 并记录全局通信历史。
-
-CLI 只有一个入口：
+首次从旧 LaunchAgent 切换到规范 label 时，不使用页面内 Restart，因为它只会重启当前旧
+executable。完成 canary 后由用户执行一次：
 
 ```sh
-chub msg <to> --from <from> --subject "..." --response required --body "..."
-chub msg <to> --from <from> --subject "..." --response none --body-file note.md
-chub msg --reply-to msg_xxx --from <from> --body "..."
+cp deploy/com.pinix.codex-loom.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u)/com.pinix.codex-hub
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pinix.codex-loom.plist
+launchctl kickstart -k gui/$(id -u)/com.pinix.codex-loom
 ```
 
-语义：
+确认新 label 正常后再删除旧 plist。此后页面内 Restart Loom 会查找同目录
+`codex-loom-reloader`，失败时再 fallback 到旧 reloader。
 
-- `response=required`：这条消息需要接收方回复，状态从 `open` 开始。
-- `response=none`：通知/同步，不要求回复，状态为 `closed`。
-- `--reply-to`：回复某条消息；目标 agent 从原消息反推，不再手填 `to`。回复成功后原消息从 `open` 变为 `answered`。
-
-hub 维护 `comms.ndjson` 作为 append-only 通信日志。它是全局 agent 通信索引，不是 codex session 历史；session 的真实对话历史仍以 codex rollout 为单一真相源。每条 comm 发送时仍会复用现有 `SendTask`，目标 session 收到的是一段标准 XML envelope：
-
-```xml
-<agent_message version="1" id="msg_..." response="required" status="open">
-  <from>codex-hub-dev</from>
-  <to>pinix-lead</to>
-  <subject>...</subject>
-  <reply_command>chub msg --reply-to msg_... --from pinix-lead --body "..."</reply_command>
-  <body><![CDATA[
-...
-  ]]></body>
-</agent_message>
-```
-
-相关 API：
-
-- `GET /api/comms?agent=&status=`
-- `POST /api/comms/messages`
-
-Web 的 Messages 视图展示全局通信历史、Open/All 过滤、原消息和回复 thread，也可以直接发新消息和回复。后续如果要做 inbox badge 或 per-session comm 摘要，应继续读 `/api/comms`，不要从 rollout 里反解析 XML。
-
-session feed 里收到的 `<agent_message>` 也要特殊渲染，不能按普通 user bubble 展示。前端 `feed.ts` 会把 envelope 解析成 `REQ` / `RES` / `NOTIFY` 三类卡片：`response=required` 且无 `reply_to` 是 `REQ`，有 `reply_to` 是 `RES`，`response=none` 且无 `reply_to` 是 `NOTIFY`。历史 rollout 和 live `hub/user-message` 必须共用同一套 parser。
-
-### 后端改动验证
-
-按风险选择验证层级：
-
-- 协议/rollout/store 变更：至少 `go test ./...`，并用真实 session 验证 `create/send/history/watch` 中受影响路径。
-- SSE 变更：用 `curl -N` 或浏览器观察 `/api/events`、`/api/sessions/{id}/events`，确认 replay、live、ping、断线续传语义。
-- interrupt/kill/runtime 变更：必须用真实 codex turn 验证。不要只依赖 unit test。
-- edge mirror/takeover 变更：准备 pinix-edge registry 或测试 names 文件，验证 mirror 可见、history 可读、send 后被接管并持久化。
-
-### 文档改动验证
-
-文档改动至少检查：
+失败排查：
 
 ```sh
-git diff --check
+tail -n 200 /tmp/codex-loom-reloader.log
+tail -n 200 /tmp/codex-loom.log
+curl -fsS http://127.0.0.1:4870/api/health
 ```
 
-如果文档描述了命令或 API，优先实际跑对应命令或 curl，避免把过期流程写进手册。
+旧日志路径和 `codex-hub-reloader` 仍可能由旧 launchd job 使用；兼容 fallback 会自动查找。
 
 ## API 速查
 
 ```text
 GET    /api/health
-GET    /api/sessions
-POST   /api/sessions
-GET    /api/sessions/{key}
-PATCH  /api/sessions/{key}/config
-DELETE /api/sessions/{key}
-POST   /api/sessions/{key}/messages
-POST   /api/sessions/{key}/interrupt
-GET    /api/sessions/{key}/history?count=N&offset=M
-GET    /api/sessions/{key}/events?since=SEQ&tail=N&replay=0
-GET    /api/images?path=/absolute/image/path.png
-POST   /api/sessions/{key}/approvals/{approvalId}
-GET    /api/comms?agent=&status=
+GET    /api/agents
+POST   /api/agents
+GET    /api/agents/{key}
+PATCH  /api/agents/{key}/config
+GET    /api/agents/{key}/profile
+PUT    /api/agents/{key}/profile
+DELETE /api/agents/{key}
+POST   /api/agents/{key}/turns
+POST   /api/agents/{key}/turns/current/interrupt
+GET    /api/agents/{key}/thread/history?count=N&offset=M
+GET    /api/agents/{key}/thread/events?since=SEQ&tail=N&replay=0
+POST   /api/agents/{key}/thread/approvals/{approvalId}
+
+GET    /api/comms
 POST   /api/comms/messages
+GET    /api/inbox
+GET    /api/outbox
+GET    /api/team
+GET    /api/schedules
+GET    /api/integrations/connections
+GET    /api/integrations/addresses
+GET    /api/integrations/conversations
+GET    /api/remote
+GET    /api/events
+
+POST   /api/admin/backup
+GET    /api/admin/backups
 POST   /api/admin/restart
 GET    /api/admin/restart/status
-GET    /api/events
 ```
 
-`key` 可以是 session id 或 name。
+旧 `/api/sessions/...` 是兼容别名，不应出现在新调用方。
+
+## 延伸文档
+
+- [codex-app-server-protocol.md](codex-app-server-protocol.md)
+- [agent-profile.md](agent-profile.md)
+- [agent-platform-integration.md](agent-platform-integration.md)
+- [conversation-membership.md](conversation-membership.md)
+- [loom-cli.md](loom-cli.md)，包含 `loom` 规范命令与 `chub` 兼容说明
 
 ## 维护纪律
 
-- 改代码前先确认该路径的真相源：session 注册表、live event log、codex rollout、codex app-server runtime 分别解决不同问题，不要混用。
-- 新增历史展示能力优先从 rollout 解析补齐，不要把 live event log 扩展成第二历史库。
-- 新增实时能力走 hub event，保证 seq、SSE replay 和多观察者语义。
-- 涉及 codex JSON-RPC 的变更要同步更新 `docs/codex-app-server-protocol.md`。
-- 每次修复线上/实战问题后，把根因、验证方法和回归风险补进本手册。
+- 优先修业务不变量，不用 UI 掩盖状态错误。
+- 不从 live event 重建完整历史，不从 rollout 推断平台投递状态。
+- 不让名称承担稳定身份；跨领域引用只用 stable ID。
+- 不把平台账号、群或 Schedule 建模成伪 Agent。
+- 不直接修改 Codex 私有数据库或 Remote wire protocol。
+- 每次改动必须真实运行受影响工作流，并记录新教训。

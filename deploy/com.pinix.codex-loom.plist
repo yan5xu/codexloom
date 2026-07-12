@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pinix.codex-loom</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/cp/Developer/epiral/repos/codex-hub/bin/codex-loom</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/cp/Developer/epiral/repos/codex-hub</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/codex-loom.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/codex-loom.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/cp/.nvm/versions/node/v25.2.1/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

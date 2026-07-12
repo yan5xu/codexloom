@@ -1,3 +1,4 @@
+import { Inbox, Paperclip } from "lucide-react";
 import { UserBubble, AssistantBubble } from "./pages/agent/MessageBubbles";
 import { MarkdownContent } from "./pages/agent/markdown";
 import type { Block } from "./feed";
@@ -74,14 +75,111 @@ export function BlockView({ block }: { block: Block }) {
                 reply to {block.replyTo}
               </div>
             )}
-            <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/35 px-3 py-2 font-mono text-[12.5px] leading-relaxed text-foreground/85">
-              {block.body}
-            </pre>
+            <div className="mt-3 min-w-0 border-t border-border/70 pt-3 text-[13px] leading-6 text-foreground/90">
+              <MarkdownContent content={block.body} />
+            </div>
             {block.replyCommand && (
               <pre className="mt-2 overflow-auto rounded-lg bg-background/70 px-3 py-2 font-mono text-[11.5px] text-muted-foreground ring-1 ring-border/60">
                 {block.replyCommand}
               </pre>
             )}
+            <RawEnvelope raw={block.raw} />
+          </div>
+        </article>
+      );
+    }
+
+    case "externalMessage": {
+      const expectationStyle =
+        block.expectation === "required"
+          ? "bg-warning/10 text-warning"
+          : block.expectation === "none"
+            ? "bg-muted text-muted-foreground"
+            : "bg-chart-3/10 text-chart-3";
+      const expectationLabel =
+        block.expectation === "required"
+          ? "REPLY EXPECTED"
+          : block.expectation === "none"
+            ? "NO REPLY"
+            : "OPTIONAL REPLY";
+      const conversationLabel = block.membershipName || block.conversationId || "External conversation";
+      return (
+        <article className="relative my-2 overflow-hidden rounded-lg border border-chart-3/35 bg-card shadow-card">
+          <div className="absolute inset-y-0 left-0 w-1 bg-chart-3" />
+          <div className="px-4 py-3">
+            <div className="flex min-w-0 flex-wrap items-start gap-3">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-chart-3/10 text-chart-3">
+                <Inbox className="size-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <span className="rounded-md bg-chart-3/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-chart-3">
+                    EXTERNAL
+                  </span>
+                  <span className="rounded-md border border-chart-3/25 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase text-chart-3">
+                    {block.provider}
+                  </span>
+                  <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
+                    {block.conversationType || "conversation"}
+                  </span>
+                </div>
+                <h3 className="mt-1 truncate text-[14px] font-semibold text-foreground">{block.sender}</h3>
+                <div className="mt-0.5 min-w-0 truncate text-[11px] text-muted-foreground">
+                  in <span className="font-medium text-foreground/75">{conversationLabel}</span>
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <span className={`inline-flex rounded-md px-2 py-0.5 font-mono text-[9.5px] font-semibold ${expectationStyle}`}>
+                  {expectationLabel}
+                </span>
+                <div className="mt-1 font-mono text-[10px] text-muted-foreground">{tsShort(block.ts)}</div>
+              </div>
+            </div>
+
+            <div className="mt-3 min-w-0 border-t border-border/70 pt-3 text-[13px] leading-6 text-foreground/90">
+              {block.body ? <MarkdownContent content={block.body} /> : <span className="text-muted-foreground">Attachment message</span>}
+            </div>
+
+            {block.attachments.length > 0 && (
+              <div className="mt-3 divide-y divide-border/60 border-y border-border/60">
+                {block.attachments.map((attachment, index) => {
+                  const label = attachment.name || attachment.path || attachment.url || attachment.id || `Attachment ${index + 1}`;
+                  const content = (
+                    <>
+                      <Paperclip className="size-3.5 shrink-0 text-chart-3" />
+                      <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium">{label}</span>
+                      {attachment.mimeType && <span className="hidden shrink-0 font-mono text-[9px] text-muted-foreground sm:block">{attachment.mimeType}</span>}
+                      {attachment.size && <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{formatFileSize(attachment.size)}</span>}
+                    </>
+                  );
+                  return attachment.url ? (
+                    <a key={`${attachment.id || label}-${index}`} href={attachment.url} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-2 py-2 hover:text-chart-3">{content}</a>
+                  ) : (
+                    <div key={`${attachment.id || label}-${index}`} className="flex min-w-0 items-center gap-2 py-2">{content}</div>
+                  );
+                })}
+              </div>
+            )}
+
+            {(block.replyCommand || block.noReplyCommand) && (
+              <div className="mt-3 space-y-1.5">
+                {block.replyCommand && <pre className="overflow-auto rounded-md bg-muted/35 px-3 py-2 font-mono text-[10.5px] text-muted-foreground">{block.replyCommand}</pre>}
+                {block.noReplyCommand && <pre className="overflow-auto rounded-md bg-muted/35 px-3 py-2 font-mono text-[10.5px] text-muted-foreground">{block.noReplyCommand}</pre>}
+              </div>
+            )}
+
+            <details className="mt-2 text-[10px] text-muted-foreground">
+              <summary className="cursor-pointer select-none font-mono hover:text-foreground">routing details</summary>
+              <dl className="mt-2 grid min-w-0 gap-x-4 gap-y-1 border-t border-border/60 pt-2 sm:grid-cols-2">
+                <RouteMeta label="Inbox" value={block.inboxItemId} />
+                <RouteMeta label="Message" value={block.id} />
+                <RouteMeta label="Conversation" value={block.conversationId} />
+                <RouteMeta label="Sender" value={block.senderId} />
+                {block.membershipId && <RouteMeta label="Membership" value={`${block.membershipId}${block.membershipVersion ? ` · v${block.membershipVersion}` : ""}`} />}
+                <RouteMeta label="Reply policy" value={block.replyPolicy || "none"} />
+              </dl>
+            </details>
+            <RawEnvelope raw={block.raw} />
           </div>
         </article>
       );
@@ -239,4 +337,32 @@ export function BlockView({ block }: { block: Block }) {
         </details>
       );
   }
+}
+
+function RouteMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid min-w-0 grid-cols-[80px_1fr] gap-2">
+      <dt className="uppercase">{label}</dt>
+      <dd className="min-w-0 truncate font-mono text-foreground/70" title={value}>{value || "-"}</dd>
+    </div>
+  );
+}
+
+function RawEnvelope({ raw }: { raw: string }) {
+  return (
+    <details className="mt-2 text-[10px] text-muted-foreground">
+      <summary className="cursor-pointer select-none font-mono hover:text-foreground">raw envelope</summary>
+      <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-border/60 bg-muted/25 px-3 py-2 font-mono text-[10.5px] leading-5 text-foreground/75">
+        {raw}
+      </pre>
+    </details>
+  );
+}
+
+function formatFileSize(raw: string) {
+  const size = Number(raw);
+  if (!Number.isFinite(size) || size < 0) return raw;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }

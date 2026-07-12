@@ -1,9 +1,6 @@
 /* ================================================================
-   Pinix Console — "Quiet Luxury Cashmere" Design System v3
-   Brand: Pinix Agent OS
-   Style: Warm Jade + Quiet Luxury —温润如玉 · 静奢风
-   Primary: Ochre Sand H=78 (Vicuña Camel), neutrals H=78
-   Depth: Warm-tinted shadows + translucent jade glass
+   CodexLoom governance console
+   Graphite neutral surfaces with restrained teal actions and semantic color.
    ================================================================ */
 
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
@@ -14,19 +11,15 @@
 /*
  * @agent-contract v3.0.0 | 2026-06-04
  *
- * STYLE:        Quiet Luxury Cashmere / 温润如玉 · 静奢風
- * PHILOSOPHY:   Warm jade translucency + quiet luxury restraint
- *               — Vicuña cashmere with celadon jade undertones
+ * STYLE:        Quiet operational workspace
+ * PHILOSOPHY:   Neutral surfaces, dense scanning, stable hierarchy
  * FONTS:        serif=Instrument Serif, sans=Inter, mono=JetBrains Mono, CJK=Noto Sans/Serif SC
- * BRAND_HUE:    H=78 (Ochre Sand / Vicuña Camel), neutrals=H=78
+ * BRAND_HUE:    H=205 teal; neutrals are near-achromatic
  * RHYTHM:       base=4px, outer-shell=32px, inner-data=12px, section=gap-6
  * LIGHT_SOURCE: Top-Center, unified downward shadows with warm tint
  * MOTION:       quartic-out 180-250ms, no spring
- * DEPTH:        3-tier warm shadow system + jade glass translucency
- * RADIUS:       base=0.75rem — generous rounding for warmth
- * TEXTURE:      micro-grain cashmere feel
- * DO_NOT:       pure white background | pure black text | cold grey borders
- *               high-chroma neon colors | harsh shadows
+ * DEPTH:        Hairlines and restrained shadows
+ * RADIUS:       base=0.5rem
  */
 
 @custom-variant dark (&:is(.dark *));
@@ -35,28 +28,24 @@
   --font-sans: "Inter", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Instrument Serif", "Noto Serif SC", Georgia, "Source Han Serif CN", serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --radius: 0.75rem;
+  --radius: 0.5rem;
 
-  /* Warm quartz sand surfaces — H=78 tinted neutrals */
-  /* background(0.975) vs card(0.998) vs sidebar(0.945): layered jade depth */
-  --background: oklch(0.975 0.006 78);
-  --foreground: oklch(0.24 0.012 78);
-  --card: oklch(0.998 0.002 78);
-  --card-foreground: oklch(0.24 0.012 78);
-  --popover: oklch(1.0 0.002 78);
-  --popover-foreground: oklch(0.24 0.012 78);
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.22 0.012 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.012 255);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.012 255);
 
-  /* Brand: Vicuña Camel — quiet luxury ochre sand */
-  --primary: oklch(0.48 0.095 78);
-  --primary-foreground: oklch(0.99 0.003 78);
+  --primary: oklch(0.48 0.10 205);
+  --primary-foreground: oklch(0.99 0 0);
 
-  /* Neutral surfaces — warm sand scale */
-  --secondary: oklch(0.95 0.008 78);
-  --secondary-foreground: oklch(0.26 0.012 78);
-  --muted: oklch(0.925 0.012 78);
-  --muted-foreground: oklch(0.48 0.015 78);
-  --accent: oklch(0.96 0.010 78);
-  --accent-foreground: oklch(0.24 0.012 78);
+  --secondary: oklch(0.955 0.004 250);
+  --secondary-foreground: oklch(0.26 0.012 255);
+  --muted: oklch(0.93 0.005 250);
+  --muted-foreground: oklch(0.49 0.012 255);
+  --accent: oklch(0.96 0.012 205);
+  --accent-foreground: oklch(0.24 0.025 205);
 
   /* Semantic — earth-toned, restrained chroma */
   --destructive: oklch(0.55 0.15 28);
@@ -66,23 +55,21 @@
   --warning: oklch(0.72 0.12 55);
   --warning-foreground: oklch(0.22 0.04 55);
 
-  /* Structure — fine sandstone seams (slightly deeper for crisp definition) */
-  --border: oklch(0.910 0.010 78);
-  --input: oklch(0.93 0.008 78);
-  --ring: oklch(0.48 0.095 78);
+  --border: oklch(0.90 0.006 250);
+  --input: oklch(0.94 0.005 250);
+  --ring: oklch(0.48 0.10 205);
 
-  /* Sidebar — warm sandstone, visibly darker than content to create natural layering */
-  --sidebar: oklch(0.945 0.012 78);
-  --sidebar-foreground: oklch(0.26 0.012 78);
-  --sidebar-primary: oklch(0.48 0.095 78);
-  --sidebar-primary-foreground: oklch(0.99 0.003 78);
-  --sidebar-accent: oklch(0.935 0.010 78);
-  --sidebar-accent-foreground: oklch(0.24 0.012 78);
-  --sidebar-border: oklch(0.90 0.010 78);
-  --sidebar-ring: oklch(0.48 0.095 78);
+  --sidebar: oklch(0.955 0.006 250);
+  --sidebar-foreground: oklch(0.26 0.012 255);
+  --sidebar-primary: oklch(0.48 0.10 205);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.935 0.012 205);
+  --sidebar-accent-foreground: oklch(0.24 0.025 205);
+  --sidebar-border: oklch(0.89 0.006 250);
+  --sidebar-ring: oklch(0.48 0.10 205);
 
   /* Charts — natural plant-dye palette */
-  --chart-1: oklch(0.48 0.095 78);
+  --chart-1: oklch(0.48 0.10 205);
   --chart-2: oklch(0.65 0.11 145);
   --chart-3: oklch(0.58 0.08 190);
   --chart-4: oklch(0.72 0.12 55);
@@ -90,25 +77,22 @@
 }
 
 .dark {
-  /* Deep espresso & smoked amber — H=78 warm dark */
-  --background: oklch(0.095 0.008 78);
-  --foreground: oklch(0.92 0.008 78);
-  --card: oklch(0.145 0.011 78);
-  --card-foreground: oklch(0.92 0.008 78);
-  --popover: oklch(0.18 0.012 78);
-  --popover-foreground: oklch(0.92 0.008 78);
+  --background: oklch(0.13 0.008 255);
+  --foreground: oklch(0.92 0.006 250);
+  --card: oklch(0.17 0.010 255);
+  --card-foreground: oklch(0.92 0.006 250);
+  --popover: oklch(0.19 0.010 255);
+  --popover-foreground: oklch(0.92 0.006 250);
 
-  /* Glowing vicuña for dark */
-  --primary: oklch(0.68 0.11 78);
-  --primary-foreground: oklch(0.12 0.008 78);
+  --primary: oklch(0.70 0.10 205);
+  --primary-foreground: oklch(0.14 0.018 205);
 
-  /* Dark surfaces — espresso nesting */
-  --secondary: oklch(0.17 0.010 78);
-  --secondary-foreground: oklch(0.92 0.008 78);
-  --muted: oklch(0.20 0.012 78);
-  --muted-foreground: oklch(0.60 0.015 78);
-  --accent: oklch(0.22 0.014 78);
-  --accent-foreground: oklch(0.92 0.008 78);
+  --secondary: oklch(0.20 0.010 255);
+  --secondary-foreground: oklch(0.92 0.006 250);
+  --muted: oklch(0.23 0.010 255);
+  --muted-foreground: oklch(0.64 0.012 250);
+  --accent: oklch(0.24 0.025 205);
+  --accent-foreground: oklch(0.92 0.010 205);
 
   /* Semantic — softened for dark */
   --destructive: oklch(0.58 0.15 28);
@@ -118,20 +102,18 @@
   --warning: oklch(0.76 0.12 55);
   --warning-foreground: oklch(0.12 0.03 55);
 
-  /* Structure — deep tea borders */
-  --border: oklch(0.22 0.010 78);
-  --input: oklch(0.20 0.010 78);
-  --ring: oklch(0.68 0.11 78);
+  --border: oklch(0.27 0.010 255);
+  --input: oklch(0.23 0.010 255);
+  --ring: oklch(0.70 0.10 205);
 
-  /* Sidebar — deep cocoa, darker than background for layering */
-  --sidebar: oklch(0.075 0.006 78);
-  --sidebar-foreground: oklch(0.88 0.008 78);
-  --sidebar-primary: oklch(0.68 0.11 78);
-  --sidebar-primary-foreground: oklch(0.12 0.008 78);
-  --sidebar-accent: oklch(0.15 0.010 78);
-  --sidebar-accent-foreground: oklch(0.92 0.008 78);
-  --sidebar-border: oklch(0.17 0.010 78);
-  --sidebar-ring: oklch(0.68 0.11 78);
+  --sidebar: oklch(0.105 0.008 255);
+  --sidebar-foreground: oklch(0.88 0.006 250);
+  --sidebar-primary: oklch(0.70 0.10 205);
+  --sidebar-primary-foreground: oklch(0.14 0.018 205);
+  --sidebar-accent: oklch(0.19 0.020 205);
+  --sidebar-accent-foreground: oklch(0.92 0.010 205);
+  --sidebar-border: oklch(0.20 0.010 255);
+  --sidebar-ring: oklch(0.70 0.10 205);
 
   /* Charts — warm glow variants */
   --chart-1: oklch(0.68 0.11 78);
@@ -192,6 +174,7 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    letter-spacing: 0 !important;
   }
   html {
     @apply scroll-smooth antialiased;
@@ -199,12 +182,12 @@
   body {
     @apply bg-background text-foreground font-sans min-h-screen;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-    letter-spacing: -0.01em;
+    letter-spacing: 0;
   }
 
   /* Serif headings — editorial authority */
   h1, h2, h3 {
-    @apply font-serif tracking-tight;
+    @apply font-serif;
     text-wrap: balance;
   }
   h1 { @apply text-3xl font-normal leading-tight; }
@@ -893,7 +876,7 @@
   border-radius: 0.65rem;
 }
 
-/* --- codex-hub custom classes (preserved from original) --- */
+/* --- CodexLoom custom classes --- */
 .shimmer-divider {
   background: linear-gradient(
     90deg,

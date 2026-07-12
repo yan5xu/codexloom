@@ -1,8 +1,8 @@
-// Package rollout reads a codex session's real history directly from the
-// rollout file that `codex app-server` itself writes. codex-hub does NOT keep
-// a parallel history log: the single source of truth for what happened in a
-// session is its rollout file on disk. Any session — created by codex-hub,
-// imported from pinix-edge, or started by any other codex client — shows its
+// Package rollout reads a Codex Thread's real history directly from the
+// rollout file that `codex app-server` writes. CodexLoom does not keep a
+// parallel history log: the rollout is the single source of truth for what
+// happened in a Thread. Any Thread, whether started by CodexLoom, pinix-edge,
+// Codex Desktop/Mobile, or another Codex client, shows its
 // full history the moment we can find its rollout by threadId.
 //
 // Rollout layout (written by codex, we only ever read it):
@@ -59,7 +59,15 @@ type Turn struct {
 	Items  []map[string]any `json:"items"`
 }
 
-// Transcript is the full parsed history of one session.
+// LatestTurnSummary is the lightweight status view of the newest rollout turn.
+type LatestTurnSummary struct {
+	ID        string
+	Status    string
+	Task      string
+	UpdatedAt string
+}
+
+// Transcript is the full parsed history of one Thread.
 type Transcript struct {
 	ThreadID string
 	Cwd      string
@@ -68,7 +76,7 @@ type Transcript struct {
 }
 
 // FindRollout locates the rollout file for a threadId by recursively globbing
-// the codex sessions dir for rollout-*-<threadId>.jsonl. If several match
+// the official Codex sessions directory for rollout-*-<threadId>.jsonl. If several match
 // (rare), the lexically-last one (newest ISO timestamp in the name) wins.
 func FindRollout(threadID string) (string, error) {
 	if threadID == "" {
@@ -185,6 +193,76 @@ func ReadFile(path, threadID string) (*Transcript, error) {
 	return tr, nil
 }
 
+// LatestTurn returns the latest turn status without constructing the full
+// transcript. It is used to display externally driven Threads that are still
+// writing to the rollout even when CodexLoom is not online for their active Turn.
+func LatestTurn(threadID string) (*LatestTurnSummary, error) {
+	path, err := FindRollout(threadID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var latest *LatestTurnSummary
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1<<20), 1<<26)
+	for sc.Scan() {
+		b := strings.TrimSpace(sc.Text())
+		if b == "" {
+			continue
+		}
+		var ln struct {
+			Timestamp string          `json:"timestamp"`
+			Type      string          `json:"type"`
+			Payload   json.RawMessage `json:"payload"`
+		}
+		if json.Unmarshal([]byte(b), &ln) != nil || ln.Type != "event_msg" {
+			continue
+		}
+		var p struct {
+			Type    string `json:"type"`
+			TurnID  string `json:"turn_id"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(ln.Payload, &p) != nil {
+			continue
+		}
+		switch p.Type {
+		case "task_started":
+			latest = &LatestTurnSummary{ID: p.TurnID, Status: "running", UpdatedAt: ln.Timestamp}
+		case "user_message":
+			if latest != nil && latest.Task == "" {
+				latest.Task = p.Message
+			}
+			if latest != nil {
+				latest.UpdatedAt = ln.Timestamp
+			}
+		case "task_complete":
+			if latest != nil && (p.TurnID == "" || p.TurnID == latest.ID) {
+				latest.Status = "completed"
+				latest.UpdatedAt = ln.Timestamp
+			}
+		case "turn_aborted":
+			if latest != nil && (p.TurnID == "" || p.TurnID == latest.ID) {
+				latest.Status = "interrupted"
+				latest.UpdatedAt = ln.Timestamp
+			}
+		default:
+			if latest != nil {
+				latest.UpdatedAt = ln.Timestamp
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return latest, nil
+}
+
 type cmdOutput struct {
 	text     string
 	exitCode *int
@@ -225,7 +303,7 @@ func (tr *Transcript) handleEvent(payload json.RawMessage, outputs map[string]cm
 	switch p.Type {
 	case "task_started":
 		// New turn boundary.
-		tr.Turns = append(tr.Turns, Turn{ID: p.TurnID, Status: "completed"})
+		tr.Turns = append(tr.Turns, Turn{ID: p.TurnID, Status: "running"})
 	case "user_message":
 		if strings.TrimSpace(p.Message) == "" {
 			return
@@ -255,7 +333,15 @@ func (tr *Transcript) handleEvent(payload json.RawMessage, outputs map[string]cm
 		t := tr.cur()
 		t.Items = append(t.Items, map[string]any{"type": "file_change", "changes": changes})
 	case "turn_aborted":
-		tr.cur().Status = "interrupted"
+		t := tr.cur()
+		if p.TurnID == "" || p.TurnID == t.ID {
+			t.Status = "interrupted"
+		}
+	case "task_complete":
+		t := tr.cur()
+		if p.TurnID == "" || p.TurnID == t.ID {
+			t.Status = "completed"
+		}
 	}
 }
 

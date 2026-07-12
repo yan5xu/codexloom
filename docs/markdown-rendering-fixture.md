@@ -1,10 +1,10 @@
 # Markdown Rendering Fixture
 
-这份内容用于验证 codex-hub 的 Markdown 渲染质量，重点覆盖嵌套结构、混合块、长内容和 CJK/English 混排。
+这份内容用于验证 CodexLoom 的 Markdown 渲染质量，重点覆盖嵌套结构、混合块、长内容和 CJK/English 混排。
 
 ## 1. Executive Summary
 
-目标是让复杂回答在 agent session 中仍然清晰：
+目标是让复杂回答在 Agent Thread 中仍然清晰：
 
 - 顶层列表要容易扫读。
 - 二级、三级列表要能明显区分层级。
@@ -16,7 +16,7 @@
 
 1. Product surface
    1. Web console
-      - Session feed
+      - Agent Thread feed
         - User turn
         - Assistant answer
         - Agent message cards:
@@ -28,12 +28,13 @@
         2. All messages
         3. Thread view
    2. CLI
-      - `chub msg <to> --from <from> --response required`
-      - `chub msg --reply-to <message-id> --from <from>`
+      - `loom msg <to> --from <from> --response required`
+      - `loom msg --reply-to <message-id> --from <from>`
 2. Runtime surface
-   - One long-lived session per agent subject.
-   - Turns are short-lived work units inside a session.
-   - Rollout remains the single source of truth for session history.
+   - One stable Agent per long-lived subject.
+   - A Codex Thread is the Agent's primary context binding.
+   - Turns are short-lived work units inside a Thread.
+   - Rollout remains the single source of truth for Thread history.
 
 Nested paragraph inside list:
 
@@ -59,7 +60,7 @@ Nested paragraph inside list:
 
 - [x] Detect agent message envelope in live events.
 - [x] Detect agent message envelope in rollout history.
-- [ ] Add per-session communication summary.
+- [ ] Add per-Agent communication summary.
 - [ ] Add CLI message history command.
 
 ## 4. Blockquotes
@@ -75,16 +76,16 @@ Nested paragraph inside list:
 
 ## 5. Code
 
-Inline command example: `chub msg pinix-lead --from codex-hub-dev --response none`.
+Inline command example: `loom msg pinix-lead --from codex-loom-dev --response none`.
 
 ```xml
 <agent_message version="1" id="msg_example" response="required" status="open">
-  <from>codex-hub-dev</from>
+  <from>codex-loom-dev</from>
   <to>pinix-lead</to>
   <subject>Rendering check</subject>
-  <reply_command>chub msg --reply-to msg_example --from pinix-lead --body "..."</reply_command>
+  <reply_command>loom msg --reply-to msg_example --from pinix-lead --body "..."</reply_command>
   <body><![CDATA[
-Nested Markdown should render as a structured card in session feed.
+Nested Markdown should render as a structured card in the Agent Thread feed.
   ]]></body>
 </agent_message>
 ```

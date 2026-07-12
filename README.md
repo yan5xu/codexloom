@@ -1,4 +1,4 @@
-![CodexLoom: long-lived threads woven into a domain agent organization](docs/assets/codexloom-banner.jpg)
+![CodexLoom visual identity: long-lived threads woven into an agent organization](docs/assets/codexloom-vi-direction.png)
 
 # CodexLoom
 
@@ -6,123 +6,125 @@
 
 **Domain Agent Organization Platform for Codex**
 
-CodexLoom 把 Codex Thread 组织成一支持续在岗的领域 Agent 团队。
+**English** · [简体中文](README.zh-CN.md)
 
-它通过 Profile 明确 Agent 的长期领域与职责，以 Codex Thread 延续工作上下文，并让这些 Agent 通过通信、分工和清晰的对外边界形成一个持续协作的组织。
+CodexLoom turns Codex threads into a team of domain agents that stay on the job.
 
-[为什么是长期 Agent](#why-long-lived-domain-agents) · [开始使用](#quick-start) · [完整文档](#documentation)
+It uses Profiles to define long-term domains and responsibilities, preserves working context in Codex threads, and connects agents through communication, division of responsibility, and explicit external boundaries.
+
+[Why long-lived agents](#why-long-lived-domain-agents) · [Get started](#quick-start) · [Documentation](#documentation)
 
 ## What Is CodexLoom
 
-CodexLoom 建立在 Codex 之上。它不重新实现 Agent Runtime，也不复制 Thread 历史，而是在 Codex 提供的 Thread、Turn、工具和客户端之上增加稳定的 Agent 身份、Profile、组织关系、通信、外部平台集成和治理能力。
+CodexLoom is built on Codex. It does not reimplement the agent runtime or duplicate thread history. Instead, it adds durable agent identities, Profiles, organizational relationships, communication, external platform integrations, and governance on top of the threads, turns, tools, and clients provided by Codex.
 
-在 CodexLoom 中，一个 Agent 拥有稳定 ID、名称、Profile 和主要 Thread。用户可以通过 Codex Desktop、Mobile 或 CodexLoom WebUI 继续同一个 Thread；其他 Agent 通过 `loom` CLI 找到它并发送消息；组织成员则可以在飞书、Parall 等原有工作环境中与它协作。
+In CodexLoom, an agent has a stable ID, name, Profile, and primary thread. A person can continue that thread through Codex Desktop, Mobile, or the CodexLoom WebUI. Other agents can find it and send messages through the `loom` CLI. Members of an organization can work with it from existing environments such as Feishu (Lark) and Parall.
 
-当一个领域扩大时，Lead 可以把稳定的子领域交给长期存在的 Internal Agents；需要进入外部组织时，也可以设置专门的 Interface Agent，并为它在不同 Channel 中定义不同角色。CodexLoom 由此管理的不是孤立对话，而是一套持续工作的 Agent 组织。
+When a domain grows, a Lead can delegate stable subdomains to long-lived Internal Agents. When the team needs to participate in an external organization, it can establish a dedicated Interface Agent and define a different role for each channel. CodexLoom therefore governs an ongoing agent organization rather than a collection of isolated conversations.
 
-> **Codex 提供 Thread；CodexLoom 将这些 Thread 编织成一个 Agent 组织。**
+> **Codex provides the threads; CodexLoom weaves them into an agent organization.**
 
-`Loom` 代表这种组织过程：每条 Thread 保留自己的历史与方向，同时通过职责和关系被编织进更大的协作结构。
+The name `Loom` describes this organizing process: every thread keeps its own history and direction while responsibilities and relationships weave it into a larger collaborative structure.
 
 ## What You Can Do Today
 
-- **长期 Agent**：为 Agent 维护稳定身份、可修改名称、主要 Thread、Profile 和模型配置。
-- **一个 Thread，多种入口**：从 Codex Desktop、Mobile、WebUI 和 CLI 操作同一个 Thread，并实时同步状态与消息。
-- **Agent 间通信**：通过 Messages 发送、排队和回复消息，并保留处理状态与完整历史。
-- **团队结构**：使用 Team List 和可拖拽 Team Map 查看显式关系及真实通信中观察到的协作。
-- **外部组织接入**：通过 Parall 和飞书管理外部身份、Conversation Membership、Inbox 和 Outbox。
-- **持续运营**：使用 Schedules、全局运行状态、主动备份和等待 active Turn 的优雅重启。
+- **Long-lived agents:** Maintain a stable identity, editable name, primary thread, Profile, and model configuration for each agent.
+- **One thread, multiple surfaces:** Work on the same thread from Codex Desktop, Mobile, the WebUI, and the CLI, with live message and status synchronization.
+- **Agent-to-agent communication:** Send, queue, and reply to Messages while preserving delivery state, response relationships, and complete history.
+- **Team structure:** Use the Team List and draggable Team Map to inspect declared relationships and collaboration observed in actual Messages.
+- **External organization integration:** Manage external identities, Conversation Memberships, Inbox, and Outbox through Parall and Feishu (Lark).
+- **Continuous operations:** Run Schedules, inspect global runtime state, create backups on demand, and restart gracefully after active turns finish.
 
-Lead、Internal Agent 和 Interface Agent 目前通过 Profile、显式关系、Messages 和 Conversation Membership 组合表达；专用的层级消息策略和组织模板仍在继续建模。
+Lead, Internal Agent, and Interface Agent are currently expressed through Profiles, declared relationships, Messages, and Conversation Memberships. Dedicated hierarchical messaging policies and organization templates are still being modeled.
 
 ## Who Is It For
 
 ### Advanced Individuals
 
-- 长期维护多个专业 Agent。
-- 使用 Codex App 进行日常交互。
-- 让不同领域的 Agent 相互协作。
-- 把 Agent 带入自己的工作群和社区。
+- Maintain several specialized agents over the long term.
+- Use the Codex app for daily work.
+- Let agents responsible for different domains collaborate directly.
+- Bring agents into work groups and communities they already use.
 
 ### Organizations
 
-- 建立并持续调整 Agent 组织架构。
-- 让普通成员通过 IM 使用 Agent。
-- 由平台维护者管理职责、权限和运行状态。
-- 根据工作轨迹持续辅导 Agent，并重组不再适合的职责与关系。
+- Establish and continuously adapt an agent organization.
+- Let employees use agents directly through their existing messaging platforms.
+- Give platform maintainers control over responsibilities, access, and runtime health.
+- Coach agents from their work trajectories and reorganize responsibilities when the current structure stops working.
 
 ## Quick Start
 
-前置条件：本机已经安装并使用 ChatGPT 身份登录 `codex` CLI。
+Prerequisite: install the `codex` CLI and sign in with a ChatGPT account.
 
 ```sh
 make release
 ./bin/codex-loom
 ```
 
-打开 <http://localhost:4870>，然后创建第一个 Agent：
+Open <http://localhost:4870>, then create your first agent:
 
 ```sh
 ./bin/loom agent create research --cwd /path/to/repo
 ./bin/loom profile set research \
-  --identity "负责这个领域的长期研究" \
-  --domain "持续研究相关产品、协议和实现" \
-  --scope "回答领域问题，沉淀结论，并向相关 Agent 提供建议"
-./bin/loom thread send research "建立这个领域的现状基线"
+  --identity "Long-term researcher for this domain" \
+  --domain "Continuously research the relevant products, protocols, and implementations" \
+  --scope "Answer domain questions, preserve conclusions, and advise related agents"
+./bin/loom thread send research "Establish a baseline for the current state of this domain"
 ```
 
 ## Why Long-Lived Domain Agents
 
-### Task Agent Starts from a Task
+### A Task Agent Starts with a Task
 
-过去，我们通常围绕一个 Task 使用 Code Agent：为任务建立 Thread，提供目标与背景，结果交付后，这次协作随之结束。Thread 中已经积累了项目背景、约束、工具使用方式和过往决策，这些上下文本可成为后续工作的基础；然而下一项相关任务往往另起 Thread，用户不得不重新说明背景、重述既有决策并重建上下文。原有积累未被延续，每项工作都再次经历 cold start。
+Code agents are usually organized around tasks: create a thread, provide the objective and background, deliver the result, and end the collaboration. That thread may already contain project context, constraints, tool usage, and prior decisions that would be valuable to the next piece of work. Yet the next related task often starts in a new thread, forcing the user to restate the background, recover earlier decisions, and rebuild the working context. Every task pays the cold-start cost again.
 
-CodexLoom 的核心主张是：让 Thread 在一次任务结束后继续承接工作。同一领域的后续任务继续进入该 Thread，复用已经积累的上下文；Profile 则为 Agent 明确长期负责的 Domain、职责与边界。Thread 由此不再只是一次任务的历史记录，而成为 Domain Agent 的持续工作载体。
+CodexLoom makes a different bet: a thread should continue to carry work after one task ends. Later tasks in the same domain return to that thread and reuse what it has accumulated. A Profile gives the agent a durable domain, responsibility, and boundary. The thread stops being a record of one task and becomes the continuing workspace of a Domain Agent.
 
 | | Task Agent | Domain Agent |
 |---|---|---|
-| 建立依据 | 一次任务 | 一个长期领域 |
-| Thread | 任务完成后闲置或切换 | 持续承接同一领域的工作 |
-| 后续任务 | 重新说明背景并恢复上下文 | 从已有上下文和工作轨迹继续 |
-| 责任边界 | 完成当前任务 | 持续负责整个领域 |
+| Created around | One task | A long-lived domain |
+| Thread lifecycle | Abandoned or replaced after delivery | Continues to receive work in the same domain |
+| Next task | Reintroduces background and rebuilds context | Continues from existing context and trajectory |
+| Responsibility | Complete the current task | Remain responsible for the domain |
 
 ### Rebuilding Context Also Has a Cost
 
-对长期 Thread 的常见担忧是：上下文窗口有限，历史越长，每次任务可能越慢、越贵。这一担忧有现实基础，但只计算了保留上下文的成本，没有计算重建上下文的成本。另起 Thread 后，为恢复同等工作状态，背景、约束和既有决策仍需重新输入，同样会消耗 token；复用 Thread 时，稳定的历史前缀能够持续命中 prompt cache，从而减少重复处理。
+A common concern about long-lived threads is that context windows are finite and longer histories may make each task slower or more expensive. That concern is real, but it counts only the cost of retaining context, not the cost of reconstructing it. A new thread still needs the relevant background, constraints, and previous decisions to reach the same working state. Reusing a thread also allows its stable history prefix to benefit from prompt caching instead of repeatedly processing the same context from scratch.
 
 ### Compaction Preserves Continuity
 
-Compaction 不等于上下文清零。历史被压缩后，保留下来的摘要和近期工作轨迹仍能提供大量可用信息。长期使用 Thread 不意味着无限累积原始消息，而是允许上下文通过缓存与压缩持续演进。Compaction 是维持连续性的机制，而不是放弃 Thread 的理由。
+Compaction does not reset the context to zero. After older history is compressed, its summary and the recent trajectory still preserve substantial working information. A long-lived thread does not require every raw message to grow without bound; its context can evolve through caching and compaction. Compaction is a mechanism for maintaining continuity, not a reason to abandon the thread.
 
-长期 Thread 还会积累一种难以通过单次 Prompt 重建的隐性上下文。人类在持续协作中留下的纠正、偏好、术语、判断方式与协作习惯，会随着多轮交互进入 Thread，并在连续的 Compaction 中被反复提炼。它们未必适合逐条写入 Profile，却共同形成该 Agent 独有的工作默契；另起 Thread，丢失的也正是这部分难以显式迁移的知识。
+A long-lived thread also accumulates tacit context that is difficult to reconstruct in a single prompt. Corrections, preferences, terminology, judgment, and collaboration habits enter the thread through repeated work and are refined across successive compactions. They may not belong as individual rules in a Profile, but together they create a working understanding unique to that agent. Starting a new thread loses precisely this knowledge that is hardest to migrate explicitly.
 
-> **Task Agent 从任务开始；Domain Agent 从过往工作继续。**
+> **A Task Agent starts with a task; a Domain Agent continues from prior work.**
 
-在 Domain Agent 模式下，Task 仍是阶段性工作单位，但不再定义 Agent 的身份与生命周期。Agent 可以暂时 idle，后续工作仍从已有积累出发。
+Tasks still exist in the Domain Agent model, but they become units of work rather than definitions of identity or lifecycle. An agent can remain idle between tasks and still continue later from what it has already learned.
 
 ## Profile and Thread
 
-CodexLoom 将 Agent 作为稳定的长期主体管理。Profile 定义 Agent 是谁、长期负责什么以及边界在哪里；这里的 Domain 可以是一个项目、子系统、专业能力、客户或业务领域。
+CodexLoom treats an agent as a durable, long-lived subject. Its Profile defines who the agent is, what it remains responsible for, and where its boundaries lie. A domain can be a project, subsystem, professional capability, customer, or business area.
 
-Thread 承载持续发生的交互、决策、工具调用、产物和反馈，并在长期使用中形成该 Agent 的工作轨迹。Profile 提供稳定方向，Thread 保留工作积累，使后续任务能够沿着已有上下文继续。
+The thread carries interactions, decisions, tool calls, artifacts, and feedback as they happen, forming the agent's work trajectory over time. The Profile supplies stable direction; the thread preserves accumulated work so that future tasks can continue from existing context.
 
-Profile 也面向其他 Agent 提供协作信息。它说明某个 Agent 负责什么、哪些问题应该找它、哪些工作超出它的边界，因此既是 Agent 的长期上下文，也是组织内的可发现性与协作契约。
+A Profile also exposes collaboration information to other agents. It states what the agent owns, which questions should be directed to it, and which work lies outside its boundary. It is both durable context for the agent and a discoverability and collaboration contract for the organization.
 
 ## From Domain Agents to an Organization
 
-> **Workflow 描述任务如何流动；CodexLoom 组织谁长期负责。**
+> **A workflow describes how work moves; CodexLoom organizes who remains responsible.**
 
-当 Agent 分别对不同 Domain 持续负责，它们之间形成的不再是一次性的调用链，而是长期协作关系。工作跨越领域边界时，需要找到对应负责人，询问其判断、请求协作，并把使用中发现的问题反馈给它。
+When agents remain responsible for different domains, their relationships stop being one-off invocation chains and become ongoing collaboration. Work that crosses a domain boundary needs to find the responsible agent, ask for its judgment, request help, and report problems discovered while using what it owns.
 
-Team Map 呈现长期职责和组织关系，Messages 则留下实际发生的协作记录。声明关系帮助 Agent 找到负责人，消息历史则提供这些关系如何在真实工作中发生的证据。
+The Team Map presents durable responsibilities and organizational relationships. Messages preserve the collaboration that actually occurs. Declared relationships help agents find the right owner; message history provides evidence of how those relationships operate in real work.
 
 ### Communication Across Domains
 
-例如，一个 Agent 使用另一个 Agent 维护的工具时，可以直接向负责人询问用法或反馈故障。目标忙碌时，消息会等待当前工作结束后再投递；问题、判断与结果通过回复关系完整保留。`loom` CLI 提供 Agent 间的发现、发送、排队、回复和状态查询，Messages 则记录这些跨领域协作。
+When one agent uses a tool maintained by another, it can ask the owner how to use it or report a failure directly. If the recipient is busy, the message waits until its current turn ends. Questions, judgments, and results remain connected through replies. The `loom` CLI provides discovery, delivery, queuing, replies, and status inspection, while Messages records the resulting cross-domain collaboration.
 
 ### Internal Agents
 
-当一个 Domain 变得过大，负责该领域的 Agent 可以成为 Lead，将其中稳定的子领域交给 Internal Agents。每个 Internal Agent 都拥有自己的 Profile 和 Thread，长期负责一个子领域；Lead 负责整体协调，并作为这组 Agent 对外协作的统一入口。
+When a domain becomes too large, its owner can become a Lead and delegate stable subdomains to Internal Agents. Every Internal Agent has its own Profile and thread and remains responsible for one subdomain. The Lead coordinates the whole domain and acts as the public collaboration boundary for the group.
 
 ```text
 Product Lead
@@ -132,63 +134,63 @@ Product Lead
 └── Ops Internal Agent
 ```
 
-人类维护者可以直接与任何 Internal Agent 交互；其他 Agent 则通过 Lead 使用这组内部能力，无需了解每个子领域的组织细节。
+Human maintainers can interact directly with any Internal Agent. Other agents collaborate through the Lead and do not need to understand every internal responsibility.
 
-这种结构接近公司的组织方式：每个成员拥有稳定职责，领域扩大后继续分工，内部通过沟通协作，对外由明确的角色承担整体责任。
+This resembles a human organization: members have stable responsibilities, growing domains are divided further, internal work happens through collaboration, and explicit roles carry responsibility across organizational boundaries.
 
 ## Designing the External Boundary
 
-> **IM 集成不是把 Agent 简单绑定到外部账号，而是允许 Agent 组织设计自己的对外边界。**
+> **IM integration is not simply binding an internal agent to an external account. It lets the agent organization design its own external boundary.**
 
-高级用户会把长期协作的 Agent 作为伙伴带入原有工作环境。Agent 组织可以设置专门负责外部沟通的 Interface Agent：它持续维护外部关系和沟通上下文，需要领域判断时向 Lead 询问，取得结论后面向外部回应，并将重要反馈带回内部组织。
+Advanced users may bring long-term agent collaborators into existing work environments. An agent organization can establish a dedicated Interface Agent for external communication. It maintains external relationships and conversational context, asks the Lead for domain judgment when needed, responds externally with the resulting decision, and brings important feedback back into the internal organization.
 
 ```text
-飞书 / Parall  <->  Interface Agent  <->  Lead  <->  Internal Agents
+Feishu (Lark) / Parall  <->  Interface Agent  <->  Lead  <->  Internal Agents
 ```
 
-一个 Agent 可以拥有多个平台身份，也可以进入多个群聊。外部身份说明 Agent 在哪里可达；Conversation Membership 则定义它在具体会话中的角色，包括应该关注什么、什么时候发言、什么不能说，以及何时必须向内部负责人确认。同一个 Agent 因而可以在不同 Channel 中承担不同职责，而不必复制成多个彼此割裂的 Agent。
+An agent can have identities on multiple platforms and participate in multiple group conversations. An external identity states where the agent is reachable. A Conversation Membership defines its role in a specific conversation: what to pay attention to, when to speak, what it must not disclose, and when it must consult an internal owner. The same agent can therefore perform different roles in different channels without being copied into separate, disconnected agents.
 
-| 状态 | 平台 |
+| Status | Platforms |
 |---|---|
-| 当前支持 | 飞书、Parall |
-| TODO | Slack、Microsoft Teams |
+| Available | Feishu (Lark), Parall |
+| TODO | Slack, Microsoft Teams |
 
 ## Work Where People Already Work
 
-CodexLoom 不要求所有参与者迁移到一个新的聊天入口。同一个 Agent 可以从不同界面被使用，同时保持稳定身份和 Thread 连续性。
+CodexLoom does not require every participant to move to a new chat interface. The same agent remains reachable through different surfaces while preserving its identity and thread continuity.
 
-| 参与者 | 入口 | 用途 |
+| Participant | Surface | Purpose |
 |---|---|---|
-| 日常使用者 | Codex Desktop / Mobile | 与 Agent 持续工作，在不同设备上继续同一个 Thread |
-| Agent 维护者 | CodexLoom WebUI | 使用 Agent，并维护 Profile、组织关系、外部入口和运行状态 |
-| 其他 Agent | `loom` CLI | 发现领域负责人，发送消息、回复并查询处理状态 |
-| 组织成员 | 外部 IM | 在原有工作环境中使用已经接入组织的 Agent |
+| Daily user | Codex Desktop / Mobile | Continue working with an agent and its thread across devices |
+| Agent maintainer | CodexLoom WebUI | Use agents and govern Profiles, relationships, external surfaces, and runtime state |
+| Other agents | `loom` CLI | Discover domain owners, send and reply to messages, and inspect delivery state |
+| Organization members | External IM | Use agents from the work environments they already inhabit |
 
 ## Govern the Agent Organization
 
-CodexLoom 的治理对象不是一组模型参数，而是一个持续工作的 Agent 组织。Agent 是否健康，需要从真实工作中判断：它如何理解输入、使用哪些工具、产生什么结果、如何与其他 Agent 沟通，以及何时失败、重试或需要人工介入。这些可观察的工作事实构成 Trajectory，而不是模型不可见的隐藏思维链。
+CodexLoom governs an ongoing agent organization, not a collection of model parameters. The health of an agent must be judged from real work: how it interprets input, which tools it uses, what it produces, how it communicates with other agents, and when it fails, retries, or needs human intervention. These observable facts form its trajectory; they are not the model's hidden chain of thought.
 
-长期 Agent 也使持续辅导成为可能。维护者可以直接与 Agent 对话，复盘一次判断，纠正它对领域的理解，并观察后续工作是否改善。需要长期生效的变化可以落实到 Profile、协作关系和 Conversation Membership，而不是停留在一次性的提示中。
+Long-lived agents also make continuous coaching possible. A maintainer can talk directly with an agent, review a decision, correct its understanding of the domain, and observe whether later work improves. Changes that should persist can be applied to the Profile, relationships, and Conversation Memberships instead of remaining in a one-off prompt.
 
-治理还包括组织本身的演进：职责过大时拆分新的 Internal Agents，协作路径过长时调整关系，对外沟通失焦时重新设计 Interface Agent 和 Channel 角色。CodexLoom 管理的不只是单个 Agent 的表现，也包括整个 Agent 组织是否合理。
+Governance includes the organization itself. Split out new Internal Agents when a responsibility becomes too broad, adjust relationships when collaboration paths become too long, and redesign Interface Agents or channel roles when external communication loses focus. CodexLoom governs both the performance of individual agents and the fitness of the organization around them.
 
-对个人而言，这是一组可以长期协作并被带入工作环境的 Agent 伙伴；对企业而言，这些 Agent 是需要持续运营的组织资产。普通成员可以直接在 IM 中使用 Agent，维护者则通过 CodexLoom 观察、辅导和调整背后的 Agent 组织。
+For an individual, this is a set of agent partners that can collaborate over time and participate in existing work environments. For an enterprise, these agents are organizational assets that require ongoing operation. Employees use them through IM platforms, while maintainers use CodexLoom to observe, coach, and reshape the agent organization behind them.
 
 ## Product Boundary
 
-CodexLoom 建立在 Codex 之上。Codex 继续提供 Agent Runtime、Thread 历史以及 Desktop、Mobile 等日常客户端；CodexLoom 负责稳定 Agent 身份、长期职责、组织通信、外部边界和治理。Task 与 Workflow 仍可在 Agent 内部运行，但不是 CodexLoom 的核心治理对象。
+CodexLoom is built on Codex. Codex continues to provide the agent runtime, thread history, and daily clients such as Desktop and Mobile. CodexLoom provides durable agent identity, long-term responsibility, organizational communication, external boundaries, and governance. Tasks and workflows can still run inside an agent, but they are not the primary objects governed by CodexLoom.
 
 ## Documentation
 
-- [Agent Profile：如何定义长期身份、Domain 与 Scope](docs/agent-profile.md)
-- [Agent 通信与 `loom` CLI](docs/loom-cli.md)
-- [外部平台集成设计](docs/agent-platform-integration.md)
-- [Conversation Membership：Agent 在具体会话中的角色](docs/conversation-membership.md)
-- [Codex app-server 协议与适配说明](docs/codex-app-server-protocol.md)
-- [架构、数据流、API、迁移与开发手册](docs/handbook.md)
+- [Agent Profiles: defining a long-term identity, domain, and scope](docs/agent-profile.md)
+- [Agent communication and the `loom` CLI](docs/loom-cli.md)
+- [External platform integration design](docs/agent-platform-integration.md)
+- [Conversation Membership: an agent's role in a specific conversation](docs/conversation-membership.md)
+- [Codex app-server protocol and adapter notes](docs/codex-app-server-protocol.md)
+- [Architecture, data flow, APIs, migration, and development handbook](docs/handbook.md)
 
 ## Project Status
 
-CodexLoom 当前是 Codex-native、本地优先、自托管的快速迭代项目。Remote 等能力依赖 Codex experimental API，接口和 backend 行为可能随 Codex 版本变化。完整限制和兼容策略见[开发手册](docs/handbook.md#已知限制)。
+CodexLoom is a Codex-native, local-first, self-hosted project under active development. Features such as Remote depend on experimental Codex APIs whose interfaces and backend behavior may change between Codex releases. See the [development handbook](docs/handbook.md#已知限制) for current limitations and compatibility strategy.
 
 CodexLoom is an independent project built on Codex. It is not affiliated with or endorsed by OpenAI.

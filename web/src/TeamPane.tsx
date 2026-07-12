@@ -372,7 +372,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent }: Props) {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="search agents, domains, scope, relationships"
-                className="h-9 w-full rounded-md bg-background pl-9 pr-3 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40"
+                className="h-9 w-full rounded-md bg-background pl-9 pr-3 text-[13px] outline-none ring-1 ring-border focus:ring-ring/25"
               />
             </div>
             <select
@@ -381,7 +381,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent }: Props) {
                 setSelectedAgentId(event.target.value);
                 setSelectedLinkId("");
               }}
-              className="h-9 min-w-[150px] max-w-[220px] rounded-md bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40"
+              className="h-9 min-w-[150px] max-w-[220px] rounded-md bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-ring/25"
             >
               <option value="">all agents</option>
               {team.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
@@ -693,7 +693,7 @@ function AgentInspector({
               <option value="">select related agent</option>
               {targets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} placeholder="Describe the long-term collaboration boundary" className="w-full resize-y rounded-md bg-background p-2 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-primary/40" />
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} placeholder="Describe the long-term collaboration boundary" className="w-full resize-y rounded-md bg-background p-2 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25" />
             <div className="flex justify-end gap-2">
               <button onClick={() => setAddingLink(false)} className="h-8 rounded-md border border-border px-3 text-[12px] text-muted-foreground">Cancel</button>
               <button disabled={!target || !description.trim() || saving} onClick={addRelationship} className="h-8 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:opacity-50">Add</button>
@@ -780,7 +780,7 @@ function RelationshipInspector({
         </div>
         {editing ? (
           <div className="space-y-3">
-            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={8} className="w-full resize-y rounded-md bg-background p-2.5 text-[13px] leading-5 outline-none ring-1 ring-border focus:ring-primary/40" />
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={8} className="w-full resize-y rounded-md bg-background p-2.5 text-[13px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25" />
             <div className="flex items-center justify-between gap-2">
               <button disabled={saving} onClick={() => { if (window.confirm("Delete this declared relationship?")) run(() => onDelete(relationship)); }} className="flex h-8 items-center gap-1.5 rounded-md border border-destructive/30 px-3 text-[12px] text-destructive"><Trash2 className="size-3.5" />Delete</button>
               <div className="flex gap-2">
@@ -929,7 +929,7 @@ function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData>>) {
   const { agent, selected, onMessage } = data;
   const domain = firstLine(agent.profile.domain) || firstLine(agent.profile.identity) || "No domain declared";
   return (
-    <div className={`w-[260px] rounded-md border bg-card p-3.5 shadow-card ${selected ? "border-primary/50 ring-2 ring-primary/20" : "border-border"}`}>
+    <div className={`w-[260px] rounded-md border bg-card p-3.5 shadow-card ${selected ? "border-ring/50 ring-2 ring-ring/18" : "border-border"}`}>
       <Handle type="target" position={Position.Left} className="!size-2 !border-border !bg-muted-foreground" />
       <Handle type="source" position={Position.Right} className="!size-2 !border-border !bg-muted-foreground" />
       <div className="flex items-start justify-between gap-2">
@@ -955,7 +955,7 @@ function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData>>) {
 
 function AgentListCard({ agent, selected, onSelect, onMessage }: { agent: TeamAgent; selected: boolean; onSelect: () => void; onMessage: () => void }) {
   return (
-    <article className={`rounded-md border bg-card p-4 shadow-card ${selected ? "border-primary/40 ring-1 ring-primary/15" : "border-border"}`}>
+    <article className={`rounded-md border bg-card p-4 shadow-card ${selected ? "border-ring/45 ring-1 ring-ring/15" : "border-border"}`}>
       <button onClick={onSelect} className="block w-full text-left">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -980,7 +980,7 @@ function AgentListCard({ agent, selected, onSelect, onMessage }: { agent: TeamAg
 
 function ObservedLinkCard({ link, selected, onSelect }: { link: TeamObservedLink; selected: boolean; onSelect: () => void }) {
   return (
-    <button onClick={onSelect} className={`block w-full rounded-md border bg-card p-3 text-left shadow-card ${selected ? "border-primary/40 ring-1 ring-primary/15" : "border-border hover:border-primary/30"}`}>
+    <button onClick={onSelect} className={`block w-full rounded-md border bg-card p-3 text-left shadow-card ${selected ? "border-ring/45 ring-1 ring-ring/15" : "border-border hover:border-input"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="truncate text-[13px] font-semibold">{link.from} -&gt; {link.to}</div>
         <div className="font-mono text-[10px] text-muted-foreground">{link.messageCount} messages | {link.replyCount} replies | {link.openCount} open</div>
@@ -994,7 +994,7 @@ function ProfileField({ label, value, onChange, rows, placeholder }: { label: st
   return (
     <label className="block">
       <span className="mb-1.5 block text-[11px] font-semibold uppercase text-muted-foreground">{label}</span>
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={rows} placeholder={placeholder} className="w-full resize-y rounded-md bg-background p-2.5 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-primary/40" />
+      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={rows} placeholder={placeholder} className="w-full resize-y rounded-md bg-background p-2.5 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25" />
     </label>
   );
 }

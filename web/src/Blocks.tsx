@@ -3,7 +3,7 @@ import { UserBubble, AssistantBubble } from "./pages/agent/MessageBubbles";
 import { MarkdownContent } from "./pages/agent/markdown";
 import type { Block } from "./feed";
 
-// Maps sys-line classes onto the warm cashmere semantic palette.
+// Maps trajectory events onto the semantic palette.
 const sysColor: Record<string, string> = {
   ok: "text-success",
   warn: "text-warning",
@@ -43,13 +43,13 @@ export function BlockView({ block }: { block: Block }) {
               }
             : {
                 label: "NOTIFY",
-                chip: "bg-primary/10 text-primary",
-                border: "border-primary/25",
-                accent: "bg-primary",
+                chip: "bg-muted text-muted-foreground",
+                border: "border-border",
+                accent: "bg-muted-foreground/60",
               };
       return (
-        <article className={`card relative my-2 overflow-hidden rounded-xl border ${style.border} bg-card shadow-card`}>
-          <div className={`absolute inset-y-0 left-0 w-1 ${style.accent}`} />
+        <article className={`relative my-2 overflow-hidden rounded-md border ${style.border} bg-card shadow-card`}>
+          <div className={`absolute inset-y-0 left-0 w-0.5 ${style.accent}`} />
           <div className="px-4 py-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
@@ -79,7 +79,7 @@ export function BlockView({ block }: { block: Block }) {
               <MarkdownContent content={block.body} />
             </div>
             {block.replyCommand && (
-              <pre className="mt-2 overflow-auto rounded-lg bg-background/70 px-3 py-2 font-mono text-[11.5px] text-muted-foreground ring-1 ring-border/60">
+              <pre className="mt-2 overflow-auto border-l-2 border-border bg-muted/25 px-3 py-2 font-mono text-[11.5px] text-muted-foreground">
                 {block.replyCommand}
               </pre>
             )}
@@ -95,7 +95,7 @@ export function BlockView({ block }: { block: Block }) {
           ? "bg-warning/10 text-warning"
           : block.expectation === "none"
             ? "bg-muted text-muted-foreground"
-            : "bg-chart-3/10 text-chart-3";
+            : "bg-secondary text-secondary-foreground";
       const expectationLabel =
         block.expectation === "required"
           ? "REPLY EXPECTED"
@@ -104,19 +104,19 @@ export function BlockView({ block }: { block: Block }) {
             : "OPTIONAL REPLY";
       const conversationLabel = block.membershipName || block.conversationId || "External conversation";
       return (
-        <article className="relative my-2 overflow-hidden rounded-lg border border-chart-3/35 bg-card shadow-card">
-          <div className="absolute inset-y-0 left-0 w-1 bg-chart-3" />
+        <article className="relative my-2 overflow-hidden rounded-md border border-foreground/20 bg-card shadow-card">
+          <div className="absolute inset-y-0 left-0 w-0.5 bg-foreground/65" />
           <div className="px-4 py-3">
             <div className="flex min-w-0 flex-wrap items-start gap-3">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-chart-3/10 text-chart-3">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-foreground">
                 <Inbox className="size-4" />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                  <span className="rounded-md bg-chart-3/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-chart-3">
+                  <span className="rounded-md bg-foreground px-2 py-0.5 font-mono text-[10px] font-semibold text-background">
                     EXTERNAL
                   </span>
-                  <span className="rounded-md border border-chart-3/25 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase text-chart-3">
+                  <span className="rounded-md border border-border px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase text-muted-foreground">
                     {block.provider}
                   </span>
                   <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
@@ -146,14 +146,14 @@ export function BlockView({ block }: { block: Block }) {
                   const label = attachment.name || attachment.path || attachment.url || attachment.id || `Attachment ${index + 1}`;
                   const content = (
                     <>
-                      <Paperclip className="size-3.5 shrink-0 text-chart-3" />
+                      <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
                       <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium">{label}</span>
                       {attachment.mimeType && <span className="hidden shrink-0 font-mono text-[9px] text-muted-foreground sm:block">{attachment.mimeType}</span>}
                       {attachment.size && <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{formatFileSize(attachment.size)}</span>}
                     </>
                   );
                   return attachment.url ? (
-                    <a key={`${attachment.id || label}-${index}`} href={attachment.url} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-2 py-2 hover:text-chart-3">{content}</a>
+                    <a key={`${attachment.id || label}-${index}`} href={attachment.url} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-2 py-2 hover:text-foreground">{content}</a>
                   ) : (
                     <div key={`${attachment.id || label}-${index}`} className="flex min-w-0 items-center gap-2 py-2">{content}</div>
                   );
@@ -203,13 +203,13 @@ export function BlockView({ block }: { block: Block }) {
       );
     }
 
-    // Reasoning — collapsible, sunken muted tone.
+    // Reasoning stays visually subordinate to the final answer.
     case "think":
       return (
         <details className="group/reason py-1" open={!block.done}>
           <summary className="flex cursor-pointer list-none select-none items-center gap-2 py-1 text-[11px] text-muted-foreground/60 transition-colors hover:text-muted-foreground">
             <span className="text-[10px] transition-transform group-open/reason:rotate-90">▶</span>
-            <span className="font-mono tracking-wide">{block.done ? "reasoning" : "reasoning…"}</span>
+            <span className="font-mono">{block.done ? "reasoning" : "reasoning…"}</span>
           </summary>
           <pre className="mt-1 whitespace-pre-wrap border-l-2 border-muted-foreground/15 pl-4 font-sans text-[12.5px] leading-relaxed text-muted-foreground/70">
             {block.text}
@@ -217,17 +217,17 @@ export function BlockView({ block }: { block: Block }) {
         </details>
       );
 
-    // Command execution — bordered card with a status chip and recessed output tray.
+    // Command execution uses one frame; request and output are separated by rules.
     case "command": {
       const finished = block.exitCode !== null || block.status === "completed" || block.status === "failed";
       const ok = block.exitCode === 0;
       return (
-        <details className="card my-2 overflow-hidden rounded-xl border border-border bg-card shadow-card">
+        <details className="my-2 overflow-hidden rounded-md border border-border bg-card shadow-card">
           <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2.5">
             <span className="flex-1 truncate font-mono text-[12.5px]">{block.command}</span>
             {finished ? (
               <span
-                className={`shrink-0 rounded-lg px-2 py-0.5 text-[10.5px] font-medium ${
+                className={`shrink-0 rounded-md px-2 py-0.5 text-[10.5px] font-medium ${
                   ok ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
                 }`}
               >
@@ -235,7 +235,7 @@ export function BlockView({ block }: { block: Block }) {
                 {block.durationMs != null ? ` · ${block.durationMs}ms` : ""}
               </span>
             ) : (
-              <span className="flex shrink-0 items-center gap-1.5 rounded-lg bg-warning/10 px-2 py-0.5 text-[10.5px] font-medium text-warning">
+              <span className="flex shrink-0 items-center gap-1.5 rounded-md bg-warning/10 px-2 py-0.5 text-[10.5px] font-medium text-warning">
                 <span className="spinner !h-2.5 !w-2.5" />
                 running
               </span>
@@ -243,18 +243,18 @@ export function BlockView({ block }: { block: Block }) {
           </summary>
           <div className="space-y-2 border-t border-border bg-muted/30 px-3.5 py-2.5">
             <div className="space-y-1">
-              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground/60">
+              <div className="font-mono text-[10px] uppercase text-muted-foreground/60">
                 request
               </div>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-background/65 px-3 py-2 font-mono text-[12px] text-foreground/85">
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap border-l-2 border-border px-3 py-1 font-mono text-[12px] text-foreground/85">
                 {block.command}
               </pre>
             </div>
             <div className="space-y-1">
-              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground/60">
+              <div className="font-mono text-[10px] uppercase text-muted-foreground/60">
                 output
               </div>
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-background/65 px-3 py-2 font-mono text-[12px] text-muted-foreground">
+              <pre className="max-h-80 overflow-auto whitespace-pre-wrap border-l-2 border-border px-3 py-1 font-mono text-[12px] text-muted-foreground">
                 {block.output || "(no output)"}
               </pre>
             </div>
@@ -266,12 +266,12 @@ export function BlockView({ block }: { block: Block }) {
     // File change — file paths in primary, diff coloured add/del/context.
     case "file":
       return (
-        <details className="card my-2 overflow-hidden rounded-xl border border-border bg-card shadow-card" open>
+        <details className="my-2 overflow-hidden rounded-md border border-border bg-card shadow-card" open>
           <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2.5">
-            <span className="flex-1 truncate font-mono text-[12.5px] text-primary">
+            <span className="flex-1 truncate font-mono text-[12.5px] text-foreground">
               {block.changes.map((c) => `${c.kind} ${c.path}`).join(", ") || "file change"}
             </span>
-            <span className="shrink-0 rounded-lg bg-success/10 px-2 py-0.5 text-[10.5px] font-medium text-success">
+            <span className="shrink-0 rounded-md bg-success/10 px-2 py-0.5 text-[10.5px] font-medium text-success">
               {block.status}
             </span>
           </summary>
@@ -305,7 +305,7 @@ export function BlockView({ block }: { block: Block }) {
     // local image path.
     case "image":
       return (
-        <div className="my-3 overflow-hidden rounded-xl border border-border/60 bg-card shadow-card">
+        <div className="my-3 overflow-hidden rounded-md border border-border bg-card shadow-card">
           <img
             src={block.data}
             alt={block.path || "generated"}
@@ -327,7 +327,7 @@ export function BlockView({ block }: { block: Block }) {
     // Unrecognised item — raw JSON, collapsed.
     case "raw":
       return (
-        <details className="card my-2 overflow-hidden rounded-xl border border-border bg-card">
+        <details className="my-2 overflow-hidden rounded-md border border-border bg-card">
           <summary className="cursor-pointer select-none px-3 py-2 font-mono text-[12.5px] text-muted-foreground">
             {block.type}
           </summary>

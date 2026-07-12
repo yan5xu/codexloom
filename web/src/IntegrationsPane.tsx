@@ -213,7 +213,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[320px_1fr]">
         <section className={`${selected ? "hidden lg:block" : "block"} min-h-0 overflow-y-auto border-r border-border`}>
           {connections.map((connection) => (
-            <button key={connection.id} onClick={() => setSelectedID(connection.id)} className={`block w-full border-b border-border px-4 py-3 text-left ${selectedID === connection.id ? "bg-primary/[0.09]" : "hover:bg-muted/45"}`}>
+            <button key={connection.id} onClick={() => setSelectedID(connection.id)} className={`block w-full border-b border-border px-4 py-3 text-left ${selectedID === connection.id ? "bg-selection text-selection-foreground" : "hover:bg-muted/45"}`}>
               <div className="flex min-w-0 items-center gap-2"><ConnectionDot connection={connection} /><span className="min-w-0 flex-1 truncate text-[13px] font-semibold capitalize">{connection.provider}</span><span className="font-mono text-[9px] uppercase text-muted-foreground">{connection.status}</span></div>
               <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{connection.accountRef || connection.id}</div>
               <div className="mt-1 text-[10px] text-muted-foreground">{addresses.filter((address) => address.connectionId === connection.id).length} addresses</div>
@@ -292,7 +292,7 @@ function formatDate(value?: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-const controlClass = "h-8 min-w-0 rounded-md border border-border bg-background px-2.5 text-[12px] outline-none focus:border-primary/50";
+const controlClass = "h-8 min-w-0 rounded-md border border-border bg-background px-2.5 text-[12px] outline-none focus:border-ring";
 
 function parseList(value: string) {
   return Array.from(new Set(value.split(",").map((item) => item.trim()).filter(Boolean)));

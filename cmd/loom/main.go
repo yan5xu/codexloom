@@ -195,7 +195,9 @@ func main() {
 			switch subcommand {
 			case "create", "list", "ls", "get", "rename":
 				cmd = subcommand
-			case "archive", "delete", "kill":
+			case "archive", "delete":
+				cmd = "archive"
+			case "kill":
 				cmd = "kill"
 			default:
 				usage("agent create|list|get|rename|archive ...")
@@ -246,8 +248,13 @@ func main() {
 		cmdInterrupt(a)
 	case "history":
 		cmdHistory(a)
+	case "archive":
+		cmdArchive(a)
 	case "kill":
-		cmdKill(a)
+		fmt.Fprintln(os.Stderr, "error: 'kill' is disabled because it is ambiguous")
+		fmt.Fprintf(os.Stderr, "stop current work: %s thread interrupt <agent>\n", commandName)
+		fmt.Fprintf(os.Stderr, "archive an agent:  %s agent archive <agent>\n", commandName)
+		os.Exit(2)
 	case "backup":
 		cmdBackup(a)
 	case "backups":
@@ -321,7 +328,8 @@ Compatibility shortcuts:
   chub backup [--reason text]
   chub backups
   chub approve <name|id> <approvalId>   /  chub reject <name|id> <approvalId>
-  chub kill <name|id>
+  chub thread interrupt <name|id>              stop the current Turn
+  chub agent archive <name|id>                 archive the long-lived Agent
 `, base)
 	fmt.Print(strings.ReplaceAll(help, "chub", commandName))
 }
@@ -1656,9 +1664,9 @@ func cmdInterrupt(a args) {
 	}
 }
 
-func cmdKill(a args) {
+func cmdArchive(a args) {
 	if len(a.positional) < 1 {
-		usage("kill <name|id>")
+		usage("agent archive <name|id>")
 	}
 	resp, err := api("DELETE", "/api/agents/"+url.PathEscape(a.positional[0]), nil)
 	if err != nil {

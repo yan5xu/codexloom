@@ -1,8 +1,8 @@
-import { Check, Loader2, Pencil, Plus, Send, SlidersHorizontal, Square, Trash2, X } from "lucide-react";
+import { Archive, Check, Loader2, Pencil, Plus, Send, SlidersHorizontal, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { api, type Agent, type AgentAddress, type AgentProfile, type ConversationMembership, type PlatformConnection } from "./types";
-import { emptyFeed, reduceFeed, summarizeTask } from "./feed";
+import { emptyFeed, reduceFeed } from "./feed";
 import type { LoomEvent } from "./types";
 import { BlockView } from "./Blocks";
 
@@ -45,6 +45,7 @@ export function AgentPane({
   const [feed, dispatch] = useReducer(reduceFeed, emptyFeed);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [configOpen, setConfigOpen] = useState(false);
   const [configSection, setConfigSection] = useState<"agent" | "profile" | "connections">("agent");
   const [nameDraft, setNameDraft] = useState(agent.name);
@@ -73,8 +74,13 @@ export function AgentPane({
   const keepScrollRef = useRef<number | null>(null); // scrollHeight before a prepend
   const membershipStateRef = useRef<Record<string, unknown>>({});
   const sendingRef = useRef(false);
+  const sendStatusTimerRef = useRef<number | null>(null);
 
   const PAGE = 25;
+
+  useEffect(() => () => {
+    if (sendStatusTimerRef.current !== null) window.clearTimeout(sendStatusTimerRef.current);
+  }, []);
 
   useEffect(() => {
     setNameDraft(agent.name);
@@ -206,11 +212,16 @@ export function AgentPane({
     if (!text || sendingRef.current) return;
     sendingRef.current = true;
     setSending(true);
+    setSendStatus("sending");
     setInput("");
     try {
       await api("POST", `/api/agents/${agent.id}/turns`, { text });
+      setSendStatus("sent");
+      if (sendStatusTimerRef.current !== null) window.clearTimeout(sendStatusTimerRef.current);
+      sendStatusTimerRef.current = window.setTimeout(() => setSendStatus("idle"), 2200);
     } catch (err: any) {
       setInput(draft);
+      setSendStatus("failed");
       onError(err.message);
     } finally {
       sendingRef.current = false;
@@ -384,7 +395,6 @@ export function AgentPane({
   const effortLabel = displayEffort(agent.effort);
   const sandboxLabel = agent.sandbox || "danger-full-access";
   const approvalLabel = agent.approvalPolicy || "never";
-  const currentTaskLabel = agent.currentTask ? summarizeTask(agent.currentTask) : "";
   const modelPresetValue = modelCustomOpen || isCustomModel(modelDraft) ? CUSTOM_MODEL_VALUE : modelDraft;
   const profileDirty = Boolean(
     profile &&
@@ -424,17 +434,28 @@ export function AgentPane({
 
   return (
     <main className="flex w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden bg-background">
-      {/* header — serif title, status pill, mono meta; soft warm shadow, no hard border */}
-      <header
-        className="relative grid w-full max-w-full shrink-0 gap-y-2 overflow-hidden py-2 pl-14 pr-3 md:flex md:items-center md:gap-3 md:overflow-visible md:px-6 md:py-2.5"
-        style={{ boxShadow: "0 4px 12px -6px oklch(0.2 0.03 78 / 0.12)" }}
-      >
-        <div className="min-w-0 pr-20 md:order-1 md:pr-0">
-          <h1 className="truncate font-serif text-xl leading-none tracking-tight">{agent.name}</h1>
-          <div className="mt-1 hidden truncate font-mono text-[10px] uppercase tracking-widest text-muted-foreground/80 md:block">
+      <header className="relative flex min-h-14 w-full max-w-full shrink-0 items-center gap-2 border-b border-border bg-background px-3 pl-14 md:min-h-[68px] md:gap-3 md:px-6">
+        <div className="min-w-0 flex-1 pr-28 md:pr-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-[15px] font-semibold leading-tight md:text-base">{agent.name}</h1>
+            <span
+              title={agent.currentTask || undefined}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase ${
+                running
+                  ? "bg-warning/10 text-warning"
+                  : agent.status === "idle"
+                    ? "bg-success/10 text-success"
+                    : "bg-muted text-muted-foreground"
+              }`}
+            >
+              <span className={`size-1.5 rounded-full ${running ? "animate-pulse bg-warning" : agent.status === "idle" ? "bg-success" : "bg-muted-foreground/50"}`} />
+              {agent.status}
+            </span>
+          </div>
+          <div className="mt-1 hidden truncate font-mono text-[10px] text-muted-foreground md:block">
             {agent.cwd} · {agent.threadId}
           </div>
-          <div className="mt-1 hidden max-w-full flex-wrap items-center gap-1.5 overflow-hidden md:flex">
+          <div className="mt-1.5 hidden max-w-full flex-wrap items-center gap-1 overflow-hidden lg:flex">
             <span className="max-w-full truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
               {modelLabel}
             </span>
@@ -449,25 +470,7 @@ export function AgentPane({
             </span>
           </div>
         </div>
-        <span
-          className={`inline-flex w-auto min-w-0 max-w-full justify-self-start items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-medium md:order-2 md:ml-1 md:shrink-0 ${
-            running
-              ? "bg-warning/10 text-warning"
-              : agent.status === "idle"
-                ? "bg-success/10 text-success"
-                : "bg-muted text-muted-foreground"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${
-              running ? "animate-pulse bg-warning" : agent.status === "idle" ? "bg-success" : "bg-muted-foreground/50"
-            }`}
-          />
-          <span className="shrink-0">{agent.status}</span>
-          {currentTaskLabel && <span className="min-w-0 truncate">— {currentTaskLabel}</span>}
-        </span>
-        <div className="hidden md:order-3 md:block md:flex-1" />
-        <div className="absolute right-3 top-2 flex shrink-0 items-start justify-end gap-1.5 md:relative md:right-auto md:top-auto md:order-4 md:items-center">
+        <div className="absolute right-3 top-3 flex shrink-0 items-center justify-end gap-1 md:relative md:right-auto md:top-auto">
           <button
             onClick={() => setConfigOpen((v) => !v)}
             className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -497,7 +500,7 @@ export function AgentPane({
                       disabled={running}
                       placeholder="agent-name"
                       spellCheck={false}
-                      className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-primary/40 disabled:opacity-60"
+                      className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
                     />
                   </label>
                   <label className="mb-2 block">
@@ -514,7 +517,7 @@ export function AgentPane({
                         setModelDraft(e.target.value);
                       }}
                       disabled={running}
-                      className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-primary/40 disabled:opacity-60"
+                      className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
                     >
                       {MODEL_PRESETS.map((option) => (
                         <option key={option.label} value={option.value}>{option.label}</option>
@@ -528,25 +531,25 @@ export function AgentPane({
                         disabled={running}
                         placeholder="model id"
                         spellCheck={false}
-                        className="mt-2 h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-primary/40 disabled:opacity-60"
+                        className="mt-2 h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
                       />
                     )}
                   </label>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Thinking Effort</span>
-                    <select value={effortDraft} onChange={(e) => setEffortDraft(e.target.value)} disabled={running} className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-primary/40 disabled:opacity-60">
+                    <select value={effortDraft} onChange={(e) => setEffortDraft(e.target.value)} disabled={running} className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-ring/25 disabled:opacity-60">
                       <option value="">default</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">extra high</option>
                     </select>
                   </label>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Sandbox</span>
-                    <select value={sandboxDraft} onChange={(e) => setSandboxDraft(e.target.value)} disabled={running} className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-primary/40 disabled:opacity-60">
+                    <select value={sandboxDraft} onChange={(e) => setSandboxDraft(e.target.value)} disabled={running} className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-ring/25 disabled:opacity-60">
                       <option value="danger-full-access">danger-full-access</option><option value="workspace-write">workspace-write</option><option value="read-only">read-only</option>
                     </select>
                   </label>
                   <label className="mb-3 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Approval Policy</span>
-                    <select value={approvalDraft} onChange={(e) => setApprovalDraft(e.target.value)} disabled={running} className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-primary/40 disabled:opacity-60">
+                    <select value={approvalDraft} onChange={(e) => setApprovalDraft(e.target.value)} disabled={running} className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-ring/25 disabled:opacity-60">
                       <option value="never">never</option><option value="on-request">on-request</option>
                     </select>
                   </label>
@@ -656,46 +659,46 @@ export function AgentPane({
           {running && (
             <button
               onClick={interrupt}
-              className="flex size-8 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-warning/10 hover:text-warning md:h-8 md:w-auto md:px-3 md:text-[13px]"
+              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-warning/10 hover:text-warning md:w-auto md:gap-1.5 md:px-2.5 md:text-[12px]"
               aria-label="interrupt turn"
             >
-              <Square className="size-3.5 md:hidden" />
-              <span className="hidden md:inline">interrupt</span>
+              <Square className="size-3.5" />
+              <span className="hidden md:inline">Stop turn</span>
             </button>
           )}
           <button
             onClick={kill}
-            className="flex size-8 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive md:h-8 md:w-auto md:px-3 md:text-[13px]"
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive md:w-auto md:gap-1.5 md:px-2.5 md:text-[12px]"
             aria-label="archive agent"
           >
-            <Trash2 className="size-3.5 md:hidden" />
-            <span className="hidden md:inline">kill</span>
+            <Archive className="size-3.5" />
+            <span className="hidden md:inline">Archive</span>
           </button>
         </div>
       </header>
 
       {/* event feed + pending approvals */}
       <div ref={feedRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-4 pb-8 pt-4 md:px-6">
+        <div className="mx-auto max-w-[880px] px-3 pb-8 pt-3 md:px-6 md:pt-5">
           {/* pending approvals */}
           {approvalEntries.map(([id, ap]) => (
-            <div key={id} className="mb-3 rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3.5 shadow-card">
+            <div key={id} className="mb-3 rounded-md border border-warning/30 bg-warning/5 px-4 py-3 shadow-card">
               <div className="mb-2 text-sm">
                 <span className="text-warning">⚠</span> <b>codex requests approval</b> —{" "}
                 <span className="font-mono text-[12px]">{ap.method}</span>
               </div>
-              <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-xl bg-muted/50 px-3 py-2 font-mono text-[12px] text-muted-foreground">
+              <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-muted/50 px-3 py-2 font-mono text-[12px] text-muted-foreground">
                 {JSON.stringify(ap.params, null, 2)}
               </pre>
               <button
                 onClick={() => resolveApproval(id, "accept")}
-                className="mr-2 rounded-xl bg-primary px-3.5 py-1.5 text-[13px] font-medium text-primary-foreground transition-colors hover:opacity-90"
+                className="mr-2 rounded-md bg-primary px-3.5 py-1.5 text-[13px] font-medium text-primary-foreground transition-colors hover:opacity-90"
               >
                 approve
               </button>
               <button
                 onClick={() => resolveApproval(id, "reject")}
-                className="rounded-xl px-3.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                className="rounded-md px-3.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
               >
                 reject
               </button>
@@ -708,23 +711,18 @@ export function AgentPane({
         </div>
       </div>
 
-      {/* composer — faithful AgentComposer layout: shimmer divider, rounded-2xl
-          ring container, icon send/stop, centered hint. */}
-      <div className="relative shrink-0 bg-background px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:px-6 md:py-3 md:pb-3">
-        <div
-          className="absolute inset-x-0 top-0 h-px"
-          style={{
-            background:
-              "linear-gradient(90deg, transparent, oklch(0.88 0.01 78 / 0.4) 20%, oklch(0.88 0.01 78 / 0.4) 80%, transparent)",
-          }}
-        />
-        <div className="mx-auto max-w-3xl">
-          <div className="flex flex-col gap-2 rounded-2xl bg-card p-2 shadow-[0_4px_20px_rgba(0,0,0,0.02)] ring-1 ring-black/[0.04] transition-all duration-150 focus-within:ring-black/[0.08]">
+      <div className="relative shrink-0 border-t border-border bg-background px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:px-6 md:py-3 md:pb-3">
+        <div className="mx-auto max-w-[880px]">
+          <div className="flex flex-col gap-1.5 rounded-md border border-input bg-card p-1.5 shadow-card transition focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20">
             <textarea
+              rows={1}
               value={input}
               disabled={sending}
               aria-label="task message"
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                if (sendStatus === "failed") setSendStatus("idle");
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !sending) {
                   e.preventDefault();
@@ -732,13 +730,20 @@ export function AgentPane({
                 }
               }}
               placeholder={`Send a task to ${agent.name}…`}
-              className="max-h-[200px] min-h-11 resize-none overflow-y-auto bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/50 disabled:cursor-wait disabled:opacity-60"
+              className="max-h-[200px] min-h-10 resize-none overflow-y-auto bg-transparent px-2.5 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground/60 disabled:cursor-wait disabled:opacity-60"
             />
-            <div className="flex items-center justify-end px-1">
+            <div className="flex min-h-8 items-center justify-between gap-2 px-1">
+              <div className="min-w-0 truncate font-mono text-[10px] text-muted-foreground" aria-live="polite">
+                {sendStatus === "sending" && <span className="inline-flex items-center gap-1.5"><Loader2 className="size-3 animate-spin" />Sending to thread</span>}
+                {sendStatus === "sent" && <span className="inline-flex items-center gap-1.5 text-success"><Check className="size-3" />Sent to thread</span>}
+                {sendStatus === "failed" && <span className="text-destructive">Send failed · draft restored</span>}
+                {sendStatus === "idle" && <span className="hidden sm:inline">Enter to send · Shift+Enter for new line</span>}
+              </div>
               {running ? (
                 <button
                   onClick={interrupt}
-                  className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-[0_4px_12px_rgba(139,92,246,0.2)] transition-all duration-150 hover:bg-primary/90"
+                  className="shadow-action flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-md bg-primary text-primary-foreground transition-all duration-150 hover:bg-primary/90"
+                  aria-label="stop current turn"
                 >
                   <Square className="size-4" />
                 </button>
@@ -748,11 +753,11 @@ export function AgentPane({
                   disabled={sending || !input.trim()}
                   aria-label={sending ? "sending task" : "send task"}
                   className={cn(
-                    "flex size-9 shrink-0 items-center justify-center rounded-xl transition-all duration-150",
+                    "flex size-9 shrink-0 items-center justify-center rounded-md transition-all duration-150",
                     sending
                       ? "cursor-wait bg-primary text-primary-foreground"
                       : input.trim()
-                      ? "cursor-pointer bg-primary text-primary-foreground shadow-[0_4px_12px_rgba(139,92,246,0.2)] hover:bg-primary/90"
+                      ? "shadow-action cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
                       : "cursor-not-allowed bg-muted text-muted-foreground/40",
                   )}
                 >
@@ -762,9 +767,6 @@ export function AgentPane({
             </div>
           </div>
         </div>
-        <p className="mt-1.5 text-center font-mono text-[10px] text-muted-foreground/50">
-          Enter to send · Shift+Enter for new line
-        </p>
       </div>
     </main>
   );
@@ -792,13 +794,13 @@ function AgentProfileField({
         rows={rows}
         maxLength={16000}
         placeholder={placeholder}
-        className="w-full resize-y rounded-md bg-background p-2.5 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-primary/40"
+        className="w-full resize-y rounded-md bg-background p-2.5 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25"
       />
     </label>
   );
 }
 
-const membershipControlClass = "h-8 w-full min-w-0 rounded-md bg-background px-2 font-mono text-[10.5px] outline-none ring-1 ring-border focus:ring-primary/40 disabled:opacity-60";
+const membershipControlClass = "h-8 w-full min-w-0 rounded-md bg-background px-2 font-mono text-[10.5px] outline-none ring-1 ring-border focus:ring-ring/25 disabled:opacity-60";
 
 function MembershipInput({ label, value, onChange, disabled = false, mono = false }: {
   label: string;
@@ -824,7 +826,7 @@ function MembershipTextarea({ label, value, onChange, rows }: {
   return (
     <label className="mt-2 block">
       <span className="mb-1 block text-[10px] uppercase text-muted-foreground">{label}</span>
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={rows} maxLength={16000} className="w-full resize-y rounded-md bg-background p-2.5 text-[11.5px] leading-5 outline-none ring-1 ring-border focus:ring-primary/40" />
+      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={rows} maxLength={16000} className="w-full resize-y rounded-md bg-background p-2.5 text-[11.5px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25" />
     </label>
   );
 }

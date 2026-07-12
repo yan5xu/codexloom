@@ -310,7 +310,7 @@ export function InboxPane({ agents, onError }: { agents: Agent[]; onError: (mess
         <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(300px,380px)_1fr]">
           <section className={`${selectedOutbox ? "hidden lg:block" : "block"} min-h-0 overflow-y-auto border-r border-border`}>
             {outbox.map((item) => (
-              <button key={item.id} onClick={() => selectItem(item.id)} className={`block w-full border-b border-border px-4 py-3 text-left ${item.id === selectedID ? "bg-primary/[0.09]" : "hover:bg-muted/45"}`}>
+              <button key={item.id} onClick={() => selectItem(item.id)} className={`block w-full border-b border-border px-4 py-3 text-left ${item.id === selectedID ? "bg-selection text-selection-foreground" : "hover:bg-muted/45"}`}>
                 <div className="flex items-center gap-2"><StateDot state={item.state} /><span className="min-w-0 flex-1 truncate font-mono text-[11px]">{item.conversation.conversationId}</span><span className="text-[10px] text-muted-foreground">{formatTime(item.createdAt)}</span></div>
                 <div className="mt-1 line-clamp-2 text-[12.5px] leading-5">{item.content.text || "Attachment"}</div>
               </button>
@@ -329,7 +329,7 @@ export function InboxPane({ agents, onError }: { agents: Agent[]; onError: (mess
 function InboxRow({ entry, selected, onClick }: { entry: InboxEntry; selected: boolean; onClick: () => void }) {
   const subject = String(entry.message.providerMetadata?.subject || "");
   return (
-    <button onClick={onClick} className={`block w-full overflow-hidden border-b border-border px-4 py-3 text-left ${selected ? "bg-primary/[0.09]" : "hover:bg-muted/45"}`}>
+    <button onClick={onClick} className={`block w-full overflow-hidden border-b border-border px-4 py-3 text-left ${selected ? "bg-selection text-selection-foreground" : "hover:bg-muted/45"}`}>
       <div className="flex min-w-0 items-center gap-2">
         <StateDot state={entry.item.state} />
         <span className="truncate text-[12px] font-semibold">{entry.message.sender.displayName || entry.message.sender.externalId}</span>
@@ -405,7 +405,7 @@ function InboxInspector({ entry, reply, reason, deferUntil, working, onReply, on
       {entry.outboxItem && <div className="mt-4 flex items-center gap-2 border-l-2 border-success bg-success/5 px-3 py-2 text-[12px]"><Check className="size-3.5 text-success" /> Reply {entry.outboxItem.state}</div>}
       {actionable && (
         <div className="mt-6 border-t border-border pt-4">
-          {replyAllowed && <textarea value={reply} onChange={(event) => onReply(event.target.value)} rows={5} placeholder="Reply" className="w-full resize-y rounded-md bg-card p-3 text-[13px] leading-5 outline-none ring-1 ring-border focus:ring-primary/40" />}
+          {replyAllowed && <textarea value={reply} onChange={(event) => onReply(event.target.value)} rows={5} placeholder="Reply" className="w-full resize-y rounded-md bg-card p-3 text-[13px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25" />}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {replyAllowed && <button onClick={() => onAction("reply")} disabled={working || !reply.trim()} className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:opacity-50"><MessageSquareReply className="size-3.5" /> Reply</button>}
             <button onClick={() => onAction("no-reply")} disabled={working} className="flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[12px] text-muted-foreground hover:text-foreground disabled:opacity-50"><SkipForward className="size-3.5" /> No reply</button>
@@ -494,4 +494,4 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-const controlClass = "h-8 min-w-0 rounded-md border border-border bg-background px-2.5 text-[12px] outline-none focus:border-primary/50";
+const controlClass = "h-8 min-w-0 rounded-md border border-border bg-background px-2.5 text-[12px] outline-none focus:border-ring";

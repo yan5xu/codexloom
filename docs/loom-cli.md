@@ -1,6 +1,7 @@
 # loom 使用与 Agent 通信
 
-`loom` 是 CodexLoom 的规范命令行客户端，`chub` 是兼容二进制。它面向两类动作：
+`loom` 是 CodexLoom 的规范命令行客户端，`chub` 只保留为迁移期兼容二进制。新文档、Agent
+Profile、脚本和 Agent 间说明统一使用 `loom`。它面向两类动作：
 
 - 管 Agent/Thread：创建 Agent、启动 Turn、观察、中断、看历史。
 - 管 agent 通信：给另一个 agent 发结构化消息、回复消息、查看投递状态。
@@ -11,10 +12,41 @@
 export CODEX_LOOM_URL=http://127.0.0.1:4870
 ```
 
-常用二进制路径：
+## 安装位置与 chub 迁移
+
+当前规范二进制和完整文档位于：
 
 ```sh
-./bin/loom
+/Users/cp/Developer/epiral/repos/codex-hub/bin/loom
+/Users/cp/Developer/epiral/repos/codex-hub/docs/loom-cli.md
+```
+
+只有当前目录是 CodexLoom 仓库时才能使用 `./bin/loom`。其他 Agent 通常工作在自己的仓库，
+应使用绝对路径，或把目录加入 `PATH`：
+
+```sh
+export PATH="/Users/cp/Developer/epiral/repos/codex-hub/bin:$PATH"
+loom agent list
+```
+
+旧命令与规范命令的对应关系：
+
+| 旧 chub 用法 | 规范 loom 用法 |
+|---|---|
+| `chub create NAME --cwd PATH` | `loom agent create NAME --cwd PATH` |
+| `chub list` | `loom agent list` |
+| `chub get AGENT` | `loom agent get AGENT` |
+| `chub send AGENT TEXT` | `loom thread send AGENT TEXT` |
+| `chub watch AGENT` | `loom thread watch AGENT` |
+| `chub history AGENT` | `loom thread history AGENT` |
+| `chub interrupt AGENT` | `loom thread interrupt AGENT` |
+| `chub msg ...` | `loom msg ...` |
+| `chub kill AGENT` | 已禁用；根据目的选择 `loom thread interrupt` 或 `loom agent archive` |
+
+快速确认当前使用的是新 CLI：
+
+```sh
+loom help
 ```
 
 ## Codex Remote
@@ -133,6 +165,16 @@ Profile 和显式关系的管理见 [agent-profile.md](agent-profile.md)。
 ```sh
 ./bin/loom thread interrupt cici-research
 ```
+
+这只会停止当前 Turn，Agent、Profile、Thread 和团队关系都会保留。归档整个长期 Agent 必须使用
+显式命令：
+
+```sh
+./bin/loom agent archive cici-research
+```
+
+顶层 `loom kill` / `chub kill` 已禁用，因为“停止当前工作”和“归档 Agent”是两种完全不同的
+操作，不能由一个含义模糊的命令同时表达。
 
 看历史：
 

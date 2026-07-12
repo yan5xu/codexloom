@@ -18,7 +18,7 @@
 import { useMemo, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
-import { Check, Copy, Loader2, Wrench } from "lucide-react";
+import { Check, ChevronRight, Copy, Loader2, Wrench } from "lucide-react";
 import type { ChatMessage, TokenUsage } from "../../lib/chat/types";
 import { MarkdownContent } from "./markdown";
 
@@ -39,7 +39,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       onClick={handleCopy}
       className={cn(
-        "flex size-7 items-center justify-center rounded-xl transition-all duration-150 cursor-pointer",
+        "flex size-7 cursor-pointer items-center justify-center rounded-md transition-all duration-150",
         copied
           ? "text-primary bg-primary/10"
           : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-foreground/[0.04]",
@@ -213,9 +213,9 @@ function ToolCallItem({ tool, isLast }: { tool: ChatMessage; isLast: boolean }) 
   const isDone = !!tool.content;
 
   return (
-    <details className={cn("group/tool rounded-xl border border-border/60 overflow-hidden", !isLast && "mb-1.5")}>
+    <details className={cn("group/tool overflow-hidden rounded-md border border-border", !isLast && "mb-1.5")}>
       <summary className="list-none cursor-pointer flex items-center gap-3 px-3 py-2 hover:bg-foreground/[0.03] transition-colors">
-        <div className="flex shrink-0 items-center justify-center w-5 h-5 rounded-xl border border-border/60">
+        <div className="flex size-5 shrink-0 items-center justify-center rounded-md border border-border">
           {isDone ? (
             <Check className="h-3 w-3 text-success" strokeWidth={3} />
           ) : (
@@ -233,16 +233,14 @@ function ToolCallItem({ tool, isLast }: { tool: ChatMessage; isLast: boolean }) 
             </span>
           </div>
         </div>
-        <span className="text-[10px] text-muted-foreground/60 transition-transform group-open/tool:rotate-90">
-          &#9654;
-        </span>
+        <ChevronRight className="size-3.5 text-muted-foreground/60 transition-transform group-open/tool:rotate-90" />
       </summary>
 
-      <div className="px-3 py-3 bg-background/50 space-y-3" style={{ boxShadow: "inset 0 1px 0 oklch(0.88 0.01 78 / 0.4)" }}>
+      <div className="space-y-3 border-t border-border bg-muted/20 px-3 py-3">
         {tool.tool_args && (
           <div className="space-y-1">
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{t("agent.input")}</span>
-            <pre className="tray rounded-xl font-mono text-[11px] p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
+            <span className="text-[10px] font-medium uppercase text-muted-foreground">{t("agent.input")}</span>
+            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap border-l-2 border-border px-3 py-1 font-mono text-[11px] leading-relaxed">
               {(() => {
                 try { return JSON.stringify(JSON.parse(tool.tool_args), null, 2); }
                 catch { return tool.tool_args; }
@@ -252,8 +250,8 @@ function ToolCallItem({ tool, isLast }: { tool: ChatMessage; isLast: boolean }) 
         )}
         {tool.content && (
           <div className="space-y-1">
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{t("agent.result")}</span>
-            <pre className="tray rounded-xl font-mono text-[11px] p-3 overflow-x-auto whitespace-pre-wrap max-h-80 overflow-y-auto leading-relaxed">
+            <span className="text-[10px] font-medium uppercase text-muted-foreground">{t("agent.result")}</span>
+            <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap border-l-2 border-border px-3 py-1 font-mono text-[11px] leading-relaxed">
               {tool.content}
             </pre>
           </div>
@@ -300,9 +298,9 @@ function CollapsedIteration({ iteration }: { iteration: AgentIteration }) {
     <div>
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 py-1.5 hover:bg-foreground/[0.02] transition-colors rounded-xl cursor-pointer text-left"
+        className="flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 text-left transition-colors hover:bg-foreground/[0.02]"
       >
-        <span className={cn("text-[10px] text-muted-foreground/50 transition-transform", open && "rotate-90")}>&#9654;</span>
+        <ChevronRight className={cn("size-3 text-muted-foreground/50 transition-transform", open && "rotate-90")} />
         <span className={cn("text-xs text-muted-foreground/60 truncate", hasErrors && "text-destructive/50")}>
           {summary}
         </span>
@@ -335,8 +333,8 @@ function ExpandedIterationContent({ iteration, isFinal, isRunning }: { iteration
         ) : (
           <details className="group/reason">
             <summary className="list-none cursor-pointer flex items-center gap-2 py-1 text-[11px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors">
-              <span className="text-[10px] transition-transform group-open/reason:rotate-90">&#9654;</span>
-              <span className="font-mono tracking-wide">Reasoning</span>
+              <ChevronRight className="size-3 transition-transform group-open/reason:rotate-90" />
+              <span className="font-mono">Reasoning</span>
             </summary>
             <div className="mt-1 pl-4 border-l-2 border-muted-foreground/10 text-[12px] text-muted-foreground/50 leading-relaxed whitespace-pre-wrap">
               {iteration.thinking}
@@ -352,7 +350,7 @@ function ExpandedIterationContent({ iteration, isFinal, isRunning }: { iteration
             <MarkdownContent content={iteration.text!} />
           </div>
         ) : (
-          <div className="rounded-xl bg-muted/20 ring-1 ring-inset ring-black/[0.02] px-3 py-2">
+          <div className="rounded-md border-l-2 border-border bg-muted/20 px-3 py-2">
             <p className="text-[13px] text-muted-foreground/70 leading-relaxed">{iteration.text}</p>
           </div>
         )
@@ -361,13 +359,13 @@ function ExpandedIterationContent({ iteration, isFinal, isRunning }: { iteration
       {/* Tools */}
       {hasTools && (
         <details className="group/tools" open={isRunning}>
-          <summary className="list-none cursor-pointer flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-xl hover:bg-foreground/[0.03] transition-colors">
-            <span className="text-[10px] transition-transform group-open/tools:rotate-90 text-muted-foreground">&#9654;</span>
-            <span className="text-[11px] font-semibold text-muted-foreground tracking-wide">
+          <summary className="-mx-2 flex cursor-pointer list-none items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-foreground/[0.03]">
+            <ChevronRight className="size-3 text-muted-foreground transition-transform group-open/tools:rotate-90" />
+            <span className="text-[11px] font-semibold text-muted-foreground">
               {iteration.tools.length} step{iteration.tools.length !== 1 ? "s" : ""}
             </span>
             {isRunning && iteration.tools.some((t) => !t.content) && (
-              <span className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
+              <span className="size-1.5 animate-pulse rounded-full bg-warning" />
             )}
           </summary>
           <div className="mt-2 ml-1 pl-3 border-l-2 border-border/40 space-y-1.5">
@@ -441,9 +439,9 @@ function MultiIterationBlock({ iterations, streaming, usage }: { iterations: Age
         <>
           <button
             onClick={() => setProcessOpen(!processOpen)}
-            className="w-full flex items-center gap-2 py-1.5 hover:bg-foreground/[0.02] transition-colors rounded-xl cursor-pointer text-left mb-1"
+            className="mb-1 flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 text-left transition-colors hover:bg-foreground/[0.02]"
           >
-            <span className={cn("text-[10px] text-muted-foreground/50 transition-transform", processOpen && "rotate-90")}>&#9654;</span>
+            <ChevronRight className={cn("size-3 text-muted-foreground/50 transition-transform", processOpen && "rotate-90")} />
             <span className="text-xs text-muted-foreground/60">{groupSummary}</span>
           </button>
           {processOpen && (
@@ -452,7 +450,7 @@ function MultiIterationBlock({ iterations, streaming, usage }: { iterations: Age
                 <div key={i}>
                   {i > 0 && (
                     <div className="my-1">
-                      <div className="h-px" style={{ background: "linear-gradient(90deg, transparent, oklch(0.88 0.01 78 / 0.3) 20%, oklch(0.88 0.01 78 / 0.3) 80%, transparent)" }} />
+                      <div className="h-px bg-border/50" />
                     </div>
                   )}
                   <CollapsedIteration iteration={iter} />
@@ -467,7 +465,7 @@ function MultiIterationBlock({ iterations, streaming, usage }: { iterations: Age
           <div key={i}>
             {i > 0 && (
               <div className="my-1">
-                <div className="h-px" style={{ background: "linear-gradient(90deg, transparent, oklch(0.88 0.01 78 / 0.3) 20%, oklch(0.88 0.01 78 / 0.3) 80%, transparent)" }} />
+                <div className="h-px bg-border/50" />
               </div>
             )}
             <CollapsedIteration iteration={iter} />
@@ -478,7 +476,7 @@ function MultiIterationBlock({ iterations, streaming, usage }: { iterations: Age
       {/* Divider before final/current */}
       {intermediateIters.length > 0 && (
         <div className="my-1">
-          <div className="h-px" style={{ background: "linear-gradient(90deg, transparent, oklch(0.88 0.01 78 / 0.3) 20%, oklch(0.88 0.01 78 / 0.3) 80%, transparent)" }} />
+          <div className="h-px bg-border/50" />
         </div>
       )}
 
@@ -487,8 +485,8 @@ function MultiIterationBlock({ iterations, streaming, usage }: { iterations: Age
         <div className="py-1">
           {streaming && (
             <div className="flex items-center gap-1.5 mb-2">
-              <span className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
-              <span className="text-[10px] font-mono text-primary/70">Processing...</span>
+              <span className="size-1.5 animate-pulse rounded-full bg-warning" />
+              <span className="font-mono text-[10px] text-warning">Processing...</span>
             </div>
           )}
           <ExpandedIterationContent
@@ -549,11 +547,11 @@ export function AssistantBubble({ group, streaming = false }: { group: Assistant
   return (
     <div className="group/bubble py-3">
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[9px] font-bold text-primary uppercase tracking-[0.15em]">{t("agent.agent")}</span>
+        <span className="text-[10px] font-semibold uppercase text-foreground">{t("agent.agent")}</span>
         <span className="text-[10px] font-mono text-muted-foreground/40">
           {streaming ? (
             <span className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
+              <span className="size-1.5 animate-pulse rounded-full bg-warning" />
               {t("agent.streaming")}
             </span>
           ) : (
@@ -574,8 +572,8 @@ export function AssistantBubble({ group, streaming = false }: { group: Assistant
           {effectiveIterations[0]?.thinking && !streaming && (
             <details className="group/reason mb-2">
               <summary className="list-none cursor-pointer flex items-center gap-2 py-1 text-[11px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors">
-                <span className="text-[10px] transition-transform group-open/reason:rotate-90">&#9654;</span>
-                <span className="font-mono tracking-wide">Reasoning</span>
+                <ChevronRight className="size-3 transition-transform group-open/reason:rotate-90" />
+                <span className="font-mono">Reasoning</span>
               </summary>
               <div className="mt-1 pl-4 border-l-2 border-muted-foreground/10 text-[12px] text-muted-foreground/50 leading-relaxed whitespace-pre-wrap">
                 {effectiveIterations[0].thinking}
@@ -619,12 +617,14 @@ export function AssistantBubble({ group, streaming = false }: { group: Assistant
 export function UserBubble({ message }: { message: ChatMessage }) {
   const { t } = useTranslation();
   return (
-    <div className="py-3">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-[0.15em]">{t("agent.you")}</span>
+    <div className="flex flex-col items-end py-3">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase text-muted-foreground">{t("agent.you")}</span>
         <span className="text-[10px] font-mono text-muted-foreground/40">{shortTime(message.created_at)}</span>
       </div>
-      <div className="text-sm whitespace-pre-wrap break-words">{message.content}</div>
+      <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-md border border-border bg-secondary px-3 py-2 text-sm leading-6 sm:max-w-[78%]">
+        {message.content}
+      </div>
     </div>
   );
 }

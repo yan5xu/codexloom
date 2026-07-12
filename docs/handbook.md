@@ -446,6 +446,14 @@ make build
 7. 构建最终 dist 后再构建 Go embed binary。
 8. 用户触发生产 Restart Loom；重启后 curl + automation + screenshot 再验一次。
 
+前端基础约束：
+
+- HTTP 快照由 TanStack Query 持有；全局 SSE 直接更新同一 Query cache，不再为同一资源维护平行
+  `useState`。
+- Button、Dialog、Input、Separator 等基础交互优先使用 shadcn 组件；业务组件只负责组合与领域状态。
+- 桌面 sidebar 的 expanded/compact 状态可以持久化，但移动端始终使用完整 drawer，不能继承桌面窄栏。
+- 折叠后必须保留可发现的恢复入口；不能要求用户清 localStorage 或猜测隐藏热区。
+
 ### Team Graph 经验
 
 - React Flow 负责 pan/zoom/selection/drag，不手写 hit-test。
@@ -481,6 +489,16 @@ launchctl kickstart -k gui/$(id -u)/com.pinix.codex-loom
 确认新 label 正常后再删除旧 plist。此后页面内 Restart Loom 会查找同目录
 `codex-loom-reloader`，失败时再 fallback 到旧 reloader。
 
+### Agent 停止与归档纪律
+
+停止当前工作使用 `loom thread interrupt <agent>`，它只中断 active Turn。归档长期 Agent 使用
+`loom agent archive <agent>`，它会中断 Turn、调用 Codex `thread/archive` 并从 Agent registry
+删除该 Agent。顶层 `loom/chub kill` 禁用，避免把暂停误操作成归档。
+
+误归档恢复必须保留原 `agentId` 和 `threadId`：先创建备份，确认没有待投递消息，再调用 Codex
+`thread/unarchive`，最后通过 `POST /api/agents/restore` 重新登记原身份。Profile 和 Team
+Relationship 按 stable ID 独立保存，会自动重新关联；恢复只进入 idle，不启动 Turn。
+
 失败排查：
 
 ```sh
@@ -497,6 +515,7 @@ curl -fsS http://127.0.0.1:4870/api/health
 GET    /api/health
 GET    /api/agents
 POST   /api/agents
+POST   /api/agents/restore
 GET    /api/agents/{key}
 PATCH  /api/agents/{key}/config
 GET    /api/agents/{key}/profile

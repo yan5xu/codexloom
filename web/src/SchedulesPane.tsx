@@ -171,7 +171,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
                   onChange={(e) => setName(e.target.value)}
                   placeholder="daily-check"
                   spellCheck={false}
-                  className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-primary/40"
+                  className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-ring/25"
                 />
               </label>
               <label className="space-y-1">
@@ -179,7 +179,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
                 <select
                   value={to}
                   onChange={(e) => setTo(e.target.value)}
-                  className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40"
+                  className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-ring/25"
                 >
                   <option value="">select</option>
                   {agents.map((s) => (
@@ -196,7 +196,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
               <input
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                className="h-9 w-full rounded-lg bg-background px-2.5 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40"
+                className="h-9 w-full rounded-lg bg-background px-2.5 text-[13px] outline-none ring-1 ring-border focus:ring-ring/25"
               />
             </label>
 
@@ -206,7 +206,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
                 <select
                   value={mode}
                   onChange={(e) => setMode(e.target.value as Mode)}
-                  className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40"
+                  className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-ring/25"
                 >
                   <option value="cron">cron</option>
                   <option value="at">once</option>
@@ -217,7 +217,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
                 <select
                   value={response}
                   onChange={(e) => setResponse(e.target.value as "required" | "none")}
-                  className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-primary/40"
+                  className="h-9 w-full rounded-lg bg-background px-2 text-[13px] outline-none ring-1 ring-border focus:ring-ring/25"
                 >
                   <option value="required">required</option>
                   <option value="none">none</option>
@@ -233,7 +233,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
                     value={cron}
                     onChange={(e) => setCron(e.target.value)}
                     spellCheck={false}
-                    className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-primary/40"
+                    className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-ring/25"
                   />
                 </label>
                 <label className="space-y-1">
@@ -242,7 +242,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
                     value={timezone}
                     onChange={(e) => setTimezone(e.target.value)}
                     spellCheck={false}
-                    className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-primary/40"
+                    className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-ring/25"
                   />
                 </label>
               </div>
@@ -253,7 +253,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
                   type="datetime-local"
                   value={at}
                   onChange={(e) => setAt(e.target.value)}
-                  className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-primary/40"
+                  className="h-9 w-full rounded-lg bg-background px-2.5 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-ring/25"
                 />
               </label>
             )}
@@ -263,7 +263,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
               <textarea
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
-                className="min-h-44 w-full resize-none rounded-lg bg-background px-3 py-2 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-primary/40"
+                className="min-h-44 w-full resize-none rounded-lg bg-background px-3 py-2 font-mono text-[12.5px] outline-none ring-1 ring-border focus:ring-ring/25"
               />
             </label>
 

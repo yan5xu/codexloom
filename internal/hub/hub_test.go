@@ -9,6 +9,44 @@ import (
 	"github.com/yan5xu/codex-loom/internal/store"
 )
 
+func TestRestoreAgentKeepsStableIdentityAndDoesNotStartRuntime(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(st)
+	defer h.Shutdown()
+
+	view, err := h.RestoreAgent(RestoreAgentParams{
+		ID: "a07193ea", Name: "parall-edge-dev", Cwd: "/tmp/parall-edge",
+		ThreadID: "019f53a7-5485-7733-87f8-5b513420f62a",
+		Model:    "gpt-5.6-sol", Effort: "high", ProfileVersionSeen: 3,
+		CreatedAt: "2026-07-12T00:08:21Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.ID != "a07193ea" || view.ThreadID != "019f53a7-5485-7733-87f8-5b513420f62a" {
+		t.Fatalf("restored identity = %#v", view.Agent)
+	}
+	if view.Status != "idle" || view.ProcessAlive || view.CurrentTurnID != "" || view.CurrentTask != "" {
+		t.Fatalf("restored runtime state = %#v", view)
+	}
+
+	var persisted map[string]*Agent
+	if err := st.LoadAgents(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted["a07193ea"] == nil || persisted["a07193ea"].Name != "parall-edge-dev" {
+		t.Fatalf("persisted agents = %#v", persisted)
+	}
+	if _, err := h.RestoreAgent(RestoreAgentParams{
+		ID: "a07193ea", Name: "duplicate", Cwd: "/tmp/duplicate", ThreadID: "thread-duplicate",
+	}); err == nil {
+		t.Fatal("duplicate stable id restore succeeded")
+	}
+}
+
 func TestImportEdgeSkipsAliasForOwnedThread(t *testing.T) {
 	edgeFile := filepath.Join(t.TempDir(), "names.json")
 	if err := os.WriteFile(edgeFile, []byte(`{

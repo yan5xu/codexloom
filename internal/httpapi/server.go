@@ -417,6 +417,19 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, 201, map[string]any{"agent": agent})
 	})
+	mux.HandleFunc("POST /api/agents/restore", func(w http.ResponseWriter, r *http.Request) {
+		var body hub.RestoreAgentParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		agent, err := s.hub.RestoreAgent(body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 201, map[string]any{"agent": agent})
+	})
 	mux.HandleFunc("GET /api/agents/{key}", func(w http.ResponseWriter, r *http.Request) {
 		agent, err := s.hub.GetAgent(r.PathValue("key"))
 		if err != nil {

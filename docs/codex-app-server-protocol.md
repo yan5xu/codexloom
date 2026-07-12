@@ -58,7 +58,8 @@ CodexLoom 用到的核心子集：
 | `thread/resume` | 恢复线程(跨进程续上下文) | `{threadId, sandbox, cwd}`;线程 rollout 不存在时报错含 `no rollout` / `not found` → 回退 `thread/start` |
 | `thread/read` | 读元数据或历史(**运行中也安全**) | `{threadId, includeTurns:false}` 回填 adoption 元数据；`true` 返回 turns/items |
 | `thread/inject_items` | 不启动 turn，向模型可见历史追加原始 Responses API item | `{threadId, items:[...]}`；需要 `experimentalApi:true` |
-| `thread/archive` | 归档线程(kill 时用) | `{threadId}` |
+| `thread/archive` | 归档 Agent 时归档其线程 | `{threadId}` |
+| `thread/unarchive` | 恢复误归档线程 | `{threadId}` → `{thread}`；0.144.1 实测 |
 | `turn/start` | 派任务(异步,响应先回,事件走通知) | `{threadId, input:[{type:"text",text}], approvalPolicy, model?}` → `{turn:{id}}` |
 | `turn/interrupt` | 中断当前 turn | `{threadId, turnId?}`(实测缺 `threadId` 报 `missing field \`threadId\``,即方法存在) |
 | `turn/steer` | 运行中追加引导(未用,留作扩展) | — |

@@ -1639,6 +1639,22 @@ type CreateParams struct {
 	Effort         string `json:"effort"`
 }
 
+// RestoreAgentParams re-registers a previously archived Agent without
+// creating a replacement identity or starting a Turn. Profiles and team
+// relationships are stored independently and reconnect through the stable ID.
+type RestoreAgentParams struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Cwd                string `json:"cwd"`
+	ThreadID           string `json:"threadId"`
+	Sandbox            string `json:"sandbox"`
+	ApprovalPolicy     string `json:"approvalPolicy"`
+	Model              string `json:"model"`
+	Effort             string `json:"effort"`
+	ProfileVersionSeen int    `json:"profileVersionSeen"`
+	CreatedAt          string `json:"createdAt"`
+}
+
 type ConfigParams struct {
 	Name           *string `json:"name"`
 	Model          *string `json:"model"`
@@ -1705,6 +1721,60 @@ func (h *Hub) CreateAgent(p CreateParams) (AgentView, error) {
 	h.persistLocked()
 	h.emitLocked(id, "loom/agent-created", map[string]any{
 		"id": id, "name": meta.Name, "cwd": meta.Cwd, "threadId": meta.ThreadID,
+	})
+	h.emitStatusLocked(meta, meta.Status)
+	return h.viewLocked(meta), nil
+}
+
+func (h *Hub) RestoreAgent(p RestoreAgentParams) (AgentView, error) {
+	p.ID = strings.TrimSpace(p.ID)
+	p.Name = strings.TrimSpace(p.Name)
+	p.Cwd = strings.TrimSpace(p.Cwd)
+	p.ThreadID = strings.TrimSpace(p.ThreadID)
+	if p.ID == "" || p.Name == "" || p.Cwd == "" || p.ThreadID == "" {
+		return AgentView{}, errf(400, "id, name, cwd, and threadId are required")
+	}
+	if !nameRe.MatchString(p.Name) {
+		return AgentView{}, errf(400, "name must match [a-zA-Z0-9_-]+")
+	}
+	if p.Sandbox == "" {
+		p.Sandbox = "danger-full-access"
+	}
+	if p.ApprovalPolicy == "" {
+		p.ApprovalPolicy = "never"
+	}
+	p.Effort = normalizeEffort(strings.TrimSpace(p.Effort))
+	if p.Effort != "" && !validEffort(p.Effort) {
+		return AgentView{}, errf(400, "effort must be one of: minimal, low, medium, high, xhigh")
+	}
+	if p.CreatedAt == "" {
+		p.CreatedAt = now()
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.agents[p.ID] != nil {
+		return AgentView{}, errf(409, "agent id %q already exists", p.ID)
+	}
+	if existing := h.resolveLocked(p.Name); existing != nil {
+		return AgentView{}, errf(409, "agent %q already exists", p.Name)
+	}
+	for _, existing := range h.agents {
+		if existing.ThreadID == p.ThreadID {
+			return AgentView{}, errf(409, "thread %q is already bound to agent %q", p.ThreadID, existing.Name)
+		}
+	}
+	meta := &Agent{
+		ID: p.ID, Name: p.Name, Cwd: p.Cwd, ThreadID: p.ThreadID,
+		Sandbox: p.Sandbox, ApprovalPolicy: p.ApprovalPolicy,
+		Model: p.Model, Effort: p.Effort, ProfileVersionSeen: p.ProfileVersionSeen,
+		Status: "idle", CreatedAt: p.CreatedAt, UpdatedAt: now(),
+	}
+	h.agents[p.ID] = meta
+	h.seqs[p.ID] = h.st.LastSeq(p.ID)
+	h.persistLocked()
+	h.emitLocked(p.ID, "loom/agent-restored", map[string]any{
+		"id": p.ID, "name": p.Name, "cwd": p.Cwd, "threadId": p.ThreadID,
 	})
 	h.emitStatusLocked(meta, meta.Status)
 	return h.viewLocked(meta), nil

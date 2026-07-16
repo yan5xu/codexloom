@@ -1,4 +1,4 @@
-import { Activity, Archive, Bot, Cable, ChevronRight, CircleHelp, Inbox as InboxIcon, Info, Menu, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
+import { Activity, Archive, Bot, Cable, ChevronRight, CircleHelp, Inbox as InboxIcon, Info, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Agent, type BackupStatus, type HumanRequest, type InboxEntry, type RemoteSnapshot } from "./types";
@@ -72,16 +72,6 @@ function SidebarNavItem({ label, icon: Icon, active, compact, onSelect, indicato
         />
       ) : null}
     </Button>
-  );
-}
-
-function MobileNav({ icon: Icon, label, active, count = 0, onClick }: { icon: typeof Bot; label: string; active: boolean; count?: number; onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className={`relative flex min-w-0 flex-col items-center justify-center gap-0.5 text-[8.5px] ${active ? "text-foreground" : "text-muted-foreground"}`}>
-      <Icon className={`size-4 ${active ? "text-primary" : ""}`} />
-      <span className="truncate">{label}</span>
-      {count > 0 ? <span className="absolute right-[calc(50%-15px)] top-1 flex min-w-3.5 items-center justify-center rounded-sm bg-warning px-0.5 font-mono text-[7px] font-semibold text-warning-foreground">{count}</span> : null}
-    </button>
   );
 }
 
@@ -1325,7 +1315,7 @@ export default function App() {
       </button>
 
       {/* Agent tabs stay mounted while global workspaces temporarily cover them. */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden pb-11 md:pb-0">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <AgentTabs
           agents={openAgents}
           allAgents={agents}
@@ -1418,13 +1408,6 @@ export default function App() {
           </div>
         </Suspense>
       </div>
-
-      <nav className="fixed inset-x-0 bottom-0 z-20 grid h-11 grid-cols-4 border-t border-border bg-sidebar/95 px-1 backdrop-blur md:hidden" aria-label="Primary navigation">
-        <MobileNav icon={Bot} label="Agents" active={view === "agents"} onClick={() => current ? selectAgent(current) : setSidebarOpen(true)} />
-        <MobileNav icon={CircleHelp} label="Needs You" active={view === "needs-you"} count={openHumanRequests.length} onClick={() => selectNeedsYou()} />
-        <MobileNav icon={Activity} label="Overview" active={view === "status" || view === "capacity" || view === "usage"} onClick={() => selectOverview()} />
-        <MobileNav icon={MoreHorizontal} label="More" active={view === "team" || view === "integrations" || view === "settings"} onClick={() => setSidebarOpen(true)} />
-      </nav>
 
       {/* toast */}
       {toast && (

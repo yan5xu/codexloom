@@ -73,7 +73,7 @@ When the desktop sidebar is collapsed, the sidebar disappears except for a botto
 
 ### Mobile
 
-The primary navigation is Agents, Needs You, Overview, and More. Team, External, and Settings live under More. Agent selection uses a drawer or compact switcher; the Thread and composer own the screen. Inspectors become full-screen views.
+The Thread and composer own the screen without a persistent bottom navigation bar. A compact header menu opens the Agent drawer and the same Needs You, Overview, Team, External, and Settings destinations used on desktop. Agent selection uses that drawer or the tab strip; Inspectors become full-screen views.
 
 ## Agent Work Surface
 

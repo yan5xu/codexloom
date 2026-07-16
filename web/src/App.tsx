@@ -1,5 +1,5 @@
-import { Activity, Archive, BarChart3, Bot, Cable, CalendarClock, ChevronRight, CircleHelp, Inbox as InboxIcon, Info, Menu, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Plus, RadioTower, RotateCw, Settings2, SwatchBook, X } from "lucide-react";
-import { lazy, Suspense, type ReactNode, useEffect, useRef, useState } from "react";
+import { Activity, Archive, Bot, Cable, ChevronRight, CircleHelp, Inbox as InboxIcon, Info, Menu, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Agent, type BackupStatus, type HumanRequest, type InboxEntry, type RemoteSnapshot } from "./types";
 import { summarizeTask } from "./feed";
@@ -8,9 +8,11 @@ import { Button } from "./components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { Separator } from "./components/ui/separator";
 import { Input } from "./components/ui/input";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { publishThreadEvent, threadEventSubscriberCount } from "./thread-events";
+import { executionDotClass, executionLabel, isAgentExecuting, isOwnerResultEvent } from "./product-state";
+import type { OverviewSection } from "./OverviewPane";
+import type { SettingsSection } from "./SettingsPane";
 
 const AgentPane = lazy(() => import("./AgentPane").then((module) => ({ default: module.AgentPane })));
 const InboxPane = lazy(() => import("./InboxPane").then((module) => ({ default: module.InboxPane })));
@@ -18,11 +20,9 @@ const IntegrationsPane = lazy(() => import("./IntegrationsPane").then((module) =
 const MessagesPane = lazy(() => import("./MessagesPane").then((module) => ({ default: module.MessagesPane })));
 const SchedulesPane = lazy(() => import("./SchedulesPane").then((module) => ({ default: module.SchedulesPane })));
 const TeamPane = lazy(() => import("./TeamPane").then((module) => ({ default: module.TeamPane })));
-const RemotePane = lazy(() => import("./RemotePane").then((module) => ({ default: module.RemotePane })));
-const DesignPane = lazy(() => import("./DesignPane").then((module) => ({ default: module.DesignPane })));
-const UsagePane = lazy(() => import("./UsagePane").then((module) => ({ default: module.UsagePane })));
-const CapacityPane = lazy(() => import("./UsagePane").then((module) => ({ default: module.CapacityPane })));
 const NeedsYouPane = lazy(() => import("./NeedsYouPane").then((module) => ({ default: module.NeedsYouPane })));
+const OverviewPane = lazy(() => import("./OverviewPane").then((module) => ({ default: module.OverviewPane })));
+const SettingsPane = lazy(() => import("./SettingsPane").then((module) => ({ default: module.SettingsPane })));
 
 function WorkbenchFallback() {
   return (
@@ -75,19 +75,13 @@ function SidebarNavItem({ label, icon: Icon, active, compact, onSelect, indicato
   );
 }
 
-function SidebarNavGroup({ label, open, onOpenChange, children }: { label: string; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode }) {
+function MobileNav({ icon: Icon, label, active, count = 0, onClick }: { icon: typeof Bot; label: string; active: boolean; count?: number; onClick: () => void }) {
   return (
-    <Collapsible open={open} onOpenChange={onOpenChange} className="group/nav-group">
-      <CollapsibleTrigger
-        render={<Button type="button" variant="ghost" className="h-7 w-full justify-start px-2 text-[9px] font-bold uppercase text-muted-foreground" />}
-      >
-        <ChevronRight className={`size-3 transition-transform ${open ? "rotate-90" : ""}`} />
-        <span className="flex-1 text-left">{label}</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-0.5 pb-1">
-        {children}
-      </CollapsibleContent>
-    </Collapsible>
+    <button type="button" onClick={onClick} className={`relative flex min-w-0 flex-col items-center justify-center gap-0.5 text-[8.5px] ${active ? "text-foreground" : "text-muted-foreground"}`}>
+      <Icon className={`size-4 ${active ? "text-primary" : ""}`} />
+      <span className="truncate">{label}</span>
+      {count > 0 ? <span className="absolute right-[calc(50%-15px)] top-1 flex min-w-3.5 items-center justify-center rounded-sm bg-warning px-0.5 font-mono text-[7px] font-semibold text-warning-foreground">{count}</span> : null}
+    </button>
   );
 }
 
@@ -270,34 +264,37 @@ function applyThreadStatus(agent: Agent, event: any): Agent {
 }
 
 function isAgentWorking(agent: Agent) {
-  return agent.status === "running" || agent.goal?.status === "active";
+  return isAgentExecuting(agent);
 }
 
 function agentRuntimeLabel(agent: Agent) {
-  if (agent.status === "running") return "running";
-  if (agent.goal?.status === "active") return "goal active";
-  return agent.status;
+  return executionLabel(agent).toLowerCase();
 }
 
 function AgentTabs({
   agents,
+  allAgents,
   humanRequests,
+  pendingWork,
   activeId,
   unseenIds,
   onSelect,
   onClose,
   onEdit,
+  onSelectRequest,
 }: {
   agents: Agent[];
+  allAgents: Agent[];
   humanRequests: HumanRequest[];
+  pendingWork: InboxEntry[];
   activeId: string | null;
   unseenIds: Set<string>;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onEdit: (id: string) => void;
+  onSelectRequest: (id: string) => void;
 }) {
   const [openInfoId, setOpenInfoId] = useState<string | null>(null);
-  if (agents.length === 0) return null;
   return (
     <div className="flex h-9 shrink-0 items-stretch overflow-hidden border-b border-border bg-sidebar/45 pl-12 md:pl-0" aria-label="Open agents">
       <div className="flex min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist">
@@ -305,6 +302,7 @@ function AgentTabs({
           const active = agent.id === activeId;
           const unseen = unseenIds.has(agent.id);
           const needsYou = humanRequests.filter((request) => request.agentId === agent.id).length;
+          const inbox = pendingWork.filter((entry) => entry.item.agentId === agent.id && !["handled", "cancelled"].includes(entry.item.state)).length;
           const shortcutNumber = index < 8 ? index + 1 : index === agents.length - 1 ? 9 : null;
           return (
             <div
@@ -322,9 +320,10 @@ function AgentTabs({
                 onClick={() => onSelect(agent.id)}
                 title={`${agent.name}\n${agent.cwd}${shortcutNumber ? `\nSwitch: Ctrl/Option+${shortcutNumber}` : ""}`}
               >
-                <span className={`size-1.5 shrink-0 rounded-full ${isAgentWorking(agent) ? "animate-pulse bg-warning" : unseen ? "bg-ring" : "bg-muted-foreground/35"}`} />
+                <span className={`size-1.5 shrink-0 rounded-full ${isAgentWorking(agent) ? `animate-pulse ${executionDotClass(agent)}` : unseen ? "bg-ring ring-2 ring-ring/15" : executionDotClass(agent)}`} />
                 <span className={`truncate text-[11.5px] ${active ? "font-semibold" : "font-medium"}`}>{agent.name}</span>
                 {needsYou > 0 ? <span className="flex min-w-4 shrink-0 items-center justify-center rounded-sm bg-warning/15 px-1 font-mono text-[8px] font-semibold text-warning" title={`${needsYou} request${needsYou === 1 ? "" : "s"} need your input`}>{needsYou}</span> : null}
+                {inbox > 0 ? <span className="flex min-w-4 shrink-0 items-center justify-center rounded-sm bg-muted px-1 font-mono text-[8px] font-semibold text-muted-foreground" title={`${inbox} Agent Inbox item${inbox === 1 ? "" : "s"}`}>{inbox}</span> : null}
               </button>
               <Popover open={openInfoId === agent.id} onOpenChange={(open) => setOpenInfoId(open ? agent.id : null)}>
                 <PopoverTrigger
@@ -339,7 +338,7 @@ function AgentTabs({
                 </PopoverTrigger>
                 <PopoverContent align="start" className="w-[min(22rem,calc(100vw-1rem))]">
                   <div className="flex items-center gap-2">
-                    <span className={`size-2 shrink-0 rounded-full ${isAgentWorking(agent) ? "bg-warning" : agent.status === "idle" ? "bg-success" : "bg-muted-foreground/40"}`} />
+                    <span className={`size-2 shrink-0 rounded-full ${executionDotClass(agent)}`} />
                     <div className="min-w-0 flex-1 truncate text-[12px] font-semibold">{agent.name}</div>
                     <span className="font-mono text-[9px] uppercase text-muted-foreground">{agentRuntimeLabel(agent)}</span>
                   </div>
@@ -370,6 +369,9 @@ function AgentTabs({
             </div>
           );
         })}
+      </div>
+      <div className="w-[76px] shrink-0 border-l border-border/70 bg-sidebar/65" title="Team execution and Owner attention">
+        <AgentActivityPopover agents={allAgents} humanRequests={humanRequests} compact onSelect={onSelect} onSelectRequest={onSelectRequest} />
       </div>
     </div>
   );
@@ -414,18 +416,20 @@ export default function App() {
   const [current, setCurrent] = useState<string | null>(() => sessionStorage.getItem("codexloom-active-agent"));
   const [openAgentIds, setOpenAgentIds] = useState<string[]>(readAgentTabs);
   const [unseenAgentIds, setUnseenAgentIds] = useState<Set<string>>(() => new Set());
-  const [view, setView] = useState<"agents" | "needs-you" | "inbox" | "integrations" | "messages" | "schedules" | "team" | "capacity" | "usage" | "remote" | "design">("agents");
+  const [view, setView] = useState<"agents" | "needs-you" | "inbox" | "integrations" | "messages" | "schedules" | "team" | "status" | "capacity" | "usage" | "settings" | "remote" | "design">("agents");
+  const [overviewSection, setOverviewSection] = useState<OverviewSection>("status");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("remote");
   const [targetHint, setTargetHint] = useState("");
+  const [messageParticipants, setMessageParticipants] = useState<[string, string] | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("codexloom-sidebar") === "compact");
   const [newAgentOpen, setNewAgentOpen] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
   const [configRequest, setConfigRequest] = useState<{ agentId: string; nonce: number } | null>(null);
   const [archivingAgentIds, setArchivingAgentIds] = useState<Set<string>>(() => new Set());
-  const [communicationOpen, setCommunicationOpen] = useState(() => localStorage.getItem("codexloom-nav-communication") === "open");
-  const [organizationOpen, setOrganizationOpen] = useState(() => localStorage.getItem("codexloom-nav-organization") === "open");
   const [newName, setNewName] = useState("");
   const [newCwd, setNewCwd] = useState("");
+  const [newDomain, setNewDomain] = useState("");
+  const [creatingAgent, setCreatingAgent] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [restartStatus, setRestartStatus] = useState<any>({ state: "idle" });
@@ -462,19 +466,6 @@ export default function App() {
     setUnseenAgentIds((ids) => new Set([...ids].filter((id) => available.has(id))));
     setCurrent((id) => (id && available.has(id) ? id : null));
   }, [agents, agentsQuery.isSuccess]);
-
-  useEffect(() => {
-    localStorage.setItem("codexloom-nav-communication", communicationOpen ? "open" : "closed");
-  }, [communicationOpen]);
-
-  useEffect(() => {
-    localStorage.setItem("codexloom-nav-organization", organizationOpen ? "open" : "closed");
-  }, [organizationOpen]);
-
-  useEffect(() => {
-    if (view === "inbox" || view === "messages") setCommunicationOpen(true);
-    if (view === "team" || view === "capacity" || view === "usage" || view === "schedules" || view === "integrations" || view === "remote") setOrganizationOpen(true);
-  }, [view]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -539,7 +530,7 @@ export default function App() {
             setAgents((previous) => previous.map((agent) => agent.id === agentId ? applyThreadStatus(agent, threadEvent) : agent));
             publishThreadEvent(agentId, threadEvent);
             const active = activeAgentRef.current;
-            if (openAgentIdsRef.current.has(agentId) && (active.view !== "agents" || active.id !== agentId)) {
+            if (isOwnerResultEvent(threadEvent) && openAgentIdsRef.current.has(agentId) && (active.view !== "agents" || active.id !== agentId)) {
               setUnseenAgentIds((ids) => new Set(ids).add(agentId));
             }
           }
@@ -608,14 +599,24 @@ export default function App() {
   }, []);
 
   const create = async () => {
+    if (creatingAgent) return;
     if (!newName.trim() || !newCwd.trim()) {
       showToast("name and cwd required");
       return;
     }
+    if (!newCwd.trim().startsWith("/")) {
+      showToast("working directory must be an absolute path");
+      return;
+    }
+    setCreatingAgent(true);
     try {
       const data = await api("POST", "/api/agents", { name: newName.trim(), cwd: newCwd.trim() });
+      if (newDomain.trim()) {
+        await api("PUT", `/api/agents/${encodeURIComponent(data.agent.id)}/profile`, { identity: "", domain: newDomain.trim(), scope: "", expectedVersion: 0 });
+      }
       setNewName("");
       setNewCwd("");
+      setNewDomain("");
       setNewAgentOpen(false);
       await refresh();
       setOpenAgentIds((ids) => (ids.includes(data.agent.id) ? ids : [...ids, data.agent.id]));
@@ -628,6 +629,8 @@ export default function App() {
 	  setView("agents");
     } catch (err: any) {
       showToast(err.message);
+    } finally {
+      setCreatingAgent(false);
     }
   };
 
@@ -676,6 +679,10 @@ export default function App() {
     const h = decodeURIComponent(window.location.hash.slice(1));
     const route = h.split("?")[0];
     if (route === "messages") {
+      const params = new URLSearchParams(h.split("?")[1] || "");
+      const from = params.get("from");
+      const to = params.get("to");
+      if (from && to) setMessageParticipants([from, to]);
       setView("messages");
       hashApplied.current = true;
       return;
@@ -690,7 +697,7 @@ export default function App() {
       hashApplied.current = true;
       return;
     }
-    if (route === "integrations") {
+    if (route === "integrations" || route === "external") {
       setView("integrations");
       hashApplied.current = true;
       return;
@@ -705,23 +712,41 @@ export default function App() {
       hashApplied.current = true;
       return;
     }
+    if (route === "overview" || route === "status") {
+      setOverviewSection("status");
+      setView("status");
+      hashApplied.current = true;
+      return;
+    }
     if (route === "usage") {
+      setOverviewSection("usage");
       setView("usage");
       hashApplied.current = true;
       return;
     }
     if (route === "capacity") {
+      setOverviewSection("capacity");
       setView("capacity");
       hashApplied.current = true;
       return;
     }
     if (route === "remote") {
-      setView("remote");
+      setSettingsSection("remote");
+      setView("settings");
       hashApplied.current = true;
       return;
     }
     if (route === "design") {
-      setView("design");
+      setSettingsSection("developer");
+      setView("settings");
+      hashApplied.current = true;
+      return;
+    }
+    if (route === "settings") {
+      const params = new URLSearchParams(h.split("?")[1] || "");
+      const section = params.get("section") as SettingsSection | null;
+      if (section && ["remote", "connectors", "recovery", "system", "developer"].includes(section)) setSettingsSection(section);
+      setView("settings");
       hashApplied.current = true;
       return;
     }
@@ -827,6 +852,7 @@ export default function App() {
 
   const selectMessages = () => {
     setTargetHint("");
+    setMessageParticipants(null);
     setView("messages");
     setCurrent(null);
     setSidebarOpen(false);
@@ -851,7 +877,7 @@ export default function App() {
     setView("integrations");
     setCurrent(null);
     setSidebarOpen(false);
-    window.location.hash = "integrations";
+    window.location.hash = "external";
   };
 
   const selectSchedules = () => {
@@ -869,14 +895,32 @@ export default function App() {
     window.location.hash = "team";
   };
 
+  const selectOverview = (section: OverviewSection = "status") => {
+    setOverviewSection(section);
+    setView(section);
+    setCurrent(null);
+    setSidebarOpen(false);
+    window.location.hash = section === "status" ? "overview" : section;
+  };
+
   const selectUsage = () => {
+    setOverviewSection("usage");
     setView("usage");
     setCurrent(null);
     setSidebarOpen(false);
     window.location.hash = "usage";
   };
 
+  const openAgentUsage = (agentID: string) => {
+    setOverviewSection("usage");
+    setView("usage");
+    setCurrent(null);
+    setSidebarOpen(false);
+    window.location.hash = `usage?agent=${encodeURIComponent(agentID)}`;
+  };
+
   const selectCapacity = () => {
+    setOverviewSection("capacity");
     setView("capacity");
     setCurrent(null);
     setSidebarOpen(false);
@@ -884,25 +928,46 @@ export default function App() {
   };
 
   const selectRemote = () => {
-    setView("remote");
+    setSettingsSection("remote");
+    setView("settings");
     setCurrent(null);
     setSidebarOpen(false);
-    window.location.hash = "remote";
+    window.location.hash = "settings?section=remote";
   };
 
   const selectDesign = () => {
-    setView("design");
+    setSettingsSection("developer");
+    setView("settings");
     setCurrent(null);
     setSidebarOpen(false);
-    window.location.hash = "design";
+    window.location.hash = "settings?section=developer";
+  };
+
+  const selectSettings = (section: SettingsSection = "remote") => {
+    setSettingsSection(section);
+    setView("settings");
+    setCurrent(null);
+    setSidebarOpen(false);
+    window.location.hash = `settings?section=${section}`;
   };
 
   const messageAgent = (name: string) => {
     setTargetHint(name);
+    setMessageParticipants(null);
     setView("messages");
     setCurrent(null);
     setSidebarOpen(false);
     window.location.hash = "messages";
+  };
+
+  const openTeamMessages = (agentA: string, agentB: string) => {
+    setTargetHint("");
+    setMessageParticipants([agentA, agentB]);
+    setView("messages");
+    setCurrent(null);
+    setSidebarOpen(false);
+    const query = new URLSearchParams({ from: agentA, to: agentB });
+    window.location.hash = `messages?${query.toString()}`;
   };
 
   const scheduleAgent = (name: string) => {
@@ -952,7 +1017,6 @@ export default function App() {
       restartState: restartStatus?.state || "idle",
       remoteState: remote?.status.state || "unknown",
       sidebar: sidebarCollapsed ? "compact" : "expanded",
-      navGroups: { communication: communicationOpen, organization: organizationOpen },
     });
     root.selectAgent = async (key: string) => {
       const agent = agents.find((candidate) => candidate.id === key || candidate.name === key);
@@ -970,6 +1034,12 @@ export default function App() {
     };
     root.openTeam = async () => {
       selectTeam();
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+      return window.codexLoom?.state?.();
+    };
+    root.openOverview = async (section: OverviewSection = "status") => {
+      if (!["status", "capacity", "usage"].includes(section)) throw new Error(`Unknown overview section: ${section}`);
+      selectOverview(section);
       await new Promise((resolve) => window.setTimeout(resolve, 50));
       return window.codexLoom?.state?.();
     };
@@ -1003,6 +1073,17 @@ export default function App() {
       await new Promise((resolve) => window.setTimeout(resolve, 50));
       return window.codexLoom?.state?.();
     };
+    root.openExternal = async () => {
+      selectIntegrations();
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+      return window.codexLoom?.state?.();
+    };
+    root.openSettings = async (section: SettingsSection = "remote") => {
+      if (!["remote", "connectors", "recovery", "system", "developer"].includes(section)) throw new Error(`Unknown settings section: ${section}`);
+      selectSettings(section);
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+      return window.codexLoom?.state?.();
+    };
     root.openDesign = async () => {
       selectDesign();
       await new Promise((resolve) => window.setTimeout(resolve, 50));
@@ -1014,14 +1095,7 @@ export default function App() {
       await new Promise((resolve) => window.setTimeout(resolve, 220));
       return window.codexLoom?.state?.();
     };
-    root.setNavGroup = async (group: "communication" | "organization", open: boolean) => {
-      if (group === "communication") setCommunicationOpen(open);
-      else if (group === "organization") setOrganizationOpen(open);
-      else throw new Error(`Unknown navigation group: ${group}`);
-      await new Promise((resolve) => window.setTimeout(resolve, 120));
-      return window.codexLoom?.state?.();
-    };
-  }, [agents, communicationOpen, current, humanRequestsQuery.data?.requests, openAgentIds, organizationOpen, pendingWorkQuery.data?.entries, remote?.status.state, restartStatus?.state, sidebarCollapsed, unseenAgentIds, view]);
+  }, [agents, current, humanRequestsQuery.data?.requests, openAgentIds, pendingWorkQuery.data?.entries, remote?.status.state, restartStatus?.state, sidebarCollapsed, unseenAgentIds, view]);
 
   const updateAgent = (updated: Agent) => {
     setAgents((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
@@ -1034,10 +1108,10 @@ export default function App() {
   const openAgents = openAgentIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => Boolean(agent));
   const humanRequests = humanRequestsQuery.data?.requests || [];
   const openHumanRequests = humanRequests.filter((request) => request.state === "open");
+  const pendingWork = pendingWorkQuery.data?.entries || [];
   const restartState = restartStatus?.state || "idle";
   const restartPending = restartState === "waiting" || restartState === "restarting";
   const activeCount = agents.filter(isAgentWorking).length;
-  const latestBackup = backupStatus?.backups?.[0];
 
   useEffect(() => {
     if (view !== "agents" || !selected) return;
@@ -1056,23 +1130,23 @@ export default function App() {
     } else if (view === "needs-you") {
       document.title = `${attention}Needs you · CodexLoom`;
     } else if (view === "messages") {
-      document.title = `${attention}Messages · CodexLoom`;
+      document.title = `${attention}Team activity · CodexLoom`;
     } else if (view === "inbox") {
       document.title = `${attention}Inbox · CodexLoom`;
     } else if (view === "integrations") {
-      document.title = `${attention}Integrations · CodexLoom`;
+      document.title = `${attention}External · CodexLoom`;
     } else if (view === "schedules") {
       document.title = `${attention}Schedules · CodexLoom`;
     } else if (view === "team") {
       document.title = `${attention}Team · CodexLoom`;
+    } else if (view === "status") {
+      document.title = `${attention}Overview · CodexLoom`;
     } else if (view === "usage") {
       document.title = `${attention}Token usage · CodexLoom`;
     } else if (view === "capacity") {
       document.title = `${attention}Capacity · CodexLoom`;
-    } else if (view === "remote") {
-      document.title = `${attention}${remote?.status.state === "connected" ? "● " : ""}Remote · CodexLoom`;
-    } else if (view === "design") {
-      document.title = `${attention}Design System · CodexLoom`;
+    } else if (view === "settings") {
+      document.title = `${attention}Settings · CodexLoom`;
     } else if (selected) {
       const marker = isAgentWorking(selected) ? "● " : selected.lastError ? "! " : "";
       document.title = `${attention}${marker}${selected.name} · CodexLoom`;
@@ -1096,20 +1170,6 @@ export default function App() {
     return summary.slice(0, 43) + "…";
   };
 
-  const backupLabel = (backup: any) => {
-    if (!backup?.createdAt) return "No backups";
-    const d = new Date(backup.createdAt);
-    if (Number.isNaN(d.getTime())) return backup.name || "Backup ready";
-    return `Last backup ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-  };
-
-  const formatStorage = (bytes: number) => {
-    if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-    return `${(bytes / 1024 ** power).toFixed(power === 0 ? 0 : 1)} ${units[power]}`;
-  };
-
   return (
     <div className="flex h-screen w-screen max-w-full overflow-hidden">
       {/* backdrop — only on mobile when the drawer is open */}
@@ -1119,15 +1179,14 @@ export default function App() {
           onClick={() => setSidebarOpen(false)}
         />
       )}
-      {/* sidebar — full drawer on mobile, compact or expanded rail on desktop */}
+      {/* Sidebar is a full drawer on mobile and fully retracts on desktop. */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col bg-sidebar shadow-xl transition-[width,transform,translate] duration-200 md:static md:z-auto md:translate-x-0 md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:w-16" : "md:w-[272px]"} ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col bg-sidebar shadow-xl transition-[transform,translate] duration-200 md:z-auto md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:hidden" : "md:static md:flex md:translate-x-0"} ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="relative flex h-14 shrink-0 items-center px-3">
-          <div className={`min-w-0 ${sidebarCollapsed ? "md:hidden" : ""}`}><BrandLockup compact /></div>
-          <div className={`hidden w-full items-center justify-center ${sidebarCollapsed ? "md:flex" : ""}`}><BrandMark className="size-8" title="CodexLoom" /></div>
+          <div className="min-w-0"><BrandLockup compact /></div>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -1142,59 +1201,18 @@ export default function App() {
 
         <Separator className="mx-3 w-auto" />
 
-        <div className={sidebarCollapsed ? "md:hidden" : ""}>
-          <AgentActivityPopover agents={agents} humanRequests={openHumanRequests} onSelect={selectAgent} onSelectRequest={selectNeedsYou} />
-        </div>
-        <div className={`hidden ${sidebarCollapsed ? "md:block" : ""}`}>
-          <AgentActivityPopover agents={agents} humanRequests={openHumanRequests} compact onSelect={selectAgent} onSelectRequest={selectNeedsYou} />
-        </div>
+        <AgentActivityPopover agents={agents} humanRequests={openHumanRequests} onSelect={selectAgent} onSelectRequest={selectNeedsYou} />
 
         <nav className="px-2 pb-2" aria-label="Workspace">
-          <div className={`hidden space-y-0.5 ${sidebarCollapsed ? "md:block" : ""}`}>
-            <SidebarNavItem label="Needs You" icon={CircleHelp} active={view === "needs-you"} compact onSelect={() => selectNeedsYou()} count={openHumanRequests.length} />
-            <SidebarNavItem label="Inbox" icon={InboxIcon} active={view === "inbox"} compact onSelect={selectInbox} />
-            <SidebarNavItem label="Messages" icon={MessageSquare} active={view === "messages"} compact onSelect={selectMessages} />
-            <SidebarNavItem label="Team" icon={Network} active={view === "team"} compact onSelect={selectTeam} />
-            <SidebarNavItem label="Capacity" icon={Activity} active={view === "capacity"} compact onSelect={selectCapacity} />
-            <SidebarNavItem label="Token usage" icon={BarChart3} active={view === "usage"} compact onSelect={selectUsage} />
-            <SidebarNavItem label="Schedules" icon={CalendarClock} active={view === "schedules"} compact onSelect={selectSchedules} />
-            <SidebarNavItem label="Integrations" icon={Cable} active={view === "integrations"} compact onSelect={selectIntegrations} />
-            <SidebarNavItem
-              label="Remote"
-              icon={RadioTower}
-              active={view === "remote"}
-              compact
-              onSelect={selectRemote}
-              indicator={remote?.status.state === "connected" ? "success" : remote?.status.state === "error" ? "destructive" : remote?.status.state === "connecting" || remote?.status.state === "starting" ? "warning" : "muted"}
-            />
-          </div>
-          <div className={sidebarCollapsed ? "md:hidden" : ""}>
-            <div className="mb-1 border-b border-sidebar-border pb-1">
-              <SidebarNavItem label="Needs You" icon={CircleHelp} active={view === "needs-you"} compact={false} onSelect={() => selectNeedsYou()} count={openHumanRequests.length} />
-            </div>
-            <SidebarNavGroup label="Communication" open={communicationOpen} onOpenChange={setCommunicationOpen}>
-              <SidebarNavItem label="Inbox" icon={InboxIcon} active={view === "inbox"} compact={false} onSelect={selectInbox} />
-              <SidebarNavItem label="Messages" icon={MessageSquare} active={view === "messages"} compact={false} onSelect={selectMessages} />
-            </SidebarNavGroup>
-            <SidebarNavGroup label="Organization" open={organizationOpen} onOpenChange={setOrganizationOpen}>
-              <SidebarNavItem label="Team" icon={Network} active={view === "team"} compact={false} onSelect={selectTeam} />
-              <SidebarNavItem label="Capacity" icon={Activity} active={view === "capacity"} compact={false} onSelect={selectCapacity} />
-              <SidebarNavItem label="Token usage" icon={BarChart3} active={view === "usage"} compact={false} onSelect={selectUsage} />
-              <SidebarNavItem label="Schedules" icon={CalendarClock} active={view === "schedules"} compact={false} onSelect={selectSchedules} />
-              <SidebarNavItem label="Integrations" icon={Cable} active={view === "integrations"} compact={false} onSelect={selectIntegrations} />
-              <SidebarNavItem
-                label="Remote"
-                icon={RadioTower}
-                active={view === "remote"}
-                compact={false}
-                onSelect={selectRemote}
-                indicator={remote?.status.state === "connected" ? "success" : remote?.status.state === "error" ? "destructive" : remote?.status.state === "connecting" || remote?.status.state === "starting" ? "warning" : "muted"}
-              />
-            </SidebarNavGroup>
+          <div className="space-y-0.5">
+            <SidebarNavItem label="Needs You" icon={CircleHelp} active={view === "needs-you"} compact={false} onSelect={() => selectNeedsYou()} count={openHumanRequests.length} />
+            <SidebarNavItem label="Overview" icon={Activity} active={view === "status" || view === "capacity" || view === "usage"} compact={false} onSelect={() => selectOverview()} />
+            <SidebarNavItem label="Team" icon={Network} active={view === "team" || view === "messages"} compact={false} onSelect={selectTeam} />
+            <SidebarNavItem label="External" icon={Cable} active={view === "integrations"} compact={false} onSelect={selectIntegrations} />
           </div>
         </nav>
 
-        <section className={`mx-2 mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-md bg-background/45 ${sidebarCollapsed ? "md:hidden" : ""}`} aria-label="Agents">
+        <section className="mx-2 mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-md bg-background/45" aria-label="Agents">
           <div className="flex h-8 shrink-0 items-center gap-2 px-2.5 text-muted-foreground">
             <Bot className="size-3" />
             <span className="text-[9px] font-bold uppercase">Agents</span>
@@ -1206,7 +1224,8 @@ export default function App() {
               const active = s.id === current;
               const archiving = archivingAgentIds.has(s.id);
               const needsYou = openHumanRequests.filter((request) => request.agentId === s.id).length;
-              const activity = s.currentTask || s.goal?.objective || "";
+              const inboxCount = pendingWork.filter((entry) => entry.item.agentId === s.id && !["handled", "cancelled"].includes(entry.item.state)).length;
+              const activity = s.currentTask || "";
               const detailTitle = activity ? `${s.cwd}\n${summarizeTask(activity)}` : s.cwd;
               return (
                 <div key={s.id} className="group/agent relative">
@@ -1219,9 +1238,10 @@ export default function App() {
                       active ? "bg-selection text-selection-foreground hover:bg-selection" : "text-foreground/85"
                     }`}
                   >
-                    <span className={`size-2 shrink-0 rounded-full ${isAgentWorking(s) ? "pulse bg-success ring-2 ring-success/20" : "bg-muted-foreground/30"}`} />
+                    <span className={`size-2 shrink-0 rounded-full ${isAgentWorking(s) ? "pulse" : ""} ${executionDotClass(s)}`} />
                     <span className={`min-w-0 flex-1 truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}>{s.name}</span>
-                    {activity ? <span className="size-1.5 shrink-0 rounded-full bg-warning" title={clipTask(activity)} /> : null}
+                    {unseenAgentIds.has(s.id) ? <span className="size-1.5 shrink-0 rounded-full bg-ring" title="New result from Owner-started work" /> : null}
+                    {inboxCount > 0 ? <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground" title={`${inboxCount} Agent Inbox items`}>{inboxCount}</span> : null}
                   </Button>
                   {needsYou > 0 ? <button type="button" onClick={() => selectNeedsYou(openHumanRequests.find((request) => request.agentId === s.id)?.id)} className="absolute right-8 top-1.5 flex min-w-5 items-center justify-center rounded-sm bg-warning/15 px-1 font-mono text-[8.5px] font-semibold text-warning" title={`${needsYou} request${needsYou === 1 ? "" : "s"} need your input`} aria-label={`Open ${needsYou} human request${needsYou === 1 ? "" : "s"} from ${s.name}`}>{needsYou}</button> : null}
                   <button
@@ -1246,29 +1266,28 @@ export default function App() {
           </div>
         </section>
 
-        <div className={`hidden flex-1 ${sidebarCollapsed ? "md:block" : ""}`} />
-
-        <div className={`shrink-0 border-t border-border/60 bg-sidebar/85 p-2 ${sidebarCollapsed ? "md:flex md:flex-col md:items-center md:gap-1" : "grid grid-cols-[1fr_auto_auto_auto] gap-1"}`}>
-          <Button onClick={() => setNewAgentOpen(true)} title="Create agent" className={sidebarCollapsed ? "md:hidden" : ""}>
+        <div className="grid shrink-0 grid-cols-[1fr_auto_auto] gap-1 border-t border-border/60 bg-sidebar/85 p-2">
+          <Button onClick={() => setNewAgentOpen(true)} title="Create agent">
             <Plus />
             <span>New agent</span>
           </Button>
-          <Button variant="outline" size="icon" onClick={selectDesign} title="Design system" aria-label="Design system" className={sidebarCollapsed ? "md:hidden" : ""}><SwatchBook /></Button>
-          <Button variant="outline" size="icon" onClick={() => setAdminOpen(true)} title="Loom administration" aria-label="Loom administration" className={sidebarCollapsed ? "md:hidden" : ""}>
+          <Button variant="outline" size="icon" onClick={() => selectSettings()} title="Settings" aria-label="Settings">
             {restartPending ? <RotateCw className="animate-spin text-warning" /> : <Settings2 />}
           </Button>
           <Button
             variant="outline"
             size="icon"
             onClick={() => setSidebarCollapsed((value) => !value)}
-            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title="Collapse sidebar"
+            aria-label="Collapse sidebar"
             className="hidden md:inline-flex"
           >
-            {sidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+            <PanelLeftClose />
           </Button>
         </div>
       </aside>
+
+      {sidebarCollapsed ? <Button variant="outline" size="icon" onClick={() => setSidebarCollapsed(false)} title="Expand sidebar" aria-label="Expand sidebar" className="fixed bottom-3 left-3 z-20 hidden shadow-card md:inline-flex"><PanelLeftOpen /></Button> : null}
 
       <Dialog open={newAgentOpen} onOpenChange={setNewAgentOpen}>
         <DialogContent>
@@ -1285,34 +1304,14 @@ export default function App() {
               Working directory
               <Input value={newCwd} onChange={(event) => setNewCwd(event.target.value)} placeholder="/absolute/path/to/workspace" spellCheck={false} className="font-mono text-[12px]" />
             </label>
+            <label className="block space-y-1.5 text-[11px] font-medium text-muted-foreground">
+              Domain <span className="font-normal text-muted-foreground/70">optional</span>
+              <textarea value={newDomain} onChange={(event) => setNewDomain(event.target.value)} placeholder="The enduring subject this Agent will maintain" rows={3} className="w-full resize-y rounded-sm border border-input bg-background px-3 py-2 text-[12px] leading-5 outline-none focus:border-ring focus:ring-2 focus:ring-ring/15" />
+            </label>
           </div>
           <DialogFooter showCloseButton>
-            <Button onClick={create}><Plus />Create agent</Button>
+            <Button onClick={create} disabled={creatingAgent}>{creatingAgent ? <span className="spinner size-3" /> : <Plus />}{creatingAgent ? "Creating" : "Create agent"}</Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={adminOpen} onOpenChange={setAdminOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Loom administration</DialogTitle>
-            <DialogDescription>Durable operations are kept out of the everyday navigation surface.</DialogDescription>
-          </DialogHeader>
-          <div className="divide-y divide-border rounded-lg border border-border">
-            <div className="flex items-center gap-3 p-3">
-              <Archive className="size-4 text-primary" />
-              <div className="min-w-0 flex-1"><div className="text-[12px] font-medium">Local backup</div><div className="truncate font-mono text-[9.5px] text-muted-foreground" title={`${backupStatus.dir} · retains ${backupStatus.retention.minCount}-${backupStatus.retention.maxCount} snapshots`}>{backupLabel(latestBackup)} · {backupStatus.count} snapshots · {formatStorage(backupStatus.totalBytes)}</div></div>
-              <Button variant="outline" size="sm" onClick={backupNow} disabled={backingUp}>{backingUp ? "Backing up" : "Back up"}</Button>
-            </div>
-            <div className="flex items-center gap-3 p-3">
-              <RotateCw className={`size-4 text-primary ${restartPending ? "animate-spin" : ""}`} />
-              <div className="min-w-0 flex-1"><div className="text-[12px] font-medium">Restart Loom</div><div className="truncate text-[10px] text-muted-foreground">{restartStatus.message || "Load the already built release safely."}</div></div>
-              <Button variant="outline" size="sm" onClick={restartLoom} disabled={restarting || restartPending}>{restartState === "waiting" ? "Waiting" : restartState === "restarting" ? "Restarting" : "Restart"}</Button>
-            </div>
-          </div>
-          {restartStatus.running?.length > 0 ? <div className="rounded-lg bg-warning/10 px-3 py-2 text-[11px] text-warning">Waiting for {restartStatus.running.map((agent: any) => agent.name).join(", ")}</div> : null}
-          {restartStatus.operations?.length > 0 ? <div className="rounded-lg bg-warning/10 px-3 py-2 text-[11px] text-warning">Waiting for {restartStatus.operations.map((operation: any) => `${operation.provider || "connector"} ${operation.kind}`).join(", ")}</div> : null}
-          <DialogFooter showCloseButton />
         </DialogContent>
       </Dialog>
 
@@ -1326,15 +1325,18 @@ export default function App() {
       </button>
 
       {/* Agent tabs stay mounted while global workspaces temporarily cover them. */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden pb-11 md:pb-0">
         <AgentTabs
           agents={openAgents}
+          allAgents={agents}
           humanRequests={openHumanRequests}
+          pendingWork={pendingWork}
           activeId={view === "agents" ? current : null}
           unseenIds={unseenAgentIds}
           onSelect={selectAgent}
           onClose={closeAgent}
           onEdit={editAgent}
+          onSelectRequest={selectNeedsYou}
         />
         <Suspense fallback={<WorkbenchFallback />}>
           <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -1350,19 +1352,38 @@ export default function App() {
             ) : view === "integrations" ? (
               <IntegrationsPane agents={agents} onError={showToast} />
             ) : view === "messages" ? (
-              <MessagesPane agents={agents} onError={showToast} initialTo={targetHint} />
+              <MessagesPane agents={agents} onError={showToast} initialTo={targetHint} participants={messageParticipants} onClearParticipants={selectMessages} />
             ) : view === "schedules" ? (
               <SchedulesPane agents={agents} onError={showToast} initialTo={targetHint} />
             ) : view === "team" ? (
-              <TeamPane onError={showToast} onMessageAgent={messageAgent} onScheduleAgent={scheduleAgent} />
-            ) : view === "capacity" ? (
-              <CapacityPane onSelectAgent={selectAgent} />
-            ) : view === "usage" ? (
-              <UsagePane onSelectAgent={selectAgent} />
-            ) : view === "remote" ? (
-              <RemotePane remote={remote} onUpdated={setRemote} onError={showToast} />
-            ) : view === "design" ? (
-              <DesignPane />
+              <TeamPane onError={showToast} onMessageAgent={messageAgent} onScheduleAgent={scheduleAgent} onOpenMessages={openTeamMessages} />
+            ) : view === "status" || view === "capacity" || view === "usage" ? (
+              <OverviewPane
+                section={overviewSection}
+                agents={agents}
+                requests={openHumanRequests}
+                entries={pendingWork}
+                remote={remote}
+                onSectionChange={selectOverview}
+                onSelectAgent={selectAgent}
+                onOpenNeedsYou={() => selectNeedsYou()}
+                onOpenExternal={selectIntegrations}
+              />
+            ) : view === "settings" ? (
+              <SettingsPane
+                section={settingsSection}
+                remote={remote}
+                backupStatus={backupStatus}
+                backingUp={backingUp}
+                restarting={restarting}
+                restartStatus={restartStatus}
+                onSectionChange={selectSettings}
+                onRemoteUpdated={setRemote}
+                onBackup={backupNow}
+                onRestart={restartLoom}
+                onOpenExternal={selectIntegrations}
+                onError={showToast}
+              />
             ) : null}
 
             {openAgents.map((agent) => {
@@ -1379,6 +1400,7 @@ export default function App() {
                     onOpenHumanRequest={selectNeedsYou}
                     onHumanRequestChanged={() => queryClient.invalidateQueries({ queryKey: ["human-requests"] })}
                     onPendingWorkChanged={() => queryClient.invalidateQueries({ queryKey: ["pending-work"] })}
+                    onOpenUsage={openAgentUsage}
                     onAgentUpdated={updateAgent}
                     onError={showToast}
                   />
@@ -1396,6 +1418,13 @@ export default function App() {
           </div>
         </Suspense>
       </div>
+
+      <nav className="fixed inset-x-0 bottom-0 z-20 grid h-11 grid-cols-4 border-t border-border bg-sidebar/95 px-1 backdrop-blur md:hidden" aria-label="Primary navigation">
+        <MobileNav icon={Bot} label="Agents" active={view === "agents"} onClick={() => current ? selectAgent(current) : setSidebarOpen(true)} />
+        <MobileNav icon={CircleHelp} label="Needs You" active={view === "needs-you"} count={openHumanRequests.length} onClick={() => selectNeedsYou()} />
+        <MobileNav icon={Activity} label="Overview" active={view === "status" || view === "capacity" || view === "usage"} onClick={() => selectOverview()} />
+        <MobileNav icon={MoreHorizontal} label="More" active={view === "team" || view === "integrations" || view === "settings"} onClick={() => setSidebarOpen(true)} />
+      </nav>
 
       {/* toast */}
       {toast && (

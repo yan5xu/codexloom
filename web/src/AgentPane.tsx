@@ -1,8 +1,8 @@
-import { ArrowDown, BarChart3, Check, ChevronRight, CircleHelp, FileText, Inbox, Loader2, MessageSquare, Paperclip, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Send, SkipForward, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight, CircleHelp, FileText, Inbox, Loader2, MessageSquare, Network, Paperclip, Pause, Pencil, Play, Plus, RefreshCw, RotateCcw, Send, SkipForward, Square, Target, Trash2, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type PlatformConnection, type ThreadGoal } from "./types";
+import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type PlatformConnection, type Schedule, type TeamView, type ThreadGoal } from "./types";
 import { emptyFeed, reduceFeed } from "./feed";
 import type { Block } from "./feed";
 import type { LoomEvent } from "./types";
@@ -10,6 +10,7 @@ import { BlockView } from "./Blocks";
 import { UsageBarTooltip, usageDayLabel } from "./components/UsageBarTooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { subscribeThreadEvents } from "./thread-events";
+import { oldestWaitingMs } from "./product-state";
 
 const MODEL_PRESETS = [
   { value: "", label: "Default (Codex)" },
@@ -81,6 +82,7 @@ export function AgentPane({
   onOpenHumanRequest,
   onHumanRequestChanged,
   onPendingWorkChanged,
+  onOpenUsage,
   onError,
   onAgentUpdated,
 }: {
@@ -93,6 +95,7 @@ export function AgentPane({
   onOpenHumanRequest: (requestID?: string) => void;
   onHumanRequestChanged: () => Promise<unknown> | void;
   onPendingWorkChanged: () => Promise<unknown> | void;
+  onOpenUsage: (agentID: string) => void;
   onError: (msg: string) => void;
   onAgentUpdated: (agent: Agent) => void;
 }) {
@@ -107,7 +110,7 @@ export function AgentPane({
   const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [sendKind, setSendKind] = useState<"task" | "answer">("task");
   const [configOpen, setConfigOpen] = useState(false);
-  const [configSection, setConfigSection] = useState<"agent" | "profile" | "usage" | "connections">("agent");
+  const [configSection, setConfigSection] = useState<"profile" | "team" | "external" | "schedules" | "runtime" | "usage">("profile");
   const [nameDraft, setNameDraft] = useState(agent.name);
   const [modelDraft, setModelDraft] = useState(agent.model || "");
   const [modelCustomOpen, setModelCustomOpen] = useState(isCustomModel(agent.model || ""));
@@ -128,6 +131,8 @@ export function AgentPane({
   const [memberships, setMemberships] = useState<ConversationMembership[]>([]);
   const [membershipDraft, setMembershipDraft] = useState<MembershipDraft | null>(null);
   const [savingMembership, setSavingMembership] = useState(false);
+  const [team, setTeam] = useState<TeamView | null>(null);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -246,7 +251,7 @@ export function AgentPane({
 
   useEffect(() => {
     if (!active || !configRequestNonce) return;
-    setConfigSection("agent");
+    setConfigSection("runtime");
     setConfigOpen(true);
   }, [active, configRequestNonce]);
 
@@ -289,6 +294,17 @@ export function AgentPane({
     if (!configOpen) return;
     refreshConnections().catch((err: Error) => onError(err.message));
   }, [configOpen, agent.id]);
+
+  useEffect(() => {
+    if (!configOpen || (configSection !== "team" && configSection !== "schedules")) return;
+    Promise.all([
+      api("GET", "/api/team"),
+      api("GET", "/api/schedules"),
+    ]).then(([teamData, scheduleData]) => {
+      setTeam(teamData.team || null);
+      setSchedules((scheduleData.schedules || []).filter((schedule: Schedule) => schedule.to === agent.name || schedule.to === agent.id));
+    }).catch((err: Error) => onError(err.message));
+  }, [configOpen, configSection, agent.id, agent.name]);
 
   useEffect(() => {
     if (!configOpen || configSection !== "usage") return;
@@ -833,7 +849,7 @@ export function AgentPane({
         const membership = memberships.find((value) => value.id === id);
         if (!membership) throw new Error(`conversation membership not found: ${id}`);
         setConfigOpen(true);
-        setConfigSection("connections");
+        setConfigSection("external");
         editMembership(membership);
         await new Promise((resolve) => setTimeout(resolve, 0));
         return { ...membershipStateRef.current, selectedMembershipId: id };
@@ -870,19 +886,21 @@ export function AgentPane({
   return (
     <main className="relative flex w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden bg-background">
       {configOpen && (
-        <div className="fixed right-2 top-11 z-30 max-h-[calc(100vh-3.25rem)] w-[calc(100vw-1rem)] max-w-[580px] overflow-y-auto rounded-md border border-border bg-card p-3 shadow-card md:right-4 md:w-[560px]">
+        <div className="fixed inset-0 z-30 w-full overflow-y-auto bg-card p-3 shadow-card md:inset-auto md:right-4 md:top-11 md:max-h-[calc(100vh-3.25rem)] md:w-[560px] md:max-w-[calc(100vw-1rem)] md:rounded-md md:border md:border-border">
               <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase text-muted-foreground">
-                <span>Agent Config</span>
+                <span>Agent Inspector</span>
                 <button onClick={() => setConfigOpen(false)} className="flex size-7 items-center justify-center rounded-sm hover:bg-muted hover:text-foreground" title="Close agent config" aria-label="Close agent config"><X className="size-3.5" /></button>
               </div>
-              <div className="mb-3 grid grid-cols-4 rounded-md bg-muted/60 p-1 text-[11.5px] font-medium">
-                <button onClick={() => setConfigSection("agent")} className={`h-7 rounded ${configSection === "agent" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Agent</button>
+              <div className="mb-3 flex overflow-x-auto rounded-md bg-muted/60 p-1 text-[11px] font-medium [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 <button onClick={() => setConfigSection("profile")} className={`h-7 rounded ${configSection === "profile" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Profile</button>
-                <button onClick={() => setConfigSection("usage")} className={`h-7 rounded ${configSection === "usage" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Usage</button>
-                <button onClick={() => setConfigSection("connections")} className={`h-7 rounded ${configSection === "connections" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Connections</button>
+                <button onClick={() => setConfigSection("team")} className={`h-7 rounded px-3 ${configSection === "team" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Team</button>
+                <button onClick={() => setConfigSection("external")} className={`h-7 rounded px-3 ${configSection === "external" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>External</button>
+                <button onClick={() => setConfigSection("schedules")} className={`h-7 rounded px-3 ${configSection === "schedules" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Schedules</button>
+                <button onClick={() => setConfigSection("runtime")} className={`h-7 rounded px-3 ${configSection === "runtime" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Runtime</button>
+                <button onClick={() => setConfigSection("usage")} className={`h-7 rounded px-3 ${configSection === "usage" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Usage</button>
               </div>
 
-              {configSection === "agent" ? (
+              {configSection === "runtime" ? (
                 <>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Name</span>
@@ -971,8 +989,12 @@ export function AgentPane({
                 ) : (
                   <div className="py-8 text-center text-[12px] text-muted-foreground">Profile unavailable.</div>
                 )
+              ) : configSection === "team" ? (
+                <AgentTeamPanel agent={agent} team={team} />
+              ) : configSection === "schedules" ? (
+                <AgentSchedulesPanel schedules={schedules} />
               ) : configSection === "usage" ? (
-                <AgentUsagePanel usage={usage} loading={loadingUsage} onRefresh={() => {
+                <AgentUsagePanel usage={usage} loading={loadingUsage} onOpenOverview={() => onOpenUsage(agent.id)} onRefresh={() => {
                   setLoadingUsage(true);
                   api("GET", `/api/agents/${agent.id}/usage?days=7`)
                     .then((data) => setUsage(data.usage))
@@ -1524,6 +1546,7 @@ function PendingWorkBar({ entries, onOpen }: { entries: InboxEntry[]; onOpen: (i
   const failedCount = entries.filter((entry) => entry.item.state === "failed" || entry.item.state === "pending_access").length;
   const handlingCount = entries.filter((entry) => entry.item.state === "handling" || entry.item.state === "awaiting_delivery").length;
   const heldCount = entries.filter((entry) => entry.item.state === "interrupted").length;
+  const oldest = oldestWaitingMs(entries);
   const summary = [
     externalCount > 0 ? `${externalCount} external` : "",
     internalCount > 0 ? `${internalCount} agent msg` : "",
@@ -1538,15 +1561,15 @@ function PendingWorkBar({ entries, onOpen }: { entries: InboxEntry[]; onOpen: (i
         aria-label={`Show ${entries.length} pending work items`}
       >
         <Inbox className="size-3.5 shrink-0 text-primary" />
-        <span className="font-semibold text-foreground">Pending work</span>
+        <span className="font-semibold text-foreground">Agent Inbox</span>
         <span className="flex size-5 shrink-0 items-center justify-center rounded-sm bg-muted font-mono text-[10px] font-semibold text-foreground">{entries.length}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[9.5px]">{summary}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[9.5px]">{summary}{oldest ? ` · oldest ${formatQueueAge(oldest)}` : ""}</span>
         {failedCount > 0 && <span className="shrink-0 font-mono text-[9.5px] text-destructive">{failedCount} attention</span>}
         <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" className="w-[min(32rem,calc(100vw-1rem))] p-2" aria-label="Pending work">
+      <PopoverContent side="top" align="start" className="w-[min(32rem,calc(100vw-1rem))] p-2" aria-label="Agent Inbox">
         <div className="flex items-center justify-between px-1 py-1">
-          <span className="text-[11.5px] font-semibold">Pending work for this Agent</span>
+          <span className="text-[11.5px] font-semibold">Agent Inbox</span>
           <span className="font-mono text-[9.5px] text-muted-foreground">{entries.length} open</span>
         </div>
         <div className="mt-1 max-h-72 overflow-y-auto">
@@ -1585,11 +1608,43 @@ function PendingWorkBar({ entries, onOpen }: { entries: InboxEntry[]; onOpen: (i
   );
 }
 
+function formatQueueAge(milliseconds: number) {
+  const minutes = Math.max(1, Math.floor(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
 function isInternalWork(entry: InboxEntry) {
   return entry.message.origin === "loom" || entry.message.origin === "chub";
 }
 
-function AgentUsagePanel({ usage, loading, onRefresh }: { usage: AgentTokenUsage | null; loading: boolean; onRefresh: () => void }) {
+function AgentTeamPanel({ agent, team }: { agent: Agent; team: TeamView | null }) {
+  if (!team) return <div className="flex items-center justify-center gap-2 py-10 font-mono text-[10px] text-muted-foreground"><Loader2 className="size-3 animate-spin" />Reading Team relationships</div>;
+  const organization = team.organizationLinks.filter((link) => link.parentAgentId === agent.id || link.childAgentId === agent.id);
+  const collaboration = team.collaborationLinks.filter((link) => link.fromAgentId === agent.id || link.toAgentId === agent.id);
+  return <div>
+    <div className="mb-3 flex items-center gap-2"><Network className="size-3.5 text-primary" /><span className="text-[12px] font-medium">Team relationships</span><span className="ml-auto font-mono text-[9.5px] text-muted-foreground">{organization.length + collaboration.length} declared</span></div>
+    <div className="divide-y divide-border border-y border-border">
+      {organization.map((link) => <div key={link.id} className="py-3"><div className="flex items-center gap-2 text-[11.5px] font-semibold"><span className="font-mono text-[8.5px] uppercase text-muted-foreground">Organization</span>{link.parentAgentId === agent.id ? `Internal Agent: ${link.child}` : `Parent: ${link.parent}`}</div><div className="mt-1 text-[10.5px] leading-4 text-muted-foreground">{link.description}</div></div>)}
+      {collaboration.map((link) => <div key={link.id} className="py-3"><div className="flex items-center gap-2 text-[11.5px] font-semibold"><span className="font-mono text-[8.5px] uppercase text-muted-foreground">Collaboration</span>{link.fromAgentId === agent.id ? link.to : link.from}</div><div className="mt-1 text-[10.5px] leading-4 text-muted-foreground">{link.description}</div></div>)}
+      {organization.length === 0 && collaboration.length === 0 ? <div className="py-8 text-center text-[11px] text-muted-foreground">No declared Team relationships.</div> : null}
+    </div>
+  </div>;
+}
+
+function AgentSchedulesPanel({ schedules }: { schedules: Schedule[] }) {
+  return <div>
+    <div className="mb-3 flex items-center gap-2"><CalendarClock className="size-3.5 text-primary" /><span className="text-[12px] font-medium">Schedules</span><span className="ml-auto font-mono text-[9.5px] text-muted-foreground">{schedules.filter((schedule) => schedule.enabled).length} enabled</span></div>
+    <div className="divide-y divide-border border-y border-border">
+      {schedules.map((schedule) => <div key={schedule.id} className="flex min-w-0 items-start gap-3 py-3"><span className={`mt-1 size-2 shrink-0 rounded-full ${schedule.enabled ? "bg-success" : "bg-muted-foreground/35"}`} /><div className="min-w-0 flex-1"><div className="truncate text-[11.5px] font-semibold">{schedule.name}</div><div className="mt-0.5 truncate text-[10.5px] text-muted-foreground">{schedule.subject}</div><div className="mt-1 font-mono text-[9px] text-muted-foreground">{schedule.cron || schedule.at || "No trigger"}{schedule.nextRunAt ? ` · next ${new Date(schedule.nextRunAt).toLocaleString()}` : ""}</div></div></div>)}
+      {schedules.length === 0 ? <div className="py-8 text-center text-[11px] text-muted-foreground">No schedules target this Agent.</div> : null}
+    </div>
+  </div>;
+}
+
+function AgentUsagePanel({ usage, loading, onRefresh, onOpenOverview }: { usage: AgentTokenUsage | null; loading: boolean; onRefresh: () => void; onOpenOverview: () => void }) {
   if (loading && !usage) {
     return <div className="flex items-center justify-center gap-2 py-10 font-mono text-[10px] text-muted-foreground"><Loader2 className="size-3 animate-spin" />Reading Thread usage</div>;
   }
@@ -1599,6 +1654,7 @@ function AgentUsagePanel({ usage, loading, onRefresh }: { usage: AgentTokenUsage
         <BarChart3 className="mx-auto size-5 text-muted-foreground/45" />
         <div className="mt-2 text-[12px] font-medium">No Thread usage yet</div>
         <div className="mt-1 text-[10.5px] text-muted-foreground">Usage appears after this Agent completes a model call.</div>
+        <button type="button" onClick={onOpenOverview} className="mx-auto mt-4 flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[11px] font-medium text-foreground hover:bg-muted">Open Token usage <ArrowUpRight className="size-3" /></button>
       </div>
     );
   }
@@ -1663,6 +1719,7 @@ function AgentUsagePanel({ usage, loading, onRefresh }: { usage: AgentTokenUsage
         </div>
       </section>
       <div className="font-mono text-[8.5px] text-muted-foreground">Cached input is included in input. Reasoning is included in output.</div>
+      <button type="button" onClick={onOpenOverview} className="mt-4 flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-border text-[11px] font-medium text-foreground hover:bg-muted">Open in Overview <ArrowUpRight className="size-3" /></button>
     </div>
   );
 }

@@ -300,6 +300,27 @@ func TestApplyRolloutStatusClearsPersistedStaleRunningTurn(t *testing.T) {
 	}
 }
 
+func TestTurnSource(t *testing.T) {
+	tests := []struct {
+		name           string
+		inboxItemID    string
+		agentMessageID string
+		want           string
+	}{
+		{name: "owner", want: "owner"},
+		{name: "internal", agentMessageID: "msg_123", want: "internal"},
+		{name: "external", inboxItemID: "inb_123", want: "external"},
+		{name: "external wins when both identifiers exist", inboxItemID: "inb_123", agentMessageID: "msg_123", want: "external"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := turnSource(test.inboxItemID, test.agentMessageID); got != test.want {
+				t.Fatalf("turnSource(%q, %q) = %q, want %q", test.inboxItemID, test.agentMessageID, got, test.want)
+			}
+		})
+	}
+}
+
 func writeTestRollout(t *testing.T, dir, threadID, ts string) {
 	t.Helper()
 	day := filepath.Join(dir, "2026", "07", "08")

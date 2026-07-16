@@ -37,10 +37,22 @@ import {
   type UsageRangeMode,
 } from "./usage";
 
-export function UsagePane({ onSelectAgent }: { onSelectAgent: (id: string) => void }) {
+type CalendarPaneProps = {
+  onSelectAgent: (id: string) => void;
+  embedded?: boolean;
+  controlledRange?: UsageDateRange;
+  onControlledRangeChange?: (range: UsageDateRange) => void;
+};
+
+export function UsagePane({ onSelectAgent, embedded = false, controlledRange, onControlledRangeChange }: CalendarPaneProps) {
   const initialLocation = readUsageLocation(window.location.hash);
-  const [range, setRange] = useState<UsageDateRange>(initialLocation);
+  const [localRange, setLocalRange] = useState<UsageDateRange>(initialLocation);
+  const range = controlledRange || localRange;
   const [selectedAgentId, setSelectedAgentId] = useState(initialLocation.agentId);
+  const updateRange = (value: UsageDateRange) => {
+    if (onControlledRangeChange) onControlledRangeChange(value);
+    else setLocalRange(value);
+  };
   const query = useQuery<TokenUsageOverview>({
     queryKey: ["token-usage", range.from, range.to, range.timezone],
     queryFn: async () => (await api("GET", `/api/usage?${usageAPIQuery(range)}`)).usage,
@@ -58,8 +70,9 @@ export function UsagePane({ onSelectAgent }: { onSelectAgent: (id: string) => vo
   );
 
   useEffect(() => {
+    if (controlledRange) return;
     setUsageHash(range, selectedAgentId);
-  }, [range, selectedAgentId]);
+  }, [controlledRange, range, selectedAgentId]);
 
   useEffect(() => {
     const root = (((window as any).codexLoom ||= (window as any).codexHub || {}) as Record<string, any>);
@@ -89,8 +102,8 @@ export function UsagePane({ onSelectAgent }: { onSelectAgent: (id: string) => vo
         const next = mode === "custom"
           ? { ...range, ...value, mode }
           : usageRangeEndingOn(mode, value.to || range.to, value.timezone || range.timezone);
-        setRange(next);
-        setUsageHash(next, selectedAgentId);
+        updateRange(next);
+        if (!controlledRange) setUsageHash(next, selectedAgentId);
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.usage?.state?.() || automation.state();
       },
@@ -98,27 +111,27 @@ export function UsagePane({ onSelectAgent }: { onSelectAgent: (id: string) => vo
         const mode = ({ 1: "day", 7: "7d", 30: "30d", 90: "90d" } as Record<number, UsageRangeMode>)[value];
         if (!mode) throw new Error(`unsupported usage range: ${value}`);
         const next = usageRangeEndingOn(mode, todayDate(), range.timezone);
-        setRange(next);
-        setUsageHash(next, selectedAgentId);
+        updateRange(next);
+        if (!controlledRange) setUsageHash(next, selectedAgentId);
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.usage?.state?.() || automation.state();
       },
       shiftRange: async (direction: -1 | 1) => {
         const next = shiftUsageRange(range, direction);
-        setRange(next);
-        setUsageHash(next, selectedAgentId);
+        updateRange(next);
+        if (!controlledRange) setUsageHash(next, selectedAgentId);
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.usage?.state?.() || automation.state();
       },
       selectUsageAgent: async (id?: string | null) => {
         if (!id || id === "all") {
           setSelectedAgentId(null);
-          setUsageHash(range, null);
+          if (!controlledRange) setUsageHash(range, null);
         } else {
           const agent = usage?.agents.find((item) => item.agentId === id || item.agentName === id);
           if (!agent) throw new Error(`Agent not found in usage: ${id}`);
           setSelectedAgentId(agent.agentId);
-          setUsageHash(range, agent.agentId);
+          if (!controlledRange) setUsageHash(range, agent.agentId);
         }
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.usage?.state?.() || automation.state();
@@ -139,22 +152,22 @@ export function UsagePane({ onSelectAgent }: { onSelectAgent: (id: string) => vo
     return () => {
       if (root.usage === automation) delete root.usage;
     };
-  }, [onSelectAgent, query, range, selectedAgent, selectedAgentId, usage]);
+  }, [controlledRange, onSelectAgent, query, range, selectedAgent, selectedAgentId, usage]);
 
   const applyRange = (value: UsageDateRange) => {
-    setRange(value);
-    setUsageHash(value, selectedAgentId);
+    updateRange(value);
+    if (!controlledRange) setUsageHash(value, selectedAgentId);
   };
 
   const selectUsageAgent = (id: string | null, scroll = false) => {
     setSelectedAgentId(id);
-    setUsageHash(range, id);
+    if (!controlledRange) setUsageHash(range, id);
     if (scroll) window.requestAnimationFrame(() => document.querySelector("[data-usage-inspector]")?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
   };
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <header className="flex min-h-14 shrink-0 flex-wrap items-center justify-end gap-3 border-b border-border py-2 pl-14 pr-4 sm:justify-start sm:px-4 md:px-6">
+      {!embedded ? <header className="flex min-h-14 shrink-0 flex-wrap items-center justify-end gap-3 border-b border-border py-2 pl-14 pr-4 sm:justify-start sm:px-4 md:px-6">
         <div className="hidden min-w-0 flex-1 items-center gap-3 sm:flex">
           <BarChart3 className="size-4 shrink-0 text-primary" />
           <div className="min-w-0">
@@ -167,7 +180,7 @@ export function UsagePane({ onSelectAgent }: { onSelectAgent: (id: string) => vo
             <RefreshCw className={query.isFetching ? "animate-spin" : ""} />
           </Button>
         </div>
-      </header>
+      </header> : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {query.isLoading ? (
@@ -190,10 +203,15 @@ export function UsagePane({ onSelectAgent }: { onSelectAgent: (id: string) => vo
   );
 }
 
-export function CapacityPane({ onSelectAgent }: { onSelectAgent: (id: string) => void }) {
+export function CapacityPane({ onSelectAgent, embedded = false, controlledRange, onControlledRangeChange }: CalendarPaneProps) {
   const initialLocation = readCapacityLocation(window.location.hash);
-  const [range, setRange] = useState<UsageDateRange>(initialLocation);
+  const [localRange, setLocalRange] = useState<UsageDateRange>(initialLocation);
+  const range = controlledRange || localRange;
   const [selectedAgentId, setSelectedAgentId] = useState(initialLocation.agentId);
+  const updateRange = (value: UsageDateRange) => {
+    if (onControlledRangeChange) onControlledRangeChange(value);
+    else setLocalRange(value);
+  };
   const query = useQuery<WorkloadOverview>({
     queryKey: ["workload", range.from, range.to, range.timezone],
     queryFn: async () => (await api("GET", `/api/workload?${usageAPIQuery(range)}`)).workload,
@@ -206,8 +224,9 @@ export function CapacityPane({ onSelectAgent }: { onSelectAgent: (id: string) =>
   );
 
   useEffect(() => {
+    if (controlledRange) return;
     setCapacityHash(range, selectedAgentId);
-  }, [range, selectedAgentId]);
+  }, [controlledRange, range, selectedAgentId]);
 
   useEffect(() => {
     const root = (((window as any).codexLoom ||= (window as any).codexHub || {}) as Record<string, any>);
@@ -236,8 +255,8 @@ export function CapacityPane({ onSelectAgent }: { onSelectAgent: (id: string) =>
         const next = mode === "custom"
           ? { ...range, ...value, mode }
           : usageRangeEndingOn(mode, value.to || range.to, value.timezone || range.timezone);
-        setRange(next);
-        setCapacityHash(next, selectedAgentId);
+        updateRange(next);
+        if (!controlledRange) setCapacityHash(next, selectedAgentId);
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.capacity?.state?.() || automation.state();
       },
@@ -245,27 +264,27 @@ export function CapacityPane({ onSelectAgent }: { onSelectAgent: (id: string) =>
         const mode = ({ 1: "day", 7: "7d", 30: "30d", 90: "90d" } as Record<number, UsageRangeMode>)[value];
         if (!mode) throw new Error(`unsupported capacity range: ${value}`);
         const next = usageRangeEndingOn(mode, todayDate(), range.timezone);
-        setRange(next);
-        setCapacityHash(next, selectedAgentId);
+        updateRange(next);
+        if (!controlledRange) setCapacityHash(next, selectedAgentId);
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.capacity?.state?.() || automation.state();
       },
       shiftRange: async (direction: -1 | 1) => {
         const next = shiftUsageRange(range, direction);
-        setRange(next);
-        setCapacityHash(next, selectedAgentId);
+        updateRange(next);
+        if (!controlledRange) setCapacityHash(next, selectedAgentId);
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.capacity?.state?.() || automation.state();
       },
       selectCapacityAgent: async (id?: string | null) => {
         if (!id || id === "all") {
           setSelectedAgentId(null);
-          setCapacityHash(range, null);
+          if (!controlledRange) setCapacityHash(range, null);
         } else {
           const agent = workload?.agents.find((item) => item.agentId === id || item.agentName === id);
           if (!agent) throw new Error(`Agent not found in capacity: ${id}`);
           setSelectedAgentId(agent.agentId);
-          setCapacityHash(range, agent.agentId);
+          if (!controlledRange) setCapacityHash(range, agent.agentId);
         }
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         return root.capacity?.state?.() || automation.state();
@@ -286,21 +305,21 @@ export function CapacityPane({ onSelectAgent }: { onSelectAgent: (id: string) =>
     return () => {
       if (root.capacity === automation) delete root.capacity;
     };
-  }, [onSelectAgent, query, range, selectedAgent, selectedAgentId, workload]);
+  }, [controlledRange, onSelectAgent, query, range, selectedAgent, selectedAgentId, workload]);
 
   const applyRange = (value: UsageDateRange) => {
-    setRange(value);
-    setCapacityHash(value, selectedAgentId);
+    updateRange(value);
+    if (!controlledRange) setCapacityHash(value, selectedAgentId);
   };
 
   const selectCapacityAgent = (id: string | null) => {
     setSelectedAgentId(id);
-    setCapacityHash(range, id);
+    if (!controlledRange) setCapacityHash(range, id);
   };
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <header className="flex min-h-14 shrink-0 flex-wrap items-center justify-end gap-3 border-b border-border py-2 pl-14 pr-4 sm:justify-start sm:px-4 md:px-6">
+      {!embedded ? <header className="flex min-h-14 shrink-0 flex-wrap items-center justify-end gap-3 border-b border-border py-2 pl-14 pr-4 sm:justify-start sm:px-4 md:px-6">
         <div className="hidden min-w-0 flex-1 items-center gap-3 sm:flex">
           <Activity className="size-4 shrink-0 text-primary" />
           <div className="min-w-0">
@@ -313,7 +332,7 @@ export function CapacityPane({ onSelectAgent }: { onSelectAgent: (id: string) =>
             <RefreshCw className={query.isFetching ? "animate-spin" : ""} />
           </Button>
         </div>
-      </header>
+      </header> : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {query.isLoading ? (
@@ -779,7 +798,7 @@ function CapacityWorkspace({
           value={scope.observedSeconds ? formatPercent(scope.executingPercent) : "—"}
           detail={`${formatDurationSeconds(scope.executingSeconds)} Turn time · ${formatDurationSeconds(scope.observedSeconds)} Agent-time${workload.live ? " through now" : ""}`}
         />
-        <Metric label="Idle proxy" value={scope.observedSeconds ? formatPercent(scope.idleProxyPercent) : "—"} detail={`calendar non-executing${workload.live ? " through now" : ""} · includes offline`} />
+        <Metric label="Calendar non-executing proxy" value={scope.observedSeconds ? formatPercent(scope.idleProxyPercent) : "—"} detail={`recorded window${workload.live ? " through now" : ""} · includes offline`} />
         <Metric label="New-work wait" value={formatWait(scope.wait.p50Ms, scope.wait.samples)} detail={`p90 ${formatWait(scope.wait.p90Ms, scope.wait.samples)} · ${scope.wait.samples} samples`} />
         <Metric label="Current backlog" value={String(scope.backlog.count)} detail={scope.backlog.count ? `live snapshot · oldest ${formatDurationMs(scope.backlog.oldestMs)}` : "live snapshot · no queued work"} />
         <Metric
@@ -900,7 +919,7 @@ function CapacityAgentTable({
           <tr>
             <th className="w-[22%] px-3 py-2 font-medium">Agent</th>
             <th className="w-[11%] px-3 py-2 text-right font-medium">Execute</th>
-            <th className="w-[11%] px-3 py-2 text-right font-medium">Idle proxy</th>
+            <th className="w-[11%] px-3 py-2 text-right font-medium">Calendar non-executing proxy</th>
             <th className="w-[9%] px-3 py-2 text-right font-medium">Turns</th>
             <th className="w-[11%] px-3 py-2 text-right font-medium">P50 wait</th>
             <th className="w-[11%] px-3 py-2 text-right font-medium">P90 wait</th>

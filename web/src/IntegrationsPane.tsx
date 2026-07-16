@@ -115,7 +115,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     setCreateOpen(false);
     setLarkSetupMode(mode);
     setLarkSetupOpen(true);
-    window.history.replaceState(null, "", "#integrations?setup=lark");
+    window.history.replaceState(null, "", "#external?setup=lark");
     if (appID.trim()) {
       discoverLark(appID);
     } else {
@@ -125,7 +125,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
 
   const closeLarkSetup = () => {
     setLarkSetupOpen(false);
-    window.history.replaceState(null, "", "#integrations");
+    window.history.replaceState(null, "", "#external");
   };
 
   const discoverSlack = async (connectionID = "", appID = "") => {
@@ -163,7 +163,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     setCreateOpen(false);
     setSlackSetupMode(mode);
     setSlackSetupOpen(true);
-    window.history.replaceState(null, "", "#integrations?setup=slack");
+    window.history.replaceState(null, "", "#external?setup=slack");
     if (connectionID.trim()) {
       discoverSlack(connectionID);
     } else {
@@ -173,7 +173,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
 
   const closeSlackSetup = () => {
     setSlackSetupOpen(false);
-    window.history.replaceState(null, "", "#integrations");
+    window.history.replaceState(null, "", "#external");
   };
 
   const discoverParall = async (connectionID = "", orgID = "", agentID = "") => {
@@ -212,14 +212,14 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     setCreateOpen(false);
     setParallSetupMode(mode);
     setParallSetupOpen(true);
-    window.history.replaceState(null, "", "#integrations?setup=parall");
+    window.history.replaceState(null, "", "#external?setup=parall");
     if (connectionID.trim()) discoverParall(connectionID);
     else setParallDiscovery({ available: true, runtime: "managed-websocket", apiUrl: "https://api.parall.com", ownerCredentialStored: false, ownerReady: false, agentCredentialStored: false, externalReady: false, socketReady: false, agents: [], chats: [] });
   };
 
   const closeParallSetup = () => {
     setParallSetupOpen(false);
-    window.history.replaceState(null, "", "#integrations");
+    window.history.replaceState(null, "", "#external");
   };
 
   useEffect(() => {
@@ -293,7 +293,14 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     }
   }, [selected?.id, parallSetupOpen]);
 
-  const activeConnections = connections.filter((connection) => !connection.archivedAt);
+  const activeConnections = connections.filter((connection) => !connection.archivedAt).sort((left, right) => {
+    const label = (connection: PlatformConnection) => {
+      const address = addresses.find((item) => item.connectionId === connection.id && !item.archivedAt);
+      const owner = agents.find((item) => item.id === address?.agentId)?.name || "~unassigned";
+      return `${owner}\u0000${address?.displayName || address?.externalIdentity || connection.provider}`;
+    };
+    return label(left).localeCompare(label(right));
+  });
   const archivedConnections = connections.filter((connection) => Boolean(connection.archivedAt));
   const selectedMemberships = memberships.filter((membership) => selectedAddresses.some((address) => address.id === membership.addressId) && (selected?.archivedAt ? true : !membership.archivedAt));
   const selectedCandidates = conversationCandidates.filter((candidate) => selectedAddresses.some((address) => address.id === candidate.addressId));
@@ -498,8 +505,8 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     <main className="flex w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden bg-background">
       <header className="flex min-h-14 w-full max-w-full shrink-0 items-center gap-3 overflow-hidden border-b border-border bg-card/80 py-2 pl-14 pr-3 md:px-5">
         <ProviderIcon provider={selected?.provider || provider} className="size-4 shrink-0 text-primary" />
-        <h1 className="min-w-0 truncate font-serif text-xl tracking-tight">Integrations</h1>
-        <div className="hidden text-[11px] text-muted-foreground sm:block">{connectedCount}/{connections.length} connected · {addresses.length} addresses</div>
+        <h1 className="min-w-0 truncate text-[15px] font-semibold">External</h1>
+        <div className="hidden text-[11px] text-muted-foreground sm:block">{addresses.length} identities · {memberships.filter((membership) => !membership.archivedAt).length} conversation roles · {connectedCount} connected</div>
         <div className="ml-auto flex items-center gap-1">
           <button onClick={() => refreshAll().catch((error: Error) => onError(error.message))} title="Refresh" className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"><RefreshCw className="size-3.5" /></button>
           <button onClick={() => { setCreateOpen((value) => !value); setLarkSetupOpen(false); setSlackSetupOpen(false); setParallSetupOpen(false); }} title="Add integration" className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90"><Plus className="size-3.5" /></button>
@@ -585,16 +592,19 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
 
       {!larkSetupOpen && !slackSetupOpen && !parallSetupOpen && <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[320px_1fr]">
         <section className={`${selected ? "hidden lg:block" : "block"} min-h-0 overflow-y-auto border-r border-border`}>
+          <div className="border-b border-border px-4 py-2 text-[9px] font-semibold uppercase text-muted-foreground">Agents and external identities</div>
           {activeConnections.map((connection) => {
             const boundAddresses = addresses.filter((address) => address.connectionId === connection.id && !address.archivedAt);
-            const identityName = boundAddresses[0]?.displayName;
+            const identityName = boundAddresses[0]?.displayName || boundAddresses[0]?.externalIdentity;
+            const ownerName = agents.find((agent) => agent.id === boundAddresses[0]?.agentId)?.name || "Unassigned";
+            const conversationCount = memberships.filter((membership) => boundAddresses.some((address) => address.id === membership.addressId) && !membership.archivedAt).length;
             return <button key={connection.id} onClick={() => setSelectedID(connection.id)} className={`block w-full border-b border-border px-4 py-3 text-left ${selectedID === connection.id ? "bg-selection text-selection-foreground" : "hover:bg-muted/45"}`}>
-              <div className="flex min-w-0 items-center gap-2"><ConnectionDot connection={connection} /><ProviderIcon provider={connection.provider} className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{identityName || providerSpec(connection.provider).label}</span><span className="font-mono text-[9px] uppercase text-muted-foreground">{connection.status}</span></div>
-              <div className="mt-1 truncate text-[10px] text-muted-foreground"><span>{providerSpec(connection.provider).label}</span>{connection.accountRef && <span className="font-mono"> · {connection.accountRef}</span>}</div>
-              <div className="mt-1 text-[10px] text-muted-foreground">{boundAddresses.length} addresses</div>
+              <div className="mb-1 truncate font-mono text-[8.5px] uppercase text-muted-foreground">{ownerName}</div>
+              <div className="flex min-w-0 items-center gap-2"><ConnectionDot connection={connection} /><ProviderIcon provider={connection.provider} className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{identityName || `Set up ${providerSpec(connection.provider).label}`}</span><span className="font-mono text-[9px] uppercase text-muted-foreground">{connection.status}</span></div>
+              <div className="mt-1 text-[10px] text-muted-foreground">{providerSpec(connection.provider).label} · {conversationCount} conversation role{conversationCount === 1 ? "" : "s"}</div>
             </button>;
           })}
-          {activeConnections.length === 0 && <Empty label="No integrations" />}
+          {activeConnections.length === 0 && <Empty label="No external identities" />}
           {archivedConnections.length > 0 && <details className="group border-b border-border bg-muted/20">
             <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-[10px] font-semibold uppercase text-muted-foreground"><ChevronDown className="size-3 transition-transform group-open:rotate-180" />Archived <span className="font-mono">{archivedConnections.length}</span></summary>
             <div className="border-t border-border/60">
@@ -612,7 +622,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
         <section className={`${selected ? "block" : "hidden lg:block"} min-h-0 overflow-y-auto`}>
           {selected ? (
             <div className="mx-auto max-w-4xl p-4 md:p-6">
-              <button onClick={() => setSelectedID("")} className="mb-4 text-[12px] text-muted-foreground lg:hidden">← Integrations</button>
+              <button onClick={() => setSelectedID("")} className="mb-4 text-[12px] text-muted-foreground lg:hidden">← External identities</button>
               <div className="flex min-w-0 items-start gap-3 border-b border-border pb-4">
                 <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted"><ProviderIcon provider={selected.provider} className="size-4 text-primary" /></div>
                 <div className="min-w-0"><h2 className="truncate text-lg font-semibold">{selectedAddresses[0]?.displayName || selectedProvider.label}</h2><div className="truncate text-[10px] text-muted-foreground">{selectedProvider.label}<span className="font-mono"> · {selected.accountRef || selected.id}</span></div></div>
@@ -691,7 +701,10 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
                   {!selected.archivedAt && <GatewaySetup connection={selected} addresses={selectedAddresses} />}
                 </>
               )}
-              <div className="mt-6 flex items-center justify-between"><h3 className="text-[12px] font-semibold uppercase text-muted-foreground">Agent Addresses</h3>{!selected.archivedAt && <button onClick={bindOpen ? resetAddressForm : startBind} className="flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-[11px] font-medium hover:bg-muted">{bindOpen ? <X className="size-3.5" /> : <Link2 className="size-3.5" />}{bindOpen ? "Close" : "Bind"}</button>}</div>
+              <details className="group mt-6 border-t border-border">
+                <summary className="flex cursor-pointer list-none items-center gap-2 py-3 text-[11px] font-semibold uppercase text-muted-foreground"><ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />Technical identity mapping</summary>
+                <div className="border-t border-border/60 pb-3">
+              <div className="mt-3 flex items-center justify-between"><h3 className="text-[12px] font-semibold uppercase text-muted-foreground">Agent Addresses</h3>{!selected.archivedAt && <button onClick={bindOpen ? resetAddressForm : startBind} className="flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-[11px] font-medium hover:bg-muted">{bindOpen ? <X className="size-3.5" /> : <Link2 className="size-3.5" />}{bindOpen ? "Close" : "Bind"}</button>}</div>
               {!selected.archivedAt && bindOpen && (
                 <div className="mt-3 grid gap-2 rounded-[3px] bg-muted/25 p-3 sm:grid-cols-2 xl:grid-cols-3">
                   <select value={agent} disabled={Boolean(editingAddressID)} onChange={(event) => setAgent(event.target.value)} className={controlClass}><option value="">Agent</option>{agents.map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}</select>
@@ -719,8 +732,10 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
                 ))}
                 {selectedAddresses.length === 0 && <div className="py-8 text-center text-[12px] text-muted-foreground">No addresses</div>}
               </div>
+                </div>
+              </details>
             </div>
-          ) : <Empty label="Select an integration" />}
+          ) : <Empty label="Select an external identity" />}
         </section>
       </div>}
     </main>

@@ -18,6 +18,7 @@ import {
   GitFork,
   Link2,
   List,
+  MessageSquare,
   Network,
   Plus,
   RefreshCw,
@@ -49,6 +50,7 @@ interface Props {
   onError: (msg: string) => void;
   onMessageAgent: (name: string) => void;
   onScheduleAgent: (name: string) => void;
+  onOpenMessages: (agentA: string, agentB: string) => void;
 }
 
 type TeamViewMode = "organization" | "collaboration" | "activity" | "directory";
@@ -91,7 +93,7 @@ type TeamGraph = {
 const EMPTY_TEAM: TeamView = { agents: [], organizationLinks: [], collaborationLinks: [], observedLinks: [], explicitLinks: [] };
 const nodeTypes = { agentCard: AgentGraphNode };
 
-export function TeamPane({ onError, onMessageAgent, onScheduleAgent }: Props) {
+export function TeamPane({ onError, onMessageAgent, onScheduleAgent, onOpenMessages }: Props) {
   const route = readTeamRouteState();
   const [team, setTeam] = useState<TeamView>(EMPTY_TEAM);
   const [activityLinks, setActivityLinks] = useState<TeamObservedLink[]>([]);
@@ -180,8 +182,8 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent }: Props) {
 
   const filteredAgents = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return team.agents;
-    return team.agents.filter((agent) => agentSearchText(agent).includes(q));
+    const visible = q ? team.agents.filter((agent) => agentSearchText(agent).includes(q)) : team.agents;
+    return [...visible].sort((a, b) => a.name.localeCompare(b.name));
   }, [team.agents, query]);
 
   const graphMode: GraphViewMode = viewMode === "directory" ? "organization" : viewMode;
@@ -394,6 +396,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent }: Props) {
       onError={onError}
       onMessageAgent={onMessageAgent}
       onScheduleAgent={onScheduleAgent}
+      onOpenMessages={onOpenMessages}
       onSelectAgent={selectAgent}
       onSelectOrganization={(relationship) => {
         setSelectedAgentId("");
@@ -522,6 +525,7 @@ function TeamInspector({
   onError,
   onMessageAgent,
   onScheduleAgent,
+  onOpenMessages,
   onSelectAgent,
   onSelectOrganization,
   onSelectCollaboration,
@@ -544,6 +548,7 @@ function TeamInspector({
   onError: (message: string) => void;
   onMessageAgent: (name: string) => void;
   onScheduleAgent: (name: string) => void;
+  onOpenMessages: (agentA: string, agentB: string) => void;
   onSelectAgent: (id: string) => void;
   onSelectOrganization: (relationship: OrganizationRelationship) => void;
   onSelectCollaboration: (relationship: TeamRelationship) => void;
@@ -581,7 +586,7 @@ function TeamInspector({
         ) : collaboration ? (
           <RelationshipInspector relationship={collaboration} onError={onError} onUpdate={onUpdateRelationship} onDelete={onDeleteRelationship} />
         ) : activity ? (
-          <ActivityInspector pair={activity} />
+          <ActivityInspector pair={activity} onOpenMessages={onOpenMessages} />
         ) : (
           <EmptyState text="Select an agent card or relationship." />
         )}
@@ -964,7 +969,7 @@ function RelationshipInspector({
   );
 }
 
-function ActivityInspector({ pair }: { pair: ActivityPair }) {
+function ActivityInspector({ pair, onOpenMessages }: { pair: ActivityPair; onOpenMessages: (agentA: string, agentB: string) => void }) {
   return (
     <div className="space-y-4">
       <section className="border-b border-border pb-4">
@@ -989,6 +994,9 @@ function ActivityInspector({ pair }: { pair: ActivityPair }) {
           {pair.subjects.map((subject) => <div key={subject} className="rounded-md bg-muted px-2.5 py-2 text-[12px] text-muted-foreground">{subject}</div>)}
         </div>
       </section>
+      <button type="button" onClick={() => onOpenMessages(pair.agentA, pair.agentB)} className="flex h-9 w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-3 text-[12px] font-medium text-foreground hover:bg-muted">
+        <MessageSquare className="size-3.5" />Open message history
+      </button>
     </div>
   );
 }
@@ -1220,18 +1228,17 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function teamAgentWorking(agent: TeamAgent) {
-  return agent.status === "running" || agent.goal?.status === "active";
+  return agent.status === "running";
 }
 
 function teamAgentStatus(agent: TeamAgent) {
   if (agent.status === "running") return "running";
-  if (agent.goal?.status === "active") return "goal active";
   return agent.status || "external";
 }
 
 function Stat({ label, value, tone, className = "" }: { label: string; value: number; tone?: "success" | "warning"; className?: string }) {
   const cls = tone === "success" ? "bg-success/10 text-success" : tone === "warning" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground";
-  return <span className={`items-center gap-1 rounded px-1.5 py-1 ${cls} ${className || "inline-flex"}`}><strong>{value}</strong><span className="hidden sm:inline">{label}</span></span>;
+  return <span title={`${value} ${label}`} aria-label={`${value} ${label}`} className={`items-center gap-1 rounded px-1.5 py-1 ${cls} ${className || "inline-flex"}`}><strong>{value}</strong><span className="hidden sm:inline">{label}</span></span>;
 }
 
 function Metric({ label, value, tone = "muted" }: { label: string; value: number; tone?: "muted" | "warning" | "danger" }) {
@@ -1408,12 +1415,12 @@ function firstLine(value?: string) {
 function readTeamRouteState() {
   const hash = window.location.hash.slice(1);
   const queryStart = hash.indexOf("?");
-  const responsiveDefault = window.innerWidth > 0 && window.innerWidth <= 1023 ? "directory" : "organization";
-  if (queryStart < 0) return { agent: "", link: "", query: "", view: responsiveDefault as TeamViewMode, days: 7 };
+  const defaultView: TeamViewMode = "directory";
+  if (queryStart < 0) return { agent: "", link: "", query: "", view: defaultView, days: 7 };
   const params = new URLSearchParams(hash.slice(queryStart + 1));
   const rawView = params.get("view");
   const views: TeamViewMode[] = ["organization", "collaboration", "activity", "directory"];
-  const view = views.includes(rawView as TeamViewMode) ? rawView as TeamViewMode : rawView === "list" ? "directory" : rawView === "graph" ? "organization" : responsiveDefault;
+  const view = views.includes(rawView as TeamViewMode) ? rawView as TeamViewMode : rawView === "list" ? "directory" : rawView === "graph" ? "organization" : defaultView;
   const rawDays = Number(params.get("days") || 7);
   return {
     agent: params.get("agent") || "",

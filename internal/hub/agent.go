@@ -524,6 +524,7 @@ func (h *Hub) sendTaskWithArtifacts(key, text string, artifactIDs []string, inac
 	}
 	turn := &turnState{
 		task:           taskText,
+		source:         turnSource(inboxItemID, agentMessageID),
 		inboxItemID:    inboxItemID,
 		attemptID:      attemptID,
 		agentMessageID: agentMessageID,
@@ -616,10 +617,20 @@ func (h *Hub) sendTaskWithArtifacts(key, text string, artifactIDs []string, inac
 			log.Printf("[codex-loom] save started message handling %s: %v", agentMessageID, err)
 		}
 	}
-	h.emitLocked(agentID, "loom/turn-started", map[string]any{"turnId": turn.turnID, "task": taskText})
+	h.emitLocked(agentID, "loom/turn-started", map[string]any{"turnId": turn.turnID, "task": taskText, "source": turn.source})
 	h.mu.Unlock()
 
 	return SendResult{Dispatched: true, AgentID: agentID, SessionID: agentID, TurnID: turnID}, nil
+}
+
+func turnSource(inboxItemID, agentMessageID string) string {
+	if inboxItemID != "" {
+		return "external"
+	}
+	if agentMessageID != "" {
+		return "internal"
+	}
+	return "owner"
 }
 
 func codexArtifactInput(agentID, text string, artifacts []ThreadArtifact) (string, []map[string]any) {

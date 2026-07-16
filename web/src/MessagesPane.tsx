@@ -19,9 +19,11 @@ interface Props {
   agents: Agent[];
   onError: (msg: string) => void;
   initialTo?: string;
+  participants?: [string, string] | null;
+  onClearParticipants?: () => void;
 }
 
-export function MessagesPane({ agents, onError, initialTo }: Props) {
+export function MessagesPane({ agents, onError, initialTo, participants, onClearParticipants }: Props) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [filter, setFilter] = useState<"all" | "waiting" | "queued" | "held" | "stale" | "failed">("all");
   const [from, setFrom] = useState("");
@@ -79,15 +81,24 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
   }, [messages]);
 
   const visible = useMemo(() => {
-    const roots = messages.filter((m) => !m.replyTo);
+    let roots = messages.filter((m) => !m.replyTo);
+    if (participants) {
+      const expected = new Set(participants);
+      roots = roots.filter((message) => expected.has(message.from) && expected.has(message.to));
+    }
     if (filter === "waiting") return roots.filter((m) => isWaiting(m));
     if (filter === "queued") return roots.filter((m) => m.deliveryStatus === "queued" || m.deliveryStatus === "delivering");
     if (filter === "held") return roots.filter((m) => m.handlingStatus === "interrupted" || m.handlingStatus === "failed");
     if (filter === "stale") return roots.filter((m) => isStale(m));
     if (filter === "failed") return roots.filter((m) => m.deliveryStatus === "failed");
     return roots;
-  }, [messages, filter]);
-  const rootMessages = useMemo(() => messages.filter((m) => !m.replyTo), [messages]);
+  }, [messages, filter, participants]);
+  const rootMessages = useMemo(() => {
+    const roots = messages.filter((m) => !m.replyTo);
+    if (!participants) return roots;
+    const expected = new Set(participants);
+    return roots.filter((message) => expected.has(message.from) && expected.has(message.to));
+  }, [messages, participants]);
   const waitingCount = rootMessages.filter(isWaiting).length;
   const queuedCount = rootMessages.filter((m) => m.deliveryStatus === "queued" || m.deliveryStatus === "delivering").length;
   const heldCount = rootMessages.filter((m) => m.handlingStatus === "interrupted" || m.handlingStatus === "failed").length;
@@ -227,7 +238,7 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <MessageSquare className="size-4 text-primary" />
-            <h1 className="truncate font-serif text-xl tracking-tight">Messages</h1>
+            <h1 className="truncate font-serif text-xl tracking-tight">Team activity</h1>
           </div>
           <div className="mt-0.5 hidden font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground md:block">
             agent communication history
@@ -247,6 +258,12 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
           ))}
         </div>
       </header>
+      {participants ? (
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3 text-[10.5px] text-muted-foreground md:px-5">
+          <span>Activity evidence:</span><strong className="truncate text-foreground">{participants[0]} and {participants[1]}</strong>
+          <button type="button" onClick={onClearParticipants} className="ml-auto text-[10px] font-medium text-primary hover:underline">Show all messages</button>
+        </div>
+      ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[360px_1fr]">
         <section className="border-b border-border bg-card/45 p-4 lg:border-b-0 lg:border-r">

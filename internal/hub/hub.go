@@ -225,6 +225,7 @@ type approval struct {
 type turnState struct {
 	turnID            string
 	task              string
+	source            string
 	inboxItemID       string
 	attemptID         string
 	agentMessageID    string
@@ -1023,7 +1024,7 @@ func (h *Hub) onNotification(rt *runtime, method string, params json.RawMessage)
 
 	if method == "turn/started" && (rt.activeTurn == nil || rt.activeTurn.finished) {
 		rt.activeTurn = &turnState{
-			turnID: turnID, task: "Remote turn", startedAt: time.Now(), lastActivity: time.Now(),
+			turnID: turnID, task: "Remote turn", source: "remote", startedAt: time.Now(), lastActivity: time.Now(),
 			stopWatchdog: make(chan struct{}),
 		}
 		meta.Status = "running"
@@ -1163,6 +1164,7 @@ func (h *Hub) finishTurnLocked(meta *Agent, rt *runtime, status, errMsg string) 
 	payload := map[string]any{
 		"turnId":     turn.turnID,
 		"task":       turn.task,
+		"source":     turn.source,
 		"durationMs": time.Since(turn.startedAt).Milliseconds(),
 	}
 	if errMsg != "" {

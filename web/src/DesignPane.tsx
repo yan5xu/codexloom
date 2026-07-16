@@ -102,7 +102,7 @@ function StatusBadge({ sample }: { sample: (typeof statusSamples)[number] }) {
   );
 }
 
-export function DesignPane() {
+export function DesignPane({ embedded = false }: { embedded?: boolean }) {
   const [theme, setTheme] = useState<ThemeMode>(() => document.documentElement.classList.contains("dark") ? "dark" : "light");
   const [tokenValues, setTokenValues] = useState<Record<string, string>>({});
 
@@ -146,7 +146,7 @@ export function DesignPane() {
 
   return (
     <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
-      <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border bg-card/80 py-2 pl-14 pr-3 md:px-5">
+      {!embedded ? <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border bg-card/80 py-2 pl-14 pr-3 md:px-5">
         <SwatchBook className="size-4 shrink-0 text-primary" />
         <div className="min-w-0">
           <h1 className="truncate font-serif text-xl">Design System</h1>
@@ -172,7 +172,7 @@ export function DesignPane() {
             <Moon className="size-3.5" />
           </button>
         </div>
-      </header>
+      </header> : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-6 md:py-8">

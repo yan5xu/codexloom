@@ -19,9 +19,10 @@ interface Props {
   remote: RemoteSnapshot | null;
   onUpdated: (remote: RemoteSnapshot) => void;
   onError: (message: string) => void;
+  embedded?: boolean;
 }
 
-export function RemotePane({ remote, onUpdated, onError }: Props) {
+export function RemotePane({ remote, onUpdated, onError, embedded = false }: Props) {
   const [devices, setDevices] = useState<RemoteDevice[]>([]);
   const [working, setWorking] = useState("");
   const [copied, setCopied] = useState(false);
@@ -168,7 +169,7 @@ export function RemotePane({ remote, onUpdated, onError }: Props) {
 
   return (
     <main className="w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto bg-background">
-      <header className="border-b border-border bg-card/80 py-4 pl-16 pr-5 md:px-8">
+      {!embedded ? <header className="border-b border-border bg-card/80 py-4 pl-16 pr-5 md:px-8">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="font-mono text-[10px] uppercase text-muted-foreground">Connected host</p>
@@ -176,7 +177,7 @@ export function RemotePane({ remote, onUpdated, onError }: Props) {
           </div>
           <StatusBadge state={state} />
         </div>
-      </header>
+      </header> : null}
 
       <div className="mx-auto w-full max-w-5xl">
         <section className="border-b border-border px-5 py-6 md:px-8">

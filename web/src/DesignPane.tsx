@@ -299,9 +299,9 @@ export function DesignPane() {
                     </div>
                   </label>
                   <div className="grid grid-cols-2 gap-2">
-                    <select defaultValue="gpt-5.6" className="h-9 rounded-md border border-input bg-background px-2 text-[12px] outline-none focus:ring-2 focus:ring-ring/25">
-                      <option>gpt-5.6</option>
-                      <option>gpt-5.6-codex</option>
+                    <select defaultValue="gpt-5.6-sol" className="h-9 rounded-md border border-input bg-background px-2 text-[12px] outline-none focus:ring-2 focus:ring-ring/25">
+                      <option>gpt-5.6-sol</option>
+                      <option>gpt-5.6-terra</option>
                     </select>
                     <select defaultValue="high" className="h-9 rounded-md border border-input bg-background px-2 text-[12px] outline-none focus:ring-2 focus:ring-ring/25">
                       <option>medium</option>

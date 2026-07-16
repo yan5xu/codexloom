@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Feishu"
+  short_description: "Read Feishu context through a managed Loom Connector"
+  default_prompt: "Use $loom-feishu to inspect Feishu chat, message, or topic context without exposing provider credentials."

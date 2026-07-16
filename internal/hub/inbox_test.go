@@ -2,6 +2,8 @@ package hub
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +133,61 @@ func TestIngressEnforcesAddressTriggerPolicy(t *testing.T) {
 	}
 }
 
+func TestManagedDirectMessagesRequirePerContactMembership(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(AddressParams{
+		Agent: "alpha", ConnectionID: connection.ID, ExternalIdentity: "bot",
+		TriggerPolicy: "mention", ReplyPolicy: "final_answer", DMPolicy: "managed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingest := func(messageID, actorID string) IngressResult {
+		result, err := h.IngestMessage(IngressParams{
+			ConnectionID: connection.ID, AddressID: address.ID,
+			ExternalEventID: "evt-" + messageID, ExternalMessageID: messageID,
+			Sender:       ActorRef{ExternalID: actorID, DisplayName: "Direct Contact"},
+			Conversation: ConversationRef{ConversationID: "dm-chat", ConversationType: "dm"},
+			Content:      MessageContent{Text: "hello"}, Trigger: TriggerEvidence{Direct: true},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	pending := ingest("msg-pending", "ou-contact")
+	if !pending.Ignored || pending.InboxItem == nil || pending.InboxItem.State != "pending_access" || pending.Message == nil {
+		t.Fatalf("pending ingress = %#v", pending)
+	}
+	duplicate := ingest("msg-pending", "ou-contact")
+	if !duplicate.Duplicate || !duplicate.Ignored || duplicate.InboxItem == nil || duplicate.InboxItem.ID != pending.InboxItem.ID {
+		t.Fatalf("pending duplicate = %#v", duplicate)
+	}
+
+	conversationType, actorID := "dm", "ou-contact"
+	displayName, purpose, role, guidance := "Direct Contact", "Coordinate privately", "Answer account questions", "Do not discuss other accounts"
+	membership, _, err := h.UpsertConversationMembership(ConversationMembershipParams{
+		AddressID: address.ID, ConversationID: "dm-chat", ConversationType: &conversationType, ActorID: &actorID,
+		DisplayName: &displayName, Purpose: &purpose, Role: &role, Guidance: &guidance,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := ingest("msg-accepted", "ou-contact")
+	if accepted.Ignored || accepted.InboxItem == nil || accepted.InboxItem.MembershipID != membership.ID {
+		t.Fatalf("accepted ingress = %#v", accepted)
+	}
+	wrongActor := ingest("msg-wrong-actor", "ou-other")
+	if !wrongActor.Ignored || wrongActor.Reason != "direct message sender does not match configured contact" {
+		t.Fatalf("wrong actor ingress = %#v", wrongActor)
+	}
+}
+
 func TestIngressAddressAllowAndBlockLists(t *testing.T) {
 	h := stoppedInboxTestHub(t)
 	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
@@ -197,6 +254,99 @@ func TestIngressAcceptsAttachmentOnlyAndExposesReference(t *testing.T) {
 		if !strings.Contains(envelope, fragment) {
 			t.Fatalf("envelope missing %q: %s", fragment, envelope)
 		}
+	}
+}
+
+func TestIngressPersistsThreadContextAndRendersItAsUserContent(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "parall"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(AddressParams{
+		Agent: "alpha", ConnectionID: connection.ID, ExternalIdentity: "parall-alpha",
+		TriggerPolicy: "explicit_dispatch", TrustDomain: "team-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationType, trigger := "group", "explicit_dispatch"
+	if _, _, err := h.UpsertConversationMembership(ConversationMembershipParams{
+		AddressID: address.ID, ConversationID: "chat-1", ConversationType: &conversationType,
+		TriggerPolicy: &trigger,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.IngestMessage(IngressParams{
+		ConnectionID: connection.ID, AddressID: address.ID,
+		ExternalEventID: "dispatch-1", ExternalMessageID: "message-current",
+		Sender:       ActorRef{ExternalID: "user-current", DisplayName: "Current sender"},
+		Conversation: ConversationRef{ConversationID: "chat-1", ConversationType: "thread", ThreadID: "message-root"},
+		Content:      MessageContent{Text: "follow up"}, Trigger: TriggerEvidence{ExplicitDispatch: true},
+		ThreadContext: &ThreadContext{
+			RootExternalMessageID: "message-root", Truncated: true,
+			Messages: []ThreadContextMessage{
+				{
+					ExternalMessageID: "message-root", Role: "root", Sender: ActorRef{ExternalID: "user-root", DisplayName: "Root <sender>"},
+					Content: MessageContent{Text: "Original ]]> question", Attachments: []AttachmentRef{{ID: "att-1", Name: "context.png"}}}, OccurredAt: "2026-07-14T10:00:00Z",
+				},
+				{
+					ExternalMessageID: "message-reply", Sender: ActorRef{ExternalID: "user-reply", DisplayName: "Responder"},
+					Content: MessageContent{Text: "Earlier reply"}, OccurredAt: "2026-07-14T10:01:00Z", TextTruncated: true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Message == nil || result.Message.ThreadContext == nil || len(result.Message.ThreadContext.Messages) != 2 {
+		t.Fatalf("thread context was not persisted: %#v", result.Message)
+	}
+	contextMessage := result.Message.ThreadContext.Messages[0]
+	if contextMessage.Sender.Provider != "parall" || contextMessage.Sender.ConnectionID != connection.ID {
+		t.Fatalf("context sender route was not normalized: %#v", contextMessage.Sender)
+	}
+	envelope := formatInboxEnvelope(*result.Message, *result.InboxItem, address, "final_answer", nil)
+	for _, fragment := range []string{
+		`<thread_context root_message_id="message-root" truncated="true">`,
+		`<message id="message-root" role="root" occurred_at="2026-07-14T10:00:00Z" text_truncated="false">`,
+		`<sender id="user-root">Root &lt;sender&gt;</sender>`,
+		`Original ]]]]><![CDATA[> question`, `id="att-1"`, `name="context.png"`,
+		`<message id="message-reply" role="reply" occurred_at="2026-07-14T10:01:00Z" text_truncated="true">`,
+	} {
+		if !strings.Contains(envelope, fragment) {
+			t.Fatalf("thread envelope missing %q: %s", fragment, envelope)
+		}
+	}
+}
+
+func TestIngressRejectsThreadContextForAnotherRoot(t *testing.T) {
+	_, err := normalizeInboundThreadContext(&ThreadContext{RootExternalMessageID: "other-root"}, "expected-root", "current")
+	if err == nil || !strings.Contains(err.Error(), "must match") {
+		t.Fatalf("mismatched thread context error = %v", err)
+	}
+}
+
+func TestIngressRejectsCurrentOrDuplicateThreadContextMessages(t *testing.T) {
+	for name, context := range map[string]*ThreadContext{
+		"current": {
+			RootExternalMessageID: "root",
+			Messages:              []ThreadContextMessage{{ExternalMessageID: "current", Role: "reply", Content: MessageContent{Text: "current"}}},
+		},
+		"duplicate": {
+			RootExternalMessageID: "root",
+			Messages: []ThreadContextMessage{
+				{ExternalMessageID: "root", Role: "root", Content: MessageContent{Text: "root"}},
+				{ExternalMessageID: "root", Role: "root", Content: MessageContent{Text: "again"}},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := normalizeInboundThreadContext(context, "root", "current"); err == nil {
+				t.Fatal("invalid thread context was accepted")
+			}
+		})
 	}
 }
 
@@ -352,7 +502,7 @@ func TestFinishInboxAttemptCreatesDurableReply(t *testing.T) {
 	h.mu.Unlock()
 
 	item := h.inbox["inb-1"]
-	if item == nil || item.State != "handled" || item.Outcome != "reply" {
+	if item == nil || item.State != "awaiting_delivery" || item.Outcome != "reply" {
 		t.Fatalf("inbox item = %#v", item)
 	}
 	if len(h.outbox) != 1 {
@@ -416,9 +566,40 @@ func TestInboxEnvelopeReplyInstructionsMatchPolicy(t *testing.T) {
 	}
 
 	address.ReplyPolicy = "explicit"
+	previousCLIPath := loomCLIPath
+	loomCLIPath = "/tmp/Codex Loom/bin/loom"
+	defer func() { loomCLIPath = previousCLIPath }()
 	explicitEnvelope := formatInboxEnvelope(message, item, address, "explicit", nil)
-	if !strings.Contains(explicitEnvelope, "<reply_command>") || !strings.Contains(explicitEnvelope, "<no_reply_command>") || strings.Contains(explicitEnvelope, "reply_instruction") {
+	if !strings.Contains(explicitEnvelope, "<reply_command>") || !strings.Contains(explicitEnvelope, "<reply_with_attachment_command>") || !strings.Contains(explicitEnvelope, "<no_reply_command>") || strings.Contains(explicitEnvelope, "reply_instruction") {
 		t.Fatalf("explicit envelope exposes the wrong reply contract: %s", explicitEnvelope)
+	}
+	if !strings.Contains(explicitEnvelope, "&#39;/tmp/Codex Loom/bin/loom&#39; integration send") || !strings.Contains(explicitEnvelope, "--from &#39;agent-a&#39;") || !strings.Contains(explicitEnvelope, "--reply-to &#39;inb-1&#39;") {
+		t.Fatalf("explicit envelope does not carry a cwd-independent command: %s", explicitEnvelope)
+	}
+	if !strings.Contains(explicitEnvelope, "--file &#34;/absolute/path/to/file&#34;") {
+		t.Fatalf("explicit envelope does not describe attachment replies: %s", explicitEnvelope)
+	}
+}
+
+func TestInboxEnvelopeCarriesProviderAndDeliveryTimeline(t *testing.T) {
+	message := InboxMessage{
+		ID: "imsg-time", Origin: "parall", OccurredAt: "2026-07-14T08:30:00Z", ReceivedAt: "2026-07-14T08:31:00Z",
+		Sender:       ActorRef{ExternalID: "usr_sender", DisplayName: "Sender"},
+		Conversation: ConversationRef{ConversationID: "chat-1"}, Content: MessageContent{Text: "Timeline"},
+	}
+	item := InboxItem{ID: "inb-time", AgentID: "agent-a"}
+	address := AgentAddress{ID: "addr-1"}
+	envelope := formatInboxEnvelopeAt(message, item, address, "none", nil, "2026-07-15T01:45:00+08:00")
+	want := `<timing sent_at="2026-07-14T08:30:00Z" received_at="2026-07-14T08:31:00Z" current_time="2026-07-15T01:45:00+08:00" />`
+	if !strings.Contains(envelope, want) {
+		t.Fatalf("timing missing from inbox envelope:\n%s", envelope)
+	}
+}
+
+func TestResolveLoomCLIPathHonorsEnvironment(t *testing.T) {
+	t.Setenv("CODEX_LOOM_CLI", "/custom/bin/loom")
+	if got := resolveLoomCLIPath(); got != "/custom/bin/loom" {
+		t.Fatalf("resolveLoomCLIPath() = %q", got)
 	}
 }
 
@@ -457,6 +638,22 @@ func TestNoReplyReasonIsANoteNotAnError(t *testing.T) {
 	}
 }
 
+func TestNoReplyKeepsProjectionUnchangedWhenInboxCommitFails(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	seedInboxHandlingState(h, "explicit")
+	ledger := filepath.Join(h.st.Dir(), "inbox.ndjson")
+	if err := os.Mkdir(ledger, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.NoReplyInboxItem("inb-1", InboxActionParams{Agent: "alpha"}); err == nil {
+		t.Fatal("no-reply succeeded after durable append failed")
+	}
+	item := h.inbox["inb-1"]
+	if item.State != "handling" || item.Outcome != "" || item.ActiveAttemptID != "att-1" {
+		t.Fatalf("uncommitted no-reply reached projection: %#v", item)
+	}
+}
+
 func TestCompletedFinalAnswerOnlyCapturesFinalAgentMessage(t *testing.T) {
 	final := json.RawMessage(`{"item":{"type":"agentMessage","phase":"final_answer","text":"Final answer"}}`)
 	commentary := json.RawMessage(`{"item":{"type":"agentMessage","phase":"commentary","text":"Working"}}`)
@@ -483,13 +680,25 @@ func TestConnectorReplaysAndCompletesOutboxIdempotently(t *testing.T) {
 	if err != nil || command == nil || command.OutboxItem.ID != outbox.ID || command.OutboxItem.State != "sending" {
 		t.Fatalf("first claim = %#v, err=%v", command, err)
 	}
+	firstToken := command.OutboxItem.AttemptToken
+	h.RequeueSendingForConnection("conn-1")
+	if command, err = h.ClaimNextOutbox("conn-1"); err != nil || command != nil {
+		t.Fatalf("unexpired claim was replayed: %#v, err=%v", command, err)
+	}
+	h.outbox[outbox.ID].ClaimExpiresAt = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
 	h.RequeueSendingForConnection("conn-1")
 	command, err = h.ClaimNextOutbox("conn-1")
 	if err != nil || command == nil || command.OutboxItem.AttemptCount != 2 {
 		t.Fatalf("replayed claim = %#v, err=%v", command, err)
 	}
+	if _, err := h.CompleteOutbox("conn-1", outbox.ID, OutboxResultParams{
+		AttemptToken: firstToken, Success: true, ExternalMessageID: "stale-result",
+	}); err == nil {
+		t.Fatal("stale delivery result was accepted")
+	}
 	completed, err := h.CompleteOutbox("conn-1", outbox.ID, OutboxResultParams{
-		Success: true, ExternalMessageID: "external-reply-1", Cursor: "42",
+		AttemptToken: command.OutboxItem.AttemptToken,
+		Success:      true, ExternalMessageID: "external-reply-1", Cursor: "42",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -497,12 +706,171 @@ func TestConnectorReplaysAndCompletesOutboxIdempotently(t *testing.T) {
 	if completed.State != "sent" || completed.ExternalMessageID != "external-reply-1" || h.connections["conn-1"].Cursor != "42" {
 		t.Fatalf("completed = %#v connection=%#v", completed, h.connections["conn-1"])
 	}
+	if item := h.inbox["inb-1"]; item.State != "handled" || item.Outcome != "reply" {
+		t.Fatalf("completed delivery did not complete inbox item: %#v", item)
+	}
 	again, err := h.CompleteOutbox("conn-1", outbox.ID, OutboxResultParams{Success: true, ExternalMessageID: "different"})
 	if err != nil || again.ExternalMessageID != "external-reply-1" {
 		t.Fatalf("idempotent completion = %#v, err=%v", again, err)
 	}
 	if command, err := h.ClaimNextOutbox("conn-1"); err != nil || command != nil {
 		t.Fatalf("sent item was claimed again: %#v, err=%v", command, err)
+	}
+}
+
+func TestConnectorClaimsOnlyOneCommandAtATime(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	seedInboxHandlingState(h, "explicit")
+	h.connections["conn-1"] = &PlatformConnection{ID: "conn-1", Provider: "fake", Enabled: true}
+	h.addresses["addr-1"].ConnectionID = "conn-1"
+	_, first, err := h.ReplyInboxItem("inb-1", InboxActionParams{
+		Agent: "alpha", Content: MessageContent{Text: "First"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := h.CreateOutbox(OutboxParams{
+		Agent: "alpha", AddressID: "addr-1", Conversation: ConversationRef{ConversationID: "chat-1"},
+		Content: MessageContent{Text: "Second"}, IdempotencyKey: "second",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := h.ClaimNextConnectorCommand("conn-1")
+	if err != nil || command == nil || command.OutboxItem.ID != first.ID {
+		t.Fatalf("first command = %#v, err=%v", command, err)
+	}
+	if command, err = h.ClaimNextConnectorCommand("conn-1"); err != nil || command != nil {
+		t.Fatalf("second command was claimed while first was in flight: %#v, err=%v", command, err)
+	}
+	if _, err := h.CompleteOutbox("conn-1", first.ID, OutboxResultParams{
+		AttemptToken: h.outbox[first.ID].AttemptToken, Success: true, ExternalMessageID: "external-first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	command, err = h.ClaimNextConnectorCommand("conn-1")
+	if err != nil || command == nil || command.OutboxItem.ID != second.ID {
+		t.Fatalf("second command = %#v, err=%v", command, err)
+	}
+}
+
+func TestConnectorCannotCompleteAttachmentWithoutProviderReceipt(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	seedInboxHandlingState(h, "explicit")
+	h.connections["conn-1"] = &PlatformConnection{ID: "conn-1", Provider: "fake", Enabled: true, Capabilities: []string{"attachments"}}
+	h.addresses["addr-1"].ConnectionID = "conn-1"
+	_, outbox, err := h.ReplyInboxItem("inb-1", InboxActionParams{
+		Agent: "alpha", Content: MessageContent{Text: "Report"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.outbox[outbox.ID].Content.Attachments = []AttachmentRef{{ID: "art-report", Name: "report.png"}}
+	command, err := h.ClaimNextOutbox("conn-1")
+	if err != nil || command == nil {
+		t.Fatalf("claim attachment outbox = %#v, err=%v", command, err)
+	}
+	completed, err := h.CompleteOutbox("conn-1", outbox.ID, OutboxResultParams{
+		AttemptToken: command.OutboxItem.AttemptToken, Success: true, ExternalMessageID: "message-only",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.State != "failed" || !strings.Contains(completed.LastError, "art-report") {
+		t.Fatalf("attachment delivery without evidence = %#v", completed)
+	}
+	if _, err := h.RetryOutboxItem(outbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	command, err = h.ClaimNextOutbox("conn-1")
+	if err != nil || command == nil {
+		t.Fatalf("claim retried attachment outbox = %#v, err=%v", command, err)
+	}
+	completed, err = h.CompleteOutbox("conn-1", outbox.ID, OutboxResultParams{
+		AttemptToken: command.OutboxItem.AttemptToken,
+		Success:      true,
+		DeliveryReceipts: []OutboxDeliveryReceipt{
+			{Kind: "text", ExternalMessageID: "message-2"},
+			{Kind: "attachment", ArtifactID: "art-report", ExternalMessageID: "image-message", ExternalAttachmentID: "image-key"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.State != "sent" || len(completed.DeliveryReceipts) != 2 || len(completed.ExternalMessageIDs) != 3 {
+		t.Fatalf("attachment delivery with evidence = %#v", completed)
+	}
+}
+
+func TestExternalSendUsesGovernedMembershipAndManagedAttachments(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "parall", Capabilities: []string{"proactive_send", "attachments"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(AddressParams{
+		Agent: "alpha", ConnectionID: connection.ID, ExternalIdentity: "prll://usr-alpha", TrustDomain: "external",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, _, err := h.UpsertConversationMembership(ConversationMembershipParams{
+		AddressID: address.ID, ConversationID: "chat-1", DisplayName: stringPtr("Research group"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.SendExternal(ExternalSendParams{
+		Agent: "alpha", MembershipID: membership.ID, Content: MessageContent{Text: "blocked"}, IdempotencyKey: "delivery-1",
+	}); err == nil {
+		t.Fatal("reply-only membership allowed a proactive send")
+	}
+	proactive := "proactive"
+	membership, err = h.UpdateConversationMembership(membership.ID, ConversationMembershipParams{OutboundPolicy: &proactive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactDir := filepath.Join(h.st.Dir(), "attachments", "outbound")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(artifactDir, "report.txt")
+	if err := os.WriteFile(artifactPath, []byte("report"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := h.SendExternal(ExternalSendParams{
+		Agent: "alpha", MembershipID: membership.ID, IdempotencyKey: "delivery-1", ResponseExpectation: "none",
+		Content: MessageContent{Text: "summary", Attachments: []AttachmentRef{{Name: "report.txt", Path: artifactPath}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outbox.MembershipID != membership.ID || outbox.AddressID != address.ID || outbox.Conversation.ConversationID != "chat-1" || outbox.ResponseExpectation != "none" {
+		t.Fatalf("governed route = %#v", outbox)
+	}
+	if len(outbox.Content.Attachments) != 1 || outbox.Content.Attachments[0].ID == "" || len(outbox.Content.Attachments[0].SHA256) != 64 {
+		t.Fatalf("managed attachment = %#v", outbox.Content.Attachments)
+	}
+	again, err := h.SendExternal(ExternalSendParams{
+		Agent: "alpha", MembershipID: membership.ID, IdempotencyKey: "delivery-1", Content: MessageContent{Text: "different"},
+	})
+	if err != nil || again.ID != outbox.ID {
+		t.Fatalf("idempotent send = %#v, err=%v", again, err)
+	}
+}
+
+func TestMembershipOutboundNoneBlocksInboxReplies(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	seedInboxHandlingState(h, "explicit")
+	h.memberships["mem-1"] = &ConversationMembership{
+		ID: "mem-1", AddressID: "addr-1", ConversationID: "chat-1", ReplyPolicy: "explicit",
+		OutboundPolicy: "none", Enabled: true,
+	}
+	h.inbox["inb-1"].MembershipID = "mem-1"
+	if _, _, err := h.ReplyInboxItem("inb-1", InboxActionParams{
+		Agent: "alpha", Content: MessageContent{Text: "blocked"},
+	}); err == nil {
+		t.Fatal("outboundPolicy=none allowed an Inbox reply")
 	}
 }
 
@@ -517,7 +885,9 @@ func TestInternalMessagesProjectIntoInboxAndNoReplyIsExclusive(t *testing.T) {
 		CreatedAt: ts, UpdatedAt: ts,
 	}
 	h.mu.Lock()
-	h.appendCommLocked(message)
+	if err := h.commitAgentMessageLocked(*message); err != nil {
+		t.Fatal(err)
+	}
 	h.mu.Unlock()
 
 	entries, err := h.ListInboxEntries("alpha", "", "chub")
@@ -546,6 +916,33 @@ func TestInternalMessagesProjectIntoInboxAndNoReplyIsExclusive(t *testing.T) {
 	}
 }
 
+func TestInterruptedInternalMessageProjectsAsHeldInboxWork(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	seedInboxAgent(t, h, "agent-b", "beta")
+	ts := now()
+	message := &AgentMessage{
+		ID: "msg_held", FromAgentID: "agent-b", ToAgentID: "agent-a",
+		From: "beta", To: "alpha", Subject: "Held work", Body: "Continue only when asked.",
+		Response: "required", Status: "open", DeliveryStatus: "delivered", HandlingStatus: "interrupted",
+		LastHandlingError: "interrupted by caller",
+		HandlingAttempts:  []AgentMessageHandlingAttempt{{ID: "matt-1", TurnID: "turn-1", Status: "interrupted", StartedAt: ts, CompletedAt: ts, Error: "interrupted by caller"}},
+		CreatedAt:         ts, UpdatedAt: ts,
+	}
+	h.mu.Lock()
+	if err := h.commitAgentMessageLocked(*message); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Unlock()
+
+	entries, err := h.ListInboxEntries("alpha", "interrupted", "loom")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("held inbox entries = %#v, err=%v", entries, err)
+	}
+	if entries[0].Item.State != "interrupted" || entries[0].Item.AttemptCount != 1 || entries[0].Item.LastError != "interrupted by caller" {
+		t.Fatalf("held inbox projection = %#v", entries[0])
+	}
+}
+
 func TestConnectionCanBeDisabledWithoutDeletingAddress(t *testing.T) {
 	h := stoppedInboxTestHub(t)
 	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
@@ -564,6 +961,81 @@ func TestConnectionCanBeDisabledWithoutDeletingAddress(t *testing.T) {
 	addresses, err := h.ListAddresses("alpha")
 	if err != nil || len(addresses) != 1 || addresses[0].ID != address.ID {
 		t.Fatalf("address was lost after disabling connection: %#v, err=%v", addresses, err)
+	}
+}
+
+func TestUpdateConnectionRollsBackWhenIntegrationCommitFails(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(h.st.Dir(), "integrations.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	enabled := false
+	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{Enabled: &enabled}); err == nil {
+		t.Fatal("connection update succeeded after durable replace failed")
+	}
+	if got := h.connections[connection.ID]; got == nil || !got.Enabled || got.Status != connection.Status {
+		t.Fatalf("uncommitted connection update reached projection: %#v", got)
+	}
+}
+
+func TestInboxRecoveryOnlyUsesLatestProjection(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := "2026-07-14T08:01:27Z"
+	completed := "2026-07-14T08:01:39Z"
+	for _, item := range []InboxItem{
+		{ID: "inb-1", AgentID: "agent-a", State: "handling", ActiveAttemptID: "att-1", AttemptCount: 1, CreatedAt: started, UpdatedAt: started},
+		{ID: "inb-1", AgentID: "agent-a", State: "handled", Outcome: "reply", AttemptCount: 1, CreatedAt: started, UpdatedAt: completed},
+		{ID: "inb-1", AgentID: "agent-a", State: "queued", AttemptCount: 1, LastError: "stale historical recovery", CreatedAt: started, UpdatedAt: completed},
+	} {
+		if err := st.AppendInbox(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, attempt := range []HandlingAttempt{
+		{ID: "att-1", InboxItemID: "inb-1", AgentID: "agent-a", SessionID: "agent-a", Status: "running", StartedAt: started},
+		{ID: "att-1", InboxItemID: "inb-1", AgentID: "agent-a", SessionID: "agent-a", Status: "completed", StartedAt: started, CompletedAt: completed},
+		{ID: "att-1", InboxItemID: "inb-1", AgentID: "agent-a", SessionID: "agent-a", Status: "interrupted", StartedAt: started, CompletedAt: completed},
+	} {
+		if err := st.AppendAttempt(attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []OutboxItem{
+		{ID: "out-1", AgentID: "agent-a", InboxItemID: "inb-1", IdempotencyKey: "reply:inb-1", State: "sending", CreatedAt: started, UpdatedAt: started},
+		{ID: "out-1", AgentID: "agent-a", InboxItemID: "inb-1", IdempotencyKey: "reply:inb-1", State: "sent", ExternalMessageID: "external-1", CreatedAt: started, UpdatedAt: completed, SentAt: completed},
+		{ID: "out-1", AgentID: "agent-a", InboxItemID: "inb-1", IdempotencyKey: "reply:inb-1", State: "pending", LastError: "stale historical recovery", CreatedAt: started, UpdatedAt: completed},
+	} {
+		if err := st.AppendOutbox(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for restart := 1; restart <= 2; restart++ {
+		h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := h.inbox["inb-1"]; got == nil || got.State != "handled" || got.Outcome != "reply" {
+			t.Fatalf("restart %d inbox = %#v", restart, got)
+		}
+		if got := h.outbox["out-1"]; got == nil || got.State != "sent" || got.ExternalMessageID != "external-1" {
+			t.Fatalf("restart %d outbox = %#v", restart, got)
+		}
+		if got := h.attempts["att-1"]; got == nil || got.Status != "completed" {
+			t.Fatalf("restart %d attempt = %#v", restart, got)
+		}
+		h.Shutdown()
 	}
 }
 
@@ -604,6 +1076,6 @@ func seedInboxAgent(t *testing.T, h *Hub, id, name string) {
 	t.Helper()
 	h.mu.Lock()
 	h.agents[id] = &Agent{ID: id, Name: name, Status: "idle", CreatedAt: now(), UpdatedAt: now()}
-	h.persistLocked()
+	h.persistRuntimeProjectionLocked()
 	h.mu.Unlock()
 }

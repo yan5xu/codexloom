@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,96 @@ import (
 
 	"github.com/yan5xu/codex-loom/internal/store"
 )
+
+func TestAgentEventIsMultiplexedToGlobalSubscribers(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(st)
+	defer h.Shutdown()
+	global, cancel := h.SubscribeGlobal()
+	defer cancel()
+
+	h.mu.Lock()
+	local := h.emitLocked("agent-1", "item/completed", map[string]any{"item": map[string]any{"id": "answer-1"}})
+	h.mu.Unlock()
+
+	select {
+	case event := <-global:
+		if event.Type != "loom/thread-event" {
+			t.Fatalf("global event type = %q", event.Type)
+		}
+		if event.Seq <= 0 {
+			t.Fatalf("global event has no durable cursor: %#v", event)
+		}
+		var payload struct {
+			AgentID string      `json:"agentId"`
+			Event   store.Event `json:"event"`
+		}
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.AgentID != "agent-1" || payload.Event.Seq != local.Seq || payload.Event.Type != local.Type {
+			t.Fatalf("multiplexed payload = %#v, local = %#v", payload, local)
+		}
+		replayed, err := h.ReadGlobalEvents(event.Seq-1, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(replayed) != 1 || replayed[0].Seq != event.Seq || replayed[0].Type != event.Type {
+			t.Fatalf("global replay = %#v, want cursor %d", replayed, event.Seq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("global subscriber did not receive Agent event")
+	}
+}
+
+func TestCompletedNotificationWithFailedTurnStatusProjectsFailure(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	h.stopping = true
+	h.agents["agent-1"] = &Agent{
+		ID: "agent-1", Name: "worker", ThreadID: "thread-1", Status: "running",
+		CurrentTurnID: "turn-1", CurrentTask: "Do work", CreatedAt: now(), UpdatedAt: now(),
+	}
+	rt := &runtime{
+		agentID:   "agent-1",
+		approvals: map[string]*approval{},
+		activeTurn: &turnState{
+			turnID: "turn-1", task: "Do work", startedAt: time.Now(), stopWatchdog: make(chan struct{}),
+		},
+	}
+	h.onNotification(rt, "turn/completed", json.RawMessage(`{
+		"threadId":"thread-1",
+		"turn":{"id":"turn-1","status":"failed","error":{"message":"model is unavailable"}}
+	}`))
+
+	meta := h.agents["agent-1"]
+	if meta.Status != "idle" || meta.LastError != "model is unavailable" {
+		t.Fatalf("agent failure projection = %#v", meta)
+	}
+	if meta.LastTurn == nil || meta.LastTurn.Status != "failed" || meta.LastTurn.TurnID != "turn-1" {
+		t.Fatalf("last turn = %#v", meta.LastTurn)
+	}
+	events, err := st.ReadEvents("agent-1", 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == "loom/turn-failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("events do not contain loom/turn-failed: %#v", events)
+	}
+}
 
 func TestRestoreAgentKeepsStableIdentityAndDoesNotStartRuntime(t *testing.T) {
 	st, err := store.Open(t.TempDir())
@@ -44,6 +135,67 @@ func TestRestoreAgentKeepsStableIdentityAndDoesNotStartRuntime(t *testing.T) {
 		ID: "a07193ea", Name: "duplicate", Cwd: "/tmp/duplicate", ThreadID: "thread-duplicate",
 	}); err == nil {
 		t.Fatal("duplicate stable id restore succeeded")
+	}
+}
+
+func TestOpenRejectsCorruptRegistryWithoutOverwritingIt(t *testing.T) {
+	t.Setenv("PINIX_EDGE_NAMES", filepath.Join(t.TempDir(), "missing.json"))
+	dataDir := t.TempDir()
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("{not-json\n")
+	if err := os.WriteFile(filepath.Join(dataDir, "agents.json"), corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(st); err == nil {
+		t.Fatal("Open accepted a corrupt Agent registry")
+	}
+	got, err := os.ReadFile(filepath.Join(dataDir, "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(corrupt) {
+		t.Fatalf("corrupt registry was overwritten: %q", got)
+	}
+}
+
+func TestUpdateAgentConfigRollsBackWhenRegistryCommitFails(t *testing.T) {
+	t.Setenv("PINIX_EDGE_NAMES", filepath.Join(t.TempDir(), "missing.json"))
+	dataDir := t.TempDir()
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(st)
+	defer h.Shutdown()
+	if _, err := h.RestoreAgent(RestoreAgentParams{
+		ID: "agent-1", Name: "before", Cwd: "/tmp", ThreadID: "thread-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := filepath.Join(dataDir, "agents.json")
+	if err := os.Remove(registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(registry, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.RemoveAll(registry)
+	}()
+
+	rename := "after"
+	if _, err := h.UpdateAgentConfig("agent-1", ConfigParams{Name: &rename}); err == nil {
+		t.Fatal("config update succeeded after registry commit failure")
+	}
+	view, err := h.GetAgent("agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Name != "before" {
+		t.Fatalf("in-memory Agent name = %q, want rollback to before", view.Name)
 	}
 }
 

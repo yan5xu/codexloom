@@ -1,0 +1,4 @@
+interface:
+  display_name: "Needs You"
+  short_description: "Ask the human and resume later"
+  default_prompt: "Use $loom-needs-you to request durable human input without keeping this Turn open."

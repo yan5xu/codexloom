@@ -1,7 +1,8 @@
-import { Inbox, Paperclip } from "lucide-react";
+import { BarChart3, FileText, Inbox, Paperclip } from "lucide-react";
 import { UserBubble, AssistantBubble } from "./pages/agent/MessageBubbles";
 import { MarkdownContent } from "./pages/agent/markdown";
-import type { Block } from "./feed";
+import type { Block, ExternalAttachment, ExternalThreadContext } from "./feed";
+import { localTimeWithSeconds } from "./lib/format";
 
 // Maps trajectory events onto the semantic palette.
 const sysColor: Record<string, string> = {
@@ -12,7 +13,7 @@ const sysColor: Record<string, string> = {
 };
 
 function tsShort(ts: string) {
-  return ts && ts.length >= 19 ? ts.slice(11, 19) : ts;
+  return localTimeWithSeconds(ts);
 }
 
 export function BlockView({ block }: { block: Block }) {
@@ -22,7 +23,9 @@ export function BlockView({ block }: { block: Block }) {
       return (
         <UserBubble
           message={{ id: "u", topic_id: "", role: "user", content: block.text, created_at: block.ts }}
-        />
+        >
+          <UserAttachmentRows attachments={block.attachments} />
+        </UserBubble>
       );
 
     case "agentMessage": {
@@ -136,30 +139,13 @@ export function BlockView({ block }: { block: Block }) {
               </div>
             </div>
 
+            {block.threadContext && <ExternalThreadContextView context={block.threadContext} />}
+
             <div className="mt-3 min-w-0 border-t border-border/70 pt-3 text-[13px] leading-6 text-foreground/90">
               {block.body ? <MarkdownContent content={block.body} /> : <span className="text-muted-foreground">Attachment message</span>}
             </div>
 
-            {block.attachments.length > 0 && (
-              <div className="mt-3 divide-y divide-border/60 border-y border-border/60">
-                {block.attachments.map((attachment, index) => {
-                  const label = attachment.name || attachment.path || attachment.url || attachment.id || `Attachment ${index + 1}`;
-                  const content = (
-                    <>
-                      <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium">{label}</span>
-                      {attachment.mimeType && <span className="hidden shrink-0 font-mono text-[9px] text-muted-foreground sm:block">{attachment.mimeType}</span>}
-                      {attachment.size && <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{formatFileSize(attachment.size)}</span>}
-                    </>
-                  );
-                  return attachment.url ? (
-                    <a key={`${attachment.id || label}-${index}`} href={attachment.url} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-2 py-2 hover:text-foreground">{content}</a>
-                  ) : (
-                    <div key={`${attachment.id || label}-${index}`} className="flex min-w-0 items-center gap-2 py-2">{content}</div>
-                  );
-                })}
-              </div>
-            )}
+            <ExternalAttachmentRows attachments={block.attachments} />
 
             {(block.replyCommand || block.noReplyCommand) && (
               <div className="mt-3 space-y-1.5">
@@ -203,8 +189,26 @@ export function BlockView({ block }: { block: Block }) {
       );
     }
 
+    case "usage": {
+      const cachePercent = block.inputTokens > 0 ? Math.round((block.cachedInputTokens / block.inputTokens) * 100) : 0;
+      return (
+        <div className="my-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-y border-border/60 py-1.5 font-mono text-[9.5px] text-muted-foreground" title="Cached input is included in input; reasoning is included in output.">
+          <BarChart3 className="size-3 shrink-0 text-[var(--loom-teal)]" />
+          <span className="font-semibold text-foreground/75">{formatTokenCount(block.totalTokens)} tokens</span>
+          <span>{formatTokenCount(block.inputTokens)} input</span>
+          {block.cachedInputTokens > 0 && <span className="text-[var(--loom-teal)]">{cachePercent}% cached</span>}
+          <span>{formatTokenCount(block.outputTokens)} output</span>
+          {block.reasoningOutputTokens > 0 && <span>{formatTokenCount(block.reasoningOutputTokens)} reasoning</span>}
+          {block.calls > 1 && <span>{block.calls} calls</span>}
+          {block.model && <span className="ml-auto truncate">{block.model}</span>}
+        </div>
+      );
+    }
+
     // Reasoning stays visually subordinate to the final answer.
-    case "think":
+    case "think": {
+      const text = typeof block.text === "string" ? block.text : "";
+      if (!text.trim()) return null;
       return (
         <details className="group/reason py-1" open={!block.done}>
           <summary className="flex cursor-pointer list-none select-none items-center gap-2 py-1 text-[11px] text-muted-foreground/60 transition-colors hover:text-muted-foreground">
@@ -212,10 +216,11 @@ export function BlockView({ block }: { block: Block }) {
             <span className="font-mono">{block.done ? "reasoning" : "reasoning…"}</span>
           </summary>
           <pre className="mt-1 whitespace-pre-wrap border-l-2 border-muted-foreground/15 pl-4 font-sans text-[12.5px] leading-relaxed text-muted-foreground/70">
-            {block.text}
+            {text}
           </pre>
         </details>
       );
+    }
 
     // Command execution uses one frame; request and output are separated by rules.
     case "command": {
@@ -315,6 +320,21 @@ export function BlockView({ block }: { block: Block }) {
         </div>
       );
 
+    case "artifact":
+      return (
+        <div className="my-2 flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2.5 shadow-card">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-sm bg-secondary text-muted-foreground">
+            <FileText className="size-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="font-mono text-[9px] uppercase text-muted-foreground">Published artifact</div>
+            <div className="truncate text-[12px] font-medium text-foreground">{block.artifact.name || block.artifact.id}</div>
+          </div>
+          {block.artifact.size !== undefined && <span className="shrink-0 font-mono text-[9.5px] text-muted-foreground">{formatFileSize(block.artifact.size)}</span>}
+          {block.artifact.url && <a href={block.artifact.url} target="_blank" rel="noreferrer" className="shrink-0 text-[11px] font-medium text-primary hover:underline">Open</a>}
+        </div>
+      );
+
     // System line — quiet meta with a mono timestamp.
     case "sys":
       return (
@@ -339,6 +359,12 @@ export function BlockView({ block }: { block: Block }) {
   }
 }
 
+function formatTokenCount(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 1 : 2)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 1 : 2)}K`;
+  return Math.round(value || 0).toLocaleString();
+}
+
 function RouteMeta({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid min-w-0 grid-cols-[80px_1fr] gap-2">
@@ -359,9 +385,121 @@ function RawEnvelope({ raw }: { raw: string }) {
   );
 }
 
-function formatFileSize(raw: string) {
+function ExternalThreadContextView({ context }: { context: ExternalThreadContext }) {
+  const count = context.messages.length;
+  return (
+    <details className="group/context mt-3 border-y border-border/70 bg-muted/15" open>
+      <summary className="flex cursor-pointer list-none select-none items-center gap-2 py-2 text-[11px] text-muted-foreground hover:text-foreground">
+        <span className="text-[9px] transition-transform group-open/context:rotate-90">▶</span>
+        <span className="font-mono font-semibold uppercase">Thread context</span>
+        <span>{count} earlier {count === 1 ? "message" : "messages"}</span>
+        {context.truncated && <span className="ml-auto font-mono text-warning">truncated</span>}
+      </summary>
+      <div className="border-t border-border/60">
+        {context.unavailableReason && (
+          <div className="border-b border-warning/30 bg-warning/5 px-3 py-2 text-[11.5px] leading-5 text-warning">
+            Context unavailable: {context.unavailableReason}
+          </div>
+        )}
+        {context.messages.map((message, index) => (
+          <section
+            key={`${message.id}-${index}`}
+            className="min-w-0 border-b border-border/60 px-3 py-2.5 last:border-b-0"
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="shrink-0 font-mono text-[9.5px] font-semibold uppercase text-[var(--loom-teal)]">
+                {message.role}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-foreground/80" title={message.senderId}>
+                {message.sender}
+              </span>
+              {message.occurredAt && (
+                <time className="shrink-0 font-mono text-[9.5px] text-muted-foreground" dateTime={message.occurredAt}>
+                  {formatContextTime(message.occurredAt)}
+                </time>
+              )}
+            </div>
+            {message.body && (
+              <div className="mt-1.5 min-w-0 text-[12.5px] leading-5 text-foreground/80">
+                <MarkdownContent content={message.body} />
+              </div>
+            )}
+            {message.textTruncated && <div className="mt-1 font-mono text-[9.5px] text-warning">message truncated</div>}
+            <ExternalAttachmentRows attachments={message.attachments} compact />
+          </section>
+        ))}
+        {!context.unavailableReason && count === 0 && (
+          <div className="px-3 py-2 text-[11.5px] text-muted-foreground">No earlier thread messages were available.</div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function ExternalAttachmentRows({ attachments, compact = false }: { attachments: ExternalAttachment[]; compact?: boolean }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className={`${compact ? "mt-2" : "mt-3"} divide-y divide-border/60 border-y border-border/60`}>
+      {attachments.map((attachment, index) => {
+        const label = attachment.name || attachment.path || attachment.url || attachment.id || `Attachment ${index + 1}`;
+        const content = (
+          <>
+            <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium">{label}</span>
+            {attachment.mimeType && <span className="hidden shrink-0 font-mono text-[9px] text-muted-foreground sm:block">{attachment.mimeType}</span>}
+            {attachment.size && <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{formatFileSize(attachment.size)}</span>}
+          </>
+        );
+        return attachment.url ? (
+          <a key={`${attachment.id || label}-${index}`} href={attachment.url} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-2 py-2 hover:text-foreground">{content}</a>
+        ) : (
+          <div key={`${attachment.id || label}-${index}`} className="flex min-w-0 items-center gap-2 py-2">{content}</div>
+        );
+      })}
+    </div>
+  );
+}
+
+function formatContextTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function UserAttachmentRows({ attachments }: { attachments: ExternalAttachment[] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className={`${attachments.some((attachment) => attachment.mimeType?.startsWith("image/") && (attachment.url || attachment.path)) ? "mt-2" : ""} space-y-1.5`}>
+      {attachments.map((attachment, index) => {
+        const href = attachment.url || (attachment.mimeType?.startsWith("image/") && attachment.path ? `/api/images?path=${encodeURIComponent(attachment.path)}` : undefined);
+        const label = attachment.name || attachment.id || `Attachment ${index + 1}`;
+        if (attachment.mimeType?.startsWith("image/") && href) {
+          return (
+            <a key={`${attachment.id || label}-${index}`} href={href} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-sm border border-border/80 bg-background/70">
+              <img src={href} alt={label} className="max-h-72 w-full object-contain" />
+              <span className="flex min-w-0 items-center gap-2 border-t border-border/70 px-2 py-1.5 text-[10.5px] text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {attachment.size !== undefined && <span className="font-mono text-[9px]">{formatFileSize(attachment.size)}</span>}
+              </span>
+            </a>
+          );
+        }
+        const content = (
+          <span className="flex min-w-0 items-center gap-2 rounded-sm border border-border/70 bg-background/60 px-2 py-1.5">
+            <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{label}</span>
+            {attachment.size !== undefined && <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{formatFileSize(attachment.size)}</span>}
+          </span>
+        );
+        return href ? <a key={`${attachment.id || label}-${index}`} href={href} target="_blank" rel="noreferrer">{content}</a> : <span key={`${attachment.id || label}-${index}`}>{content}</span>;
+      })}
+    </div>
+  );
+}
+
+function formatFileSize(raw: string | number) {
   const size = Number(raw);
-  if (!Number.isFinite(size) || size < 0) return raw;
+  if (!Number.isFinite(size) || size < 0) return String(raw);
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;

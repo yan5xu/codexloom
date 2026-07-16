@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Artifacts"
+  short_description: "Receive and publish Thread files"
+  default_prompt: "Use $loom-artifacts to work with attached files or publish a generated file to this CodexLoom Thread."

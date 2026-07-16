@@ -54,6 +54,15 @@ func TestGlobalSSEEmitsCanonicalAndCompatibilityAliases(t *testing.T) {
 	}
 }
 
+func TestGlobalThreadEventHasNoLegacyDuplicate(t *testing.T) {
+	var output bytes.Buffer
+	writeCompatibleGlobalSSE(&output, store.Event{Type: "loom/thread-event", Data: json.RawMessage(`{"agentId":"agent-1"}`)})
+	got := output.String()
+	if strings.Count(got, `"type":"loom/thread-event"`) != 1 || strings.Contains(got, `"type":"hub/thread-event"`) {
+		t.Fatalf("multiplexed global SSE = %q", got)
+	}
+}
+
 func TestCodexLoomAgentAPIAndLegacySessionAlias(t *testing.T) {
 	t.Setenv("PINIX_EDGE_NAMES", t.TempDir()+"/missing.json")
 	st, err := store.Open(t.TempDir())
@@ -64,7 +73,7 @@ func TestCodexLoomAgentAPIAndLegacySessionAlias(t *testing.T) {
 	defer h.Shutdown()
 	server := New(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}}).Handler()
 
-	for _, path := range []string{"/api/agents", "/api/sessions", "/api/health"} {
+	for _, path := range []string{"/api/agents", "/api/sessions", "/api/usage", "/api/health"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		res := httptest.NewRecorder()
 		server.ServeHTTP(res, req)
@@ -75,6 +84,45 @@ func TestCodexLoomAgentAPIAndLegacySessionAlias(t *testing.T) {
 		if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
 			t.Fatalf("GET %s JSON: %v", path, err)
 		}
+	}
+}
+
+func TestWebAssetCachingAndSPAFallback(t *testing.T) {
+	server := &Server{web: fstest.MapFS{
+		"index.html":          {Data: []byte("app-shell")},
+		"assets/index-abc.js": {Data: []byte("export const ready = true")},
+	}}
+	tests := []struct {
+		name    string
+		path    string
+		status  int
+		body    string
+		cache   string
+		content string
+	}{
+		{name: "index is never cached", path: "/", status: http.StatusOK, body: "app-shell", cache: "no-store", content: "text/html"},
+		{name: "spa route uses current index", path: "/team", status: http.StatusOK, body: "app-shell", cache: "no-store", content: "text/html"},
+		{name: "hashed asset is immutable", path: "/assets/index-abc.js", status: http.StatusOK, body: "export const ready = true", cache: "public, max-age=31536000, immutable", content: "text/javascript"},
+		{name: "missing asset is not html", path: "/assets/missing-old.js", status: http.StatusNotFound, body: "404 page not found", cache: "no-store", content: "text/plain"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			response := httptest.NewRecorder()
+			server.serveWeb(response, request)
+			if response.Code != tt.status {
+				t.Fatalf("GET %s = %d, want %d", tt.path, response.Code, tt.status)
+			}
+			if body := strings.TrimSpace(response.Body.String()); body != tt.body {
+				t.Fatalf("GET %s body = %q, want %q", tt.path, body, tt.body)
+			}
+			if cache := response.Header().Get("Cache-Control"); cache != tt.cache {
+				t.Fatalf("GET %s Cache-Control = %q, want %q", tt.path, cache, tt.cache)
+			}
+			if content := response.Header().Get("Content-Type"); !strings.Contains(content, tt.content) {
+				t.Fatalf("GET %s Content-Type = %q, want %q", tt.path, content, tt.content)
+			}
+		})
 	}
 }
 
@@ -91,5 +139,14 @@ func TestCanonicalEventType(t *testing.T) {
 		if got := canonicalEventType(input); got != want {
 			t.Errorf("canonicalEventType(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestRestartDrainAllowsCausalReplyButRejectsNewRootWork(t *testing.T) {
+	if !isDrainCompletionMessage(hub.CommParams{ReplyTo: "msg_required"}) {
+		t.Fatal("causal reply was not treated as drain completion")
+	}
+	if isDrainCompletionMessage(hub.CommParams{To: "other-agent", Subject: "new work"}) {
+		t.Fatal("new root message was treated as drain completion")
 	}
 }

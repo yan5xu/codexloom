@@ -9,6 +9,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,17 +38,19 @@ type Options struct {
 	Agents           []AgentRef
 	Sessions         []SessionRef // legacy input alias
 	MaxBackups       int
+	Retention        RetentionPolicy
 }
 
 type Snapshot struct {
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	CreatedAt    time.Time `json:"createdAt"`
-	Reason       string    `json:"reason"`
-	SizeBytes    int64     `json:"sizeBytes"`
-	FileCount    int       `json:"fileCount"`
-	RolloutCount int       `json:"rolloutCount"`
-	Warnings     []string  `json:"warnings,omitempty"`
+	Name         string       `json:"name"`
+	Path         string       `json:"path"`
+	CreatedAt    time.Time    `json:"createdAt"`
+	Reason       string       `json:"reason"`
+	SizeBytes    int64        `json:"sizeBytes"`
+	FileCount    int          `json:"fileCount"`
+	RolloutCount int          `json:"rolloutCount"`
+	Warnings     []string     `json:"warnings,omitempty"`
+	Prune        *PruneReport `json:"prune,omitempty"`
 }
 
 type manifest struct {
@@ -60,6 +63,7 @@ type manifest struct {
 	Agents           []AgentRef   `json:"agents"`
 	Sessions         []SessionRef `json:"sessions,omitempty"`
 	Files            []string     `json:"files"`
+	Excluded         []string     `json:"excluded,omitempty"`
 	Warnings         []string     `json:"warnings,omitempty"`
 }
 
@@ -81,16 +85,24 @@ func Create(opts Options) (*Snapshot, error) {
 	if opts.Reason == "" {
 		opts.Reason = "manual"
 	}
-	if opts.MaxBackups <= 0 {
-		opts.MaxBackups = 25
-	}
 	if len(opts.Agents) == 0 {
 		opts.Agents = opts.Sessions
+	}
+	policy := opts.Retention
+	if policy == (RetentionPolicy{}) {
+		policy = DefaultRetentionPolicy()
+		if opts.MaxBackups > 0 {
+			policy.MaxCount = opts.MaxBackups
+		}
 	}
 
 	backupDir := DefaultDir(opts.DataDir)
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return nil, err
+	}
+	pruneReport, err := ApplyRetention(opts.DataDir, policy)
+	if err != nil {
+		return nil, fmt.Errorf("prune snapshots before backup: %w", err)
 	}
 
 	created := time.Now().UTC()
@@ -114,7 +126,7 @@ func Create(opts Options) (*Snapshot, error) {
 	gz := gzip.NewWriter(out)
 	tw := tar.NewWriter(gz)
 	m := manifest{
-		Version:          1,
+		Version:          2,
 		CreatedAt:        created.Format(time.RFC3339Nano),
 		Reason:           opts.Reason,
 		DataDir:          opts.DataDir,
@@ -122,8 +134,10 @@ func Create(opts Options) (*Snapshot, error) {
 		EdgeNamesFile:    opts.EdgeNamesFile,
 		Agents:           opts.Agents,
 		Sessions:         opts.Agents,
+		Excluded:         []string{"codex-loom/events/** (derived SSE replay cache)"},
 	}
 
+	var requiredErrors []error
 	add := func(src, dst string, required bool) {
 		if src == "" {
 			return
@@ -132,6 +146,7 @@ func Create(opts Options) (*Snapshot, error) {
 			msg := fmt.Sprintf("%s: %v", src, err)
 			if required {
 				m.Warnings = append(m.Warnings, "required file skipped: "+msg)
+				requiredErrors = append(requiredErrors, fmt.Errorf("required file %s: %w", src, err))
 			} else if !os.IsNotExist(err) {
 				m.Warnings = append(m.Warnings, "optional file skipped: "+msg)
 			}
@@ -167,6 +182,11 @@ func Create(opts Options) (*Snapshot, error) {
 		if len(m.Files) > before {
 			rolloutCount++
 		}
+	}
+	if len(requiredErrors) > 0 {
+		_ = tw.Close()
+		_ = gz.Close()
+		return nil, errors.Join(requiredErrors...)
 	}
 
 	sort.Strings(m.Files)
@@ -223,12 +243,20 @@ func Create(opts Options) (*Snapshot, error) {
 		RolloutCount: rolloutCount,
 		Warnings:     m.Warnings,
 	}
-	_ = Prune(backupDir, opts.MaxBackups)
+	postPrune, pruneErr := ApplyRetention(opts.DataDir, policy)
+	pruneReport.merge(postPrune)
+	s.Prune = &pruneReport
+	if pruneErr != nil {
+		s.Warnings = append(s.Warnings, "snapshot created but retention cleanup failed: "+pruneErr.Error())
+	}
 	return s, nil
 }
 
 func List(dataDir string) ([]Snapshot, error) {
-	backupDir := DefaultDir(dataDir)
+	return listSnapshots(DefaultDir(dataDir))
+}
+
+func listSnapshots(backupDir string) ([]Snapshot, error) {
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -270,14 +298,8 @@ func Prune(backupDir string, keep int) error {
 	if keep <= 0 {
 		return nil
 	}
-	list, err := List(filepath.Dir(backupDir))
-	if err != nil {
-		return err
-	}
-	for i := keep; i < len(list); i++ {
-		_ = os.Remove(list[i].Path)
-	}
-	return nil
+	_, err := applyRetentionAt(backupDir, RetentionPolicy{MaxCount: keep}, time.Now().UTC())
+	return err
 }
 
 func walkDataDir(dataDir, backupDir string, fn func(src, rel string)) error {
@@ -286,6 +308,7 @@ func walkDataDir(dataDir, backupDir string, fn func(src, rel string)) error {
 		return err
 	}
 	backupAbs, _ := filepath.Abs(backupDir)
+	eventsAbs, _ := filepath.Abs(filepath.Join(dataAbs, "events"))
 	return filepath.WalkDir(dataAbs, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -295,7 +318,7 @@ func walkDataDir(dataDir, backupDir string, fn func(src, rel string)) error {
 		}
 		if d.IsDir() {
 			pAbs, _ := filepath.Abs(path)
-			if pAbs == backupAbs || strings.HasPrefix(pAbs, backupAbs+string(os.PathSeparator)) {
+			if pAbs == backupAbs || strings.HasPrefix(pAbs, backupAbs+string(os.PathSeparator)) || pAbs == eventsAbs {
 				return filepath.SkipDir
 			}
 			return nil
@@ -341,19 +364,10 @@ func addFile(tw *tar.Writer, src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if n < info.Size() {
-		_, err = io.CopyN(tw, zeroReader{}, info.Size()-n)
+	if n != info.Size() {
+		return io.ErrUnexpectedEOF
 	}
 	return err
-}
-
-type zeroReader struct{}
-
-func (zeroReader) Read(p []byte) (int, error) {
-	for i := range p {
-		p[i] = 0
-	}
-	return len(p), nil
 }
 
 func findRollouts(sessionsDir string, sessions []SessionRef) ([]string, []string) {

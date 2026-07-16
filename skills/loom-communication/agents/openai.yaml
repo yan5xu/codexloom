@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Communication"
+  short_description: "Coordinate long-lived Agents through CodexLoom"
+  default_prompt: "Use $loom-communication to coordinate this work with another CodexLoom Agent."

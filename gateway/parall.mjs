@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { inboxDispatchAction, parallIdempotencyKey, parallMessageHints } from './parall-protocol.mjs';
+import { inboxDispatchAction, parallConversationCandidates, parallConversationType, parallDeliveryReceipts, parallOutboxRequest, parallProviderReadRequest, parallThreadContext } from './parall-protocol.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const config = {
@@ -21,7 +21,7 @@ const config = {
   ),
   connectorToken: process.env.CODEX_LOOM_CONNECTOR_TOKEN || process.env.CODEX_HUB_CONNECTOR_TOKEN || '',
   apiUrl: trimSlash(required(process.env.PRLL_API_URL, 'PRLL_API_URL')),
-  wsUrl: process.env.PRLL_WS_URL || '',
+  wsUrl: process.env.PRLL_WS_URL || parallWebSocketURL(process.env.PRLL_API_URL),
   apiKey: required(process.env.PRLL_API_KEY, 'PRLL_API_KEY'),
   orgId: required(process.env.PRLL_ORG_ID, 'PRLL_ORG_ID'),
   stateFile:
@@ -40,6 +40,7 @@ let state = await readState(config.stateFile);
 state.dispatchMonitors ||= {};
 let stateWrite = Promise.resolve();
 const activeDispatchMonitors = new Set();
+const chatTypes = new Map();
 let ownAgentID = args['agent-id'] || process.env.PRLL_AGENT_ID || '';
 if (!ownAgentID) {
   try {
@@ -56,6 +57,7 @@ await Promise.all([
   config.pollInbound ? runDispatchPollLoop() : config.pollOnly ? Promise.resolve() : runParallLoop(),
   runCommandLoop(),
   runHeartbeatLoop(),
+  runConversationDiscoveryLoop(),
 ]);
 
 async function runDispatchPollLoop() {
@@ -169,6 +171,8 @@ async function handleDispatch(dispatch) {
     await ackDispatch(dispatch.id);
     return;
   }
+  const conversationType = await resolveConversationType(message.chat_id, message.thread_root_id);
+  const threadContext = await readThreadContext(message);
   const ingress = {
     connectionId: config.connectionId,
     addressId: config.addressId,
@@ -183,9 +187,10 @@ async function handleDispatch(dispatch) {
       conversationId: message.chat_id,
       threadId: message.thread_root_id || '',
       messageId: message.id,
-      conversationType: message.thread_root_id ? 'thread' : 'channel',
+      conversationType,
     },
     content: { text, attachments },
+    threadContext,
     responseExpectation: message.hints?.no_reply ? 'none' : 'optional',
     occurredAt: message.created_at,
     trigger: { direct: false, mentioned: true, explicitDispatch: true },
@@ -214,6 +219,38 @@ async function handleDispatch(dispatch) {
     startDispatchMonitor(record);
     console.error(`[parall] accepted ${message.id} from ${ingress.sender.displayName}`);
   }
+}
+
+async function readThreadContext(message) {
+  const rootID = String(message?.thread_root_id || '').trim();
+  if (!rootID) return undefined;
+  try {
+    const [root, replies] = await Promise.all([
+      parall(`/api/v1/messages/${encodeURIComponent(rootID)}`),
+      parall(`/api/v1/messages/${encodeURIComponent(rootID)}/replies?limit=20`),
+    ]);
+    return parallThreadContext(root, replies, message);
+  } catch (error) {
+    const reason = errorText(error).slice(0, 500);
+    console.error(`[parall] thread context ${rootID}: ${reason}`);
+    return { rootExternalMessageId: rootID, unavailableReason: reason };
+  }
+}
+
+async function resolveConversationType(chatID, threadRootID) {
+  if (threadRootID) return parallConversationType('', threadRootID);
+  let chatType = chatTypes.get(chatID);
+  if (!chatType) {
+    try {
+      const chat = await parall(`/api/v1/orgs/${config.orgId}/chats/${chatID}`);
+      chatType = chat?.type || 'group';
+      chatTypes.set(chatID, chatType);
+    } catch (error) {
+      console.error(`[parall] read chat ${chatID}: ${errorText(error)}`);
+      chatType = 'group';
+    }
+  }
+  return parallConversationType(chatType, '');
 }
 
 function restoreDispatchMonitors() {
@@ -272,7 +309,11 @@ async function runCommandLoop() {
       if (!response.ok) throw new Error(`command stream HTTP ${response.status}`);
       await consumeSSE(response.body, async (envelope) => {
         if (envelope.type !== 'connector/command') return;
-        await sendOutbox(envelope.data);
+        if (envelope.data?.type === 'provider_operation') {
+          await runProviderOperation(envelope.data);
+        } else {
+          await sendOutbox(envelope.data);
+        }
       });
     } catch (error) {
       if (!controller.signal.aborted) console.error(`[hub] ${errorText(error)}; reconnecting commands`);
@@ -281,33 +322,94 @@ async function runCommandLoop() {
   }
 }
 
+async function runProviderOperation(command) {
+  const operation = command?.providerOperation;
+  if (!operation?.id) return;
+  try {
+    if (operation.provider !== 'parall') throw new Error(`unsupported provider ${operation.provider}`);
+    const request = parallProviderReadRequest(operation, config.orgId);
+    const result = await parall(request.resource, { method: request.method });
+    const encoded = JSON.stringify(result);
+    if (Buffer.byteLength(encoded) > 700 * 1024) {
+      throw new Error('Parall result exceeds the 700 KiB Connector limit; request a smaller page');
+    }
+    await reportProviderOperation(operation.id, { attemptToken: operation.attemptToken, success: true, result });
+    console.error(`[parall] read ${operation.resource} ${operation.action} (${operation.id})`);
+  } catch (error) {
+    await reportProviderOperation(operation.id, { attemptToken: operation.attemptToken, success: false, error: errorText(error) }).catch(() => {});
+    console.error(`[parall] read ${operation.id}: ${errorText(error)}`);
+  }
+}
+
 async function sendOutbox(command) {
   const item = command?.outboxItem;
   if (!item?.id) return;
+  let deliveryReceipts = [];
   try {
-    const request = {
-      message_type: 'text',
-      content: { text: item.content?.text || '' },
-      idempotency_key: parallIdempotencyKey(item),
-    };
-    const hints = parallMessageHints(item);
-    if (hints) request.hints = hints;
-    if (item.conversation?.threadId) request.thread_root_id = item.conversation.threadId;
+    const attachmentIds = [];
+    for (const attachment of item.content?.attachments || []) {
+      const attachmentId = await uploadOutboxAttachment(attachment);
+      attachmentIds.push(attachmentId);
+      deliveryReceipts = parallDeliveryReceipts({ content: { attachments: (item.content?.attachments || []).slice(0, attachmentIds.length) } }, attachmentIds);
+    }
+    const request = parallOutboxRequest(item, attachmentIds);
     const message = await parall(
       `/api/v1/orgs/${config.orgId}/chats/${item.conversation.conversationId}/messages`,
       { method: 'POST', body: request },
     );
-    await reportOutbox(item.id, { success: true, externalMessageId: message.id });
+    deliveryReceipts = parallDeliveryReceipts(item, attachmentIds, message.id);
+    await reportOutbox(item.id, {
+      attemptToken: item.attemptToken,
+      success: true,
+      externalMessageId: message.id,
+      externalMessageIds: [message.id],
+      deliveryReceipts,
+    });
     console.error(`[parall] sent ${item.id} as ${message.id}`);
   } catch (error) {
-    await reportOutbox(item.id, { success: false, error: errorText(error) }).catch(() => {});
+    await reportOutbox(item.id, { attemptToken: item.attemptToken, success: false, deliveryReceipts, error: errorText(error) }).catch(() => {});
     console.error(`[parall] send ${item.id}: ${errorText(error)}`);
   }
+}
+
+async function uploadOutboxAttachment(attachment) {
+  const localPath = path.resolve(String(attachment?.path || '').trim());
+  const stat = await fs.promises.stat(localPath);
+  if (!stat.isFile() || stat.size <= 0 || stat.size > 25 * 1024 * 1024) {
+    throw new Error(`invalid outbound attachment: ${localPath}`);
+  }
+  const fileName = path.basename(String(attachment?.name || '').trim() || localPath);
+  const mimeType = String(attachment?.mimeType || '').trim() || 'application/octet-stream';
+  const presign = await parall(`/api/v1/orgs/${config.orgId}/upload/presign`, {
+    method: 'POST',
+    body: { file_name: fileName, file_size: stat.size, mime_type: mimeType },
+  });
+  const attachmentId = String(presign?.attachment_id || '').trim();
+  const uploadUrl = String(presign?.upload_url || '').trim();
+  if (!attachmentId || !uploadUrl) throw new Error('Parall upload presign returned no attachment id or URL');
+  const upload = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': mimeType },
+    body: await fs.promises.readFile(localPath),
+    signal: controller.signal,
+  });
+  if (!upload.ok) throw new Error(`Parall attachment upload failed: HTTP ${upload.status}`);
+  await parall(`/api/v1/orgs/${config.orgId}/upload/complete`, {
+    method: 'POST', body: { attachment_id: attachmentId },
+  });
+  return attachmentId;
 }
 
 async function reportOutbox(id, result) {
   return hub(
     `/api/integrations/connections/${config.connectionId}/outbox/${id}/result`,
+    { method: 'POST', body: result },
+  );
+}
+
+async function reportProviderOperation(id, result) {
+  return hub(
+    `/api/integrations/connections/${config.connectionId}/provider-operations/${id}/result`,
     { method: 'POST', body: result },
   );
 }
@@ -323,14 +425,59 @@ async function runHeartbeatLoop() {
           'receive_events',
           'explicit_dispatch',
           'threads',
+          'thread_context',
           'attachments',
-          'delivery_ack',
+          'reading',
+          'ack',
           'proactive_send',
+          'provider_native_read',
         ],
       },
     }).catch((error) => console.error(`[hub] heartbeat: ${errorText(error)}`));
     await delay(10000, controller.signal);
   }
+}
+
+async function runConversationDiscoveryLoop() {
+  let lastFingerprint = '';
+  let lastReportedAt = 0;
+  while (!controller.signal.aborted) {
+    try {
+      if (!ownAgentID) throw new Error('external Agent id is unavailable');
+      const chats = await readJoinedConversations();
+      const conversations = parallConversationCandidates(chats);
+      const fingerprint = JSON.stringify(conversations);
+      if (fingerprint !== lastFingerprint || Date.now() - lastReportedAt >= 300_000) {
+        await hub(`/api/integrations/addresses/${encodeURIComponent(config.addressId)}/conversation-candidates`, {
+          method: 'PUT',
+          body: { conversations },
+        });
+        lastFingerprint = fingerprint;
+        lastReportedAt = Date.now();
+        console.error(`[parall] discovered ${conversations.length} joined group conversation(s)`);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) console.error(`[parall] discover conversations: ${errorText(error)}`);
+    }
+    await delay(10000, controller.signal);
+  }
+}
+
+async function readJoinedConversations() {
+  const chats = [];
+  let cursor = '';
+  for (let page = 0; page < 50; page++) {
+    const query = new URLSearchParams({ limit: '100' });
+    if (cursor) query.set('cursor', cursor);
+    const response = await parall(
+      `/api/v1/orgs/${encodeURIComponent(config.orgId)}/members/${encodeURIComponent(ownAgentID)}/chats?${query}`,
+    );
+    chats.push(...(response.data || []));
+    const nextCursor = String(response.next_cursor || '').trim();
+    if (!response.has_more || !nextCursor || nextCursor === cursor) break;
+    cursor = nextCursor;
+  }
+  return chats;
 }
 
 async function parall(resource, options = {}) {
@@ -436,6 +583,15 @@ function required(value, name) {
 
 function trimSlash(value) {
   return String(value).replace(/\/+$/, '');
+}
+
+function parallWebSocketURL(apiURL) {
+  const target = new URL(apiURL);
+  target.protocol = target.protocol === 'http:' ? 'ws:' : 'wss:';
+  target.pathname = '/ws';
+  target.search = '';
+  target.hash = '';
+  return target.toString();
 }
 
 function errorText(error) {

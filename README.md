@@ -31,7 +31,7 @@ The name `Loom` describes this organizing process: every thread keeps its own hi
 - **Long-lived agents:** Maintain a stable identity, editable name, primary thread, Profile, and model configuration for each agent.
 - **One thread, multiple surfaces:** Work on the same thread from Codex Desktop, Mobile, the WebUI, and the CLI, with live message and status synchronization.
 - **Agent-to-agent communication:** Send, queue, and reply to Messages while preserving delivery state, response relationships, and complete history.
-- **Team structure:** Use the Team List and draggable Team Map to inspect declared relationships and collaboration observed in actual Messages.
+- **Team structure:** Separate draggable Organization, Collaboration, and Activity maps keep formal responsibility, declared cross-domain work, and Message evidence distinct; Directory remains the precise view of every Agent.
 - **External organization integration:** Manage external identities, Conversation Memberships, Inbox, and Outbox through Parall and Feishu (Lark).
 - **Continuous operations:** Run Schedules, inspect global runtime state, create backups on demand, and restart gracefully after active turns finish.
 
@@ -116,7 +116,7 @@ A Profile also exposes collaboration information to other agents. It states what
 
 When agents remain responsible for different domains, their relationships stop being one-off invocation chains and become ongoing collaboration. Work that crosses a domain boundary needs to find the responsible agent, ask for its judgment, request help, and report problems discovered while using what it owns.
 
-The Team Map presents durable responsibilities and organizational relationships. Messages preserve the collaboration that actually occurs. Declared relationships help agents find the right owner; message history provides evidence of how those relationships operate in real work.
+The Organization Map presents durable parent/child responsibility boundaries. The Collaboration Map records declared cross-domain working relationships without pretending they are hierarchy. The Activity Map derives time-scoped evidence from Messages, while Directory remains the exact inventory. Declared structure helps agents find the right owner; message history shows how that structure operates in real work.
 
 ### Communication Across Domains
 
@@ -145,15 +145,15 @@ This resembles a human organization: members have stable responsibilities, growi
 Advanced users may bring long-term agent collaborators into existing work environments. An agent organization can establish a dedicated Interface Agent for external communication. It maintains external relationships and conversational context, asks the Lead for domain judgment when needed, responds externally with the resulting decision, and brings important feedback back into the internal organization.
 
 ```text
-Feishu (Lark) / Parall  <->  Interface Agent  <->  Lead  <->  Internal Agents
+Feishu (Lark) / Slack / Parall  <->  Interface Agent  <->  Lead  <->  Internal Agents
 ```
 
 An agent can have identities on multiple platforms and participate in multiple group conversations. An external identity states where the agent is reachable. A Conversation Membership defines its role in a specific conversation: what to pay attention to, when to speak, what it must not disclose, and when it must consult an internal owner. The same agent can therefore perform different roles in different channels without being copied into separate, disconnected agents.
 
 | Status | Platforms |
 |---|---|
-| Available | Feishu (Lark), Parall |
-| TODO | Slack, Microsoft Teams |
+| Available | Feishu (Lark), Slack, Parall |
+| TODO | Microsoft Teams |
 
 ## Work Where People Already Work
 
@@ -184,7 +184,9 @@ CodexLoom is built on Codex. Codex continues to provide the agent runtime, threa
 
 - [Agent Profiles: defining a long-term identity, domain, and scope](docs/agent-profile.md)
 - [Agent communication and the `loom` CLI](docs/loom-cli.md)
+- [Built-in Skills and Codex discovery](docs/skills.md)
 - [External platform integration design](docs/agent-platform-integration.md)
+- [Set up Feishu, Slack, and Parall integrations](docs/integrations.md)
 - [Conversation Membership: an agent's role in a specific conversation](docs/conversation-membership.md)
 - [Codex app-server protocol and adapter notes](docs/codex-app-server-protocol.md)
 - [Architecture, data flow, APIs, migration, and development handbook](docs/handbook.md)

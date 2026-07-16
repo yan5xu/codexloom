@@ -23,7 +23,7 @@ func main() {
 	logPath := flag.String("log", "/tmp/codex-loom-reloader.log", "reloader log path")
 	childLogPath := flag.String("child-log", "/tmp/codex-loom.log", "new CodexLoom stdout/stderr log path")
 	delay := flag.Duration("delay", 300*time.Millisecond, "delay before stopping the old process")
-	timeout := flag.Duration("timeout", 15*time.Second, "time to wait for graceful shutdown")
+	timeout := flag.Duration("timeout", 60*time.Second, "time to wait for graceful shutdown")
 	flag.Parse()
 
 	if *oldPID <= 0 || *exe == "" {

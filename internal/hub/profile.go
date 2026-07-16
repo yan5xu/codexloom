@@ -238,6 +238,11 @@ func (h *Hub) resolveAgentIDLocked(key string) (string, bool) {
 			return key, true
 		}
 	}
+	for _, relationship := range h.organizationLinks {
+		if relationship.ParentAgentID == key || relationship.ChildAgentID == key {
+			return key, true
+		}
+	}
 	return "", false
 }
 
@@ -416,9 +421,14 @@ func (h *Hub) injectProfileIfNeeded(agentID string, rt *runtime) error {
 
 	h.mu.Lock()
 	if meta := h.agents[agentID]; meta != nil && meta.ProfileVersionSeen < profileCopy.Version {
+		previous := *meta
 		meta.ProfileVersionSeen = profileCopy.Version
 		meta.UpdatedAt = now()
-		h.persistLocked()
+		if err := h.persistAgentsLocked(); err != nil {
+			*meta = previous
+			h.mu.Unlock()
+			return errf(500, "persist injected profile version: %s", err)
+		}
 	}
 	h.mu.Unlock()
 	return nil

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Parall"
+  short_description: "Read Parall context through a managed Loom Connector"
+  default_prompt: "Use $loom-parall to inspect Parall chat or message context without exposing provider credentials."

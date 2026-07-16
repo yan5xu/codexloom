@@ -168,24 +168,36 @@ Scope
 | 一次任务的输入要求和输出格式 | 当前 Message 或 turn |
 | 工具命令和操作步骤 | Skill、playbook 或项目文档 |
 | 实际发生的请求、通知和回复 | Messages |
-| 与其他 Agent 的长期协作关系 | Team Relationship |
+| 上下级与职责分解 | Organization Relationship |
+| 跨领域的长期协作约定 | Collaboration Relationship |
 | 未来投递时间 | Schedule |
 
 如果一项信息会随着单次 turn 频繁变化，它通常不属于 Profile。只有长期领域身份或责任边界
 发生变化时才应该更新 Profile。
 
-## Profile、Relationship 与 Messages
+## Profile、Organization、Collaboration 与 Activity
 
-协作模型由节点、声明边和观察边组成：
+Agent 组织不能把所有“关系”压成同一种边。CodexLoom 分开保存主体定义、正式组织结构、长期协作约定和实际工作证据：
 
 ```text
-Agent + Profile       长期主体及其领域
-Team Relationship     团队声明的长期协作关系
-Messages              实际发生的多次互动
-Team Map              上述事实和 runtime state 的组合读模型
+Agent + Profile                 长期主体及其领域
+Organization Relationship      稳定的 parent/child 职责结构
+Collaboration Relationship     声明的跨领域长期协作
+Messages / Activity Evidence   实际发生的多次互动及其时间窗口
 ```
 
-Relationship 是独立对象，不重复写进双方 Profile：
+Organization Relationship 是独立的组织事实。一个 Agent 最多有一个直接上级，不能指向自己，也不能形成环；关系双方都用稳定 Agent ID 保存：
+
+```json
+{
+  "id": "org_5e1ac4cc9ff1bdd2",
+  "parentAgentId": "4326ff43",
+  "childAgentId": "a07193ea",
+  "description": "负责 Parall Edge 领域的实现、验证与交付。"
+}
+```
+
+Collaboration Relationship 也是独立对象，不重复写进双方 Profile：
 
 ```json
 {
@@ -196,14 +208,11 @@ Relationship 是独立对象，不重复写进双方 Profile：
 }
 ```
 
-第一版不定义 manager、peer、owner 等复杂枚举。方向和一段清晰的关系说明足以表达“谁与谁
-长期协作，以及为什么”。
+Collaboration 第一版不定义 peer、owner、advisor 等复杂枚举。方向和一段清晰的关系说明足以表达谁向谁建立了长期协作，以及为什么。它不代表上下级，也不参与组织树约束。
 
-Messages 只证明实际发生过协作，不能自动修改 Profile 或升级为声明关系。Team Map 同时
-展示：
+Messages 只证明实际发生过协作，不能自动修改 Profile，也不能自动升级成 Organization 或 Collaboration。Activity 只在选定时间窗口内聚合 Message，双向消息在图上合成一条无方向证据边，Inspector 仍保留两个方向的发送与回复计数。
 
-- dashed blue edge：显式 Relationship。
-- solid status edge：Messages 聚合出的 observed link。
+WebUI 用四个互补视图避免语义和线条混杂：Organization 看正式结构和未分配 Agent；Collaboration 看声明协作；Activity 看最近实际工作；Directory 精确浏览全部 Agent。外部 IM 的 Connection、Address 和 Conversation Membership 属于 Integrations，不进入 Team Graph。
 
 ## 稳定身份
 
@@ -254,13 +263,13 @@ app-server `thread/inject_items` 写入一条 developer context：
   agents.json
   sessions.json                    # 兼容镜像
   profiles.json
+  organization-links.json
   team-links.json
   comms.ndjson
   comms.v1-name-addressed.ndjson  # 仅发生旧消息迁移时
 ```
 
-`profiles.json` 和 `team-links.json` 都使用 Agent ID。它们与整个 Loom data directory 一起进入
-手动备份和重启前备份。
+`profiles.json`、`organization-links.json` 和 `team-links.json` 都使用 Agent ID。`team-links.json` 仅保存 Collaboration，消息活动仍来自 `comms.ndjson`。这些文件与整个 Loom data directory 一起进入手动备份和重启前备份。
 
 ## CLI
 
@@ -270,27 +279,23 @@ loom profile set <agent> --identity "..." --domain "..." --scope "..."
 loom profile set <agent> --file profile.json
 loom profile clear <agent>
 
-loom team                    # 列出 Agent、Profile 摘要和全部关系
-loom team <agent>            # 查看一个 Agent 及相邻关系
-loom team links [agent]      # 查看全部或指定 Agent 的关系
-loom team link add <from> <to> --description "..."
-loom team link update <id> --description "..."
-loom team link delete <id>
+loom team                                      # 列出 Agent、组织、协作与活动证据
+loom team <agent>                              # 聚焦一个 Agent 及相邻关系
+loom team organization add <parent> <child> --description "..."
+loom team organization update <id> --description "..."
+loom team organization delete <id>
+loom team collaboration add <from> <to> --description "..."
+loom team collaboration update <id> --description "..."
+loom team collaboration delete <id>
 ```
 
-`loom agent list` 在 Agent 状态后显示 Domain 首行；`loom agent get <agent>` 返回 Agent、Profile 和
-Relationships。第一版不提供模糊 `team find`，查询保持为确定性的 list/get/links。
+`loom team link ...` 继续作为 Collaboration 的兼容别名；新脚本应使用完整命令。`loom agent list` 在 Agent 状态后显示 Domain 首行；`loom agent get <agent>` 返回 Agent、Profile 和 Relationships。查询保持为确定性的 list/get，不提供语义模糊的 `team find`。
 
 ## Web UI
 
-Team 页面有两种互补视图：
+Team 页面提供 Organization、Collaboration、Activity 和 Directory 四个视图。三个 Graph 都支持平移、缩放、选择和按视图独立持久化的拖拽位置；Directory 显示全部 Agent、Domain 摘要、Profile 版本和消息指标。
 
-- Graph：默认只显示已有 Profile 或关系证据的 Agent，节点可拖拽；完整目录不被塞进一张图。
-- List：显示全部 Agent、Domain 摘要、Profile 版本和消息指标，并在右侧复用同一个 Inspector。
-
-选择 Agent 后，Inspector 展示和编辑 Identity、Domain、Scope，并管理相邻 Relationship；
-选择显式边可以编辑或删除关系；选择观察边显示消息数量、回复、open/failed 和最近 subject。
-关键选择状态使用稳定 Agent ID 写入 URL。
+选择 Agent 后，Inspector 先展示组织归属，再展示 Profile、相邻 Collaboration 和 Recent Activity。Organization 与 Collaboration 边可以分别编辑或删除；Activity 边只读，显示消息、回复、open/failed、两个方向和最近 subject。关键选择、视图、查询和 Activity 时间窗口写入 URL。
 
 单个 Agent 的对话页面也在 `Agent Config > Profile` 中显示和编辑同一份 Identity、Domain、
 Scope。这里的 Profile 和 Team Inspector 共用版本与 API；保存后 Team 页面通过事件流立即更新。

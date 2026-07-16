@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { hasLarkBotMention, larkBotIdentities, larkReactionAction } from './lark-protocol.mjs';
+import {
+  hasLarkBotMention,
+  larkBotIdentities,
+  larkLocalImageAttachment,
+  larkOutboundContentArgs,
+  larkReactionAction,
+} from './lark-protocol.mjs';
 
 test('collects configured Open ID and whoami app ID as bot aliases', () => {
   const ids = larkBotIdentities('ou_bot', { appId: 'cli_app' });
@@ -38,4 +44,19 @@ test('keeps the reaction until a reply is sent', () => {
 test('removes the reaction for no-reply and failed terminal states', () => {
   assert.equal(larkReactionAction({ item: { state: 'handled', outcome: 'no_reply' } }), 'remove');
   assert.equal(larkReactionAction({ item: { state: 'failed' } }), 'remove');
+});
+
+test('selects a local image attachment and ignores non-images', () => {
+  const item = { content: { attachments: [
+    { path: '/tmp/report.pdf', mimeType: 'application/pdf' },
+    { path: '/tmp/photo.png', mimeType: 'image/png' },
+  ] } };
+  assert.equal(larkLocalImageAttachment(item)?.path, '/tmp/photo.png');
+  assert.equal(larkLocalImageAttachment({ content: { attachments: [{ path: '/tmp/report.pdf' }] } }), null);
+});
+
+test('sends text replies through the lark-cli markdown post path', () => {
+  const item = { content: { text: '**Result**\n\n- first' } };
+  assert.deepEqual(larkOutboundContentArgs(item), ['--markdown', item.content.text]);
+  assert.deepEqual(larkOutboundContentArgs(item, './photo.png'), ['--image', './photo.png']);
 });

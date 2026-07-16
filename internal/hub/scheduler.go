@@ -11,10 +11,8 @@ import (
 	"time"
 )
 
-func (h *Hub) persistSchedulesLocked() {
-	if err := h.st.SaveSchedules(h.schedules); err != nil {
-		log.Printf("[codex-loom] persist schedules: %v", err)
-	}
+func (h *Hub) persistSchedulesLocked() error {
+	return h.st.SaveSchedules(h.schedules)
 }
 
 func (h *Hub) ListSchedules() []Schedule {
@@ -68,7 +66,10 @@ func (h *Hub) CreateSchedule(p ScheduleParams) (Schedule, error) {
 		}
 	}
 	h.schedules[s.ID] = &s
-	h.persistSchedulesLocked()
+	if err := h.persistSchedulesLocked(); err != nil {
+		delete(h.schedules, s.ID)
+		return Schedule{}, errf(500, "persist schedule: %s", err)
+	}
 	h.emitGlobalLocked("loom/schedule", map[string]any{"schedule": s})
 	return s, nil
 }
@@ -152,6 +153,7 @@ func (h *Hub) SetScheduleEnabled(id string, enabled bool) (Schedule, error) {
 	if s == nil {
 		return Schedule{}, errf(404, "schedule not found: %s", id)
 	}
+	previous := *s
 	s.Enabled = enabled
 	if enabled && s.NextRunAt == "" {
 		next, err := h.nextRunForScheduleLocked(s, time.Now().UTC())
@@ -161,7 +163,10 @@ func (h *Hub) SetScheduleEnabled(id string, enabled bool) (Schedule, error) {
 		s.NextRunAt = next
 	}
 	s.UpdatedAt = now()
-	h.persistSchedulesLocked()
+	if err := h.persistSchedulesLocked(); err != nil {
+		*s = previous
+		return Schedule{}, errf(500, "persist schedule: %s", err)
+	}
 	cp := *s
 	h.emitGlobalLocked("loom/schedule", map[string]any{"schedule": cp})
 	return cp, nil
@@ -176,7 +181,10 @@ func (h *Hub) DeleteSchedule(id string) (Schedule, error) {
 	}
 	cp := *s
 	delete(h.schedules, s.ID)
-	h.persistSchedulesLocked()
+	if err := h.persistSchedulesLocked(); err != nil {
+		h.schedules[s.ID] = s
+		return Schedule{}, errf(500, "persist schedule deletion: %s", err)
+	}
 	h.emitGlobalLocked("loom/schedule-deleted", map[string]any{"schedule": cp})
 	return cp, nil
 }
@@ -188,9 +196,15 @@ func (h *Hub) RunSchedule(id string) (Schedule, error) {
 		h.mu.Unlock()
 		return Schedule{}, errf(404, "schedule not found: %s", id)
 	}
-	cp := *s
 	runAt := now()
+	message, err := h.ensureScheduleMessageLocked(s, "manual:"+runAt)
+	if err != nil {
+		h.mu.Unlock()
+		return Schedule{}, err
+	}
+	previous := *s
 	s.LastRunAt = runAt
+	s.LastMessageID = message.ID
 	s.LastError = ""
 	s.UpdatedAt = runAt
 	if s.Cron != "" {
@@ -201,10 +215,16 @@ func (h *Hub) RunSchedule(id string) (Schedule, error) {
 			s.NextRunAt = next
 		}
 	}
-	h.persistSchedulesLocked()
+	if err := h.persistSchedulesLocked(); err != nil {
+		*s = previous
+		h.mu.Unlock()
+		return Schedule{}, errf(500, "persist manual schedule run: %s", err)
+	}
+	cp := *s
+	h.emitGlobalLocked("loom/schedule", map[string]any{"schedule": cp})
 	h.mu.Unlock()
-	h.fireSchedule(cp.ID, cp)
-	return h.GetSchedule(cp.ID)
+	h.deliverNextQueuedForTarget(message.ToAgentID, defaultInactivity)
+	return cp, nil
 }
 
 func (h *Hub) schedulerLoop() {
@@ -225,11 +245,13 @@ func (h *Hub) recomputeMissingScheduleRuns() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	changed := false
+	previous := make(map[string]Schedule)
 	now := time.Now().UTC()
 	for _, s := range h.schedules {
 		if s.NextRunAt != "" || s.At != "" && !s.Enabled {
 			continue
 		}
+		previous[s.ID] = *s
 		next, err := h.nextRunForScheduleLocked(s, now)
 		if err != nil {
 			s.LastError = err.Error()
@@ -242,21 +264,28 @@ func (h *Hub) recomputeMissingScheduleRuns() {
 		changed = true
 	}
 	if changed {
-		h.persistSchedulesLocked()
+		if err := h.persistSchedulesLocked(); err != nil {
+			for id, snapshot := range previous {
+				if schedule := h.schedules[id]; schedule != nil {
+					*schedule = snapshot
+				}
+			}
+			log.Printf("[codex-loom] persist recomputed schedules: %v", err)
+		}
 	}
 }
 
 func (h *Hub) runDueSchedules(t time.Time) {
-	due := h.collectDueSchedules(t)
-	for _, s := range due {
-		go h.fireSchedule(s.ID, s)
+	targets := h.collectDueSchedules(t)
+	for _, target := range targets {
+		h.deliverNextQueuedForTarget(target, defaultInactivity)
 	}
 }
 
-func (h *Hub) collectDueSchedules(t time.Time) []Schedule {
+func (h *Hub) collectDueSchedules(t time.Time) []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := []Schedule{}
+	targets := []string{}
 	nowText := t.UTC().Format(time.RFC3339Nano)
 	for _, s := range h.schedules {
 		if !s.Enabled || s.NextRunAt == "" {
@@ -264,16 +293,31 @@ func (h *Hub) collectDueSchedules(t time.Time) []Schedule {
 		}
 		next, err := parseScheduleTime(s.NextRunAt)
 		if err != nil {
+			previous := *s
 			s.LastError = "invalid nextRunAt: " + err.Error()
 			s.UpdatedAt = nowText
+			if saveErr := h.persistSchedulesLocked(); saveErr != nil {
+				*s = previous
+			}
 			continue
 		}
 		if next.After(t) {
 			continue
 		}
-		cp := *s
-		out = append(out, cp)
-		s.LastRunAt = nowText
+		scheduledAt := s.NextRunAt
+		message, err := h.ensureScheduleMessageLocked(s, scheduledAt)
+		if err != nil {
+			previous := *s
+			s.LastError = err.Error()
+			s.UpdatedAt = nowText
+			if saveErr := h.persistSchedulesLocked(); saveErr != nil {
+				*s = previous
+			}
+			continue
+		}
+		previous := *s
+		s.LastRunAt = scheduledAt
+		s.LastMessageID = message.ID
 		s.LastError = ""
 		s.UpdatedAt = nowText
 		if s.At != "" {
@@ -289,38 +333,44 @@ func (h *Hub) collectDueSchedules(t time.Time) []Schedule {
 				s.NextRunAt = nextRun
 			}
 		}
+		if err := h.persistSchedulesLocked(); err != nil {
+			*s = previous
+			continue
+		}
+		targets = append(targets, message.ToAgentID)
+		cp := *s
+		h.emitGlobalLocked("loom/schedule", map[string]any{"schedule": cp})
 	}
-	if len(out) > 0 {
-		h.persistSchedulesLocked()
-	}
-	return out
+	return targets
 }
 
-func (h *Hub) fireSchedule(id string, snapshot Schedule) {
-	result, err := h.SendAgentMessage(CommParams{
-		From:     schedulerIdentity,
-		To:       snapshot.To,
-		Subject:  snapshot.Subject,
-		Body:     snapshot.Body,
-		Response: snapshot.Response,
-		System:   true,
-	})
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	s := h.schedules[id]
-	if s == nil {
-		return
+func (h *Hub) ensureScheduleMessageLocked(schedule *Schedule, scheduledAt string) (*AgentMessage, error) {
+	for _, id := range h.commOrder {
+		message := h.comms[id]
+		if message != nil && message.ScheduleID == schedule.ID && message.ScheduledAt == scheduledAt {
+			return message, nil
+		}
 	}
-	s.UpdatedAt = now()
-	if err != nil {
-		s.LastError = err.Error()
-	} else if result.Message != nil {
-		s.LastMessageID = result.Message.ID
-		s.LastError = ""
+	target := h.resolveLocked(schedule.To)
+	if target == nil {
+		return nil, errf(404, "target agent not found: %s", schedule.To)
 	}
-	cp := *s
-	h.persistSchedulesLocked()
-	h.emitGlobalLocked("loom/schedule", map[string]any{"schedule": cp})
+	status := "closed"
+	if schedule.Response == "required" {
+		status = "open"
+	}
+	timestamp := now()
+	message := AgentMessage{
+		ID: newMessageID(), FromAgentID: schedulerAgentID, ToAgentID: target.ID,
+		From: schedulerIdentity, To: target.Name, Subject: schedule.Subject, Body: schedule.Body,
+		Response: schedule.Response, Status: status, DeliveryStatus: "queued", HandlingStatus: "pending",
+		ScheduleID: schedule.ID, ScheduledAt: scheduledAt, CreatedAt: timestamp, UpdatedAt: timestamp,
+	}
+	if err := h.commitAgentMessageLocked(message); err != nil {
+		return nil, errf(500, "persist scheduled occurrence: %s", err)
+	}
+	copy := message
+	return &copy, nil
 }
 
 func (h *Hub) nextRunForScheduleLocked(s *Schedule, after time.Time) (string, error) {

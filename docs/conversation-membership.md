@@ -9,10 +9,13 @@ Agent Profile 说明“这个长期主体是谁、长期负责什么”；Conver
 ```text
 Agent Profile                  全局长期身份与 Scope
 AgentAddress                   Agent 在平台上的外部身份
+ConversationCandidate         Provider 观察到该身份已加入、但 Loom 尚未授权的会话
 ConversationMembership        该身份在某个会话中的目的和行为边界
 InboxMessage                   某次真实入站消息
 HandlingAttempt                按某一 Membership version 执行的 Turn
 ```
+
+`ConversationCandidate` 与 Membership 必须分开。Candidate 只证明外部身份已经加入该会话，不能触发 Agent，也不授予回复权限。Integrations 页面会把它显示为“已加入 · 尚未配置”；用户填写 purpose、role 和 guidance 后才创建 Membership，新 Membership 默认保持暂停，检查后再启用。
 
 ## 数据模型
 
@@ -27,6 +30,7 @@ HandlingAttempt                按某一 Membership version 执行的 Turn
   "guidance": "只在被 mention 时回复；不披露其他群或私聊内容。",
   "triggerPolicy": "mention",
   "replyPolicy": "final_answer",
+  "outboundPolicy": "reply_only",
   "trustDomain": "external-test",
   "enabled": true,
   "version": 3
@@ -40,6 +44,7 @@ HandlingAttempt                按某一 Membership version 执行的 Turn
 - `guidance`：该说什么、不说什么、何时交接。
 - `triggerPolicy`：`direct|mention|dispatch` 等进入队列的条件。
 - `replyPolicy`：如何把 Agent Turn 结果映射为平台回复。
+- `outboundPolicy`：`reply_only|proactive|none`，控制该 Membership 是否允许主动发起外部消息。
 - `trustDomain`：审查和路由标签，不是沙箱实现。
 - `version`：乐观并发和事后解释依据。
 
@@ -59,10 +64,11 @@ HandlingAttempt                按某一 Membership version 执行的 Turn
 
 ```xml
 <inbox_message version="1" id="inb_..." origin="lark" response="required">
+  <timing sent_at="2026-07-15T08:30:00+08:00" received_at="2026-07-15T08:30:01+08:00" current_time="2026-07-15T08:35:00+08:00" />
   <sender provider="lark" external_id="ou_..." display_name="Alice" />
   <conversation id="oc_..." type="group" display_name="CodexLoom test group" />
   <body><![CDATA[请解释 Remote 和 WebUI 如何同步。]]></body>
-  <reply_command>loom inbox reply inb_... --agent support --body "..."</reply_command>
+  <reply_command>loom integration send --from support --reply-to inb_... --body "..."</reply_command>
 </inbox_message>
 ```
 
@@ -80,6 +86,9 @@ Turn；下一条消息才使用新版本。
 ## 回复规则
 
 - `replyPolicy=final_answer`：只把正式 final answer 发送到平台，thinking/tool output 不发送。
+- `outboundPolicy=reply_only`：可回复该 Membership 进入 Inbox 的消息，但不能主动发起；这是默认值。
+- `outboundPolicy=proactive`：除回复外，还允许使用 `loom integration send --to mem_...` 主动发送。
+- `outboundPolicy=none`：禁止该 Membership 的全部出站消息。
 - `responseExpectation=required`：必须 reply、no-reply、defer 或 failed，不允许静默 ack。
 - `responseExpectation=none`：可以显式 no-reply；Parall 才可设置 `hints.no_reply=true`。
 - provider send 成功后才将 InboxItem 标成 reply handled 并执行平台 ack/reaction cleanup。
@@ -88,19 +97,26 @@ Turn；下一条消息才使用新版本。
 
 ```sh
 loom conversation list [agent] [--address ADDRESS_ID]
+loom conversation discover [agent] [--address ADDRESS_ID] [--all]
 loom conversation get <membership-id>
 loom conversation set <address-id> <conversation-id> \
+  --type group \
   --name "CodexLoom test group" \
   --purpose "讨论 CodexLoom 使用和接入" \
   --role "回答产品问题" \
   --guidance "仅 mention 回复；不泄漏其他会话" \
   --trigger mention \
-  --reply-policy final_answer
-loom conversation disable <membership-id>
+  --reply-policy final_answer \
+  --outbound-policy reply_only \
+  --enabled false
+loom conversation get <membership-id>
 loom conversation enable <membership-id>
+loom conversation disable <membership-id>
 ```
 
-长内容可放 JSON 文件，避免 shell 转义损坏换行。
+`conversation discover` 读取 Connector 最近上报的会话目录；默认只显示当前仍可用的候选项，`--all` 同时显示已经离开或不可访问的历史项。它不会创建 Membership。`conversation list` 只列出已配置的 durable Membership，两者不要混用。
+
+DM 还必须传 `--type dm --actor <stable-actor-id>`，把稳定会话 ID 与稳定联系人 ID 同时绑定。长内容可放 JSON 文件，避免 shell 转义损坏换行。更新已有 Membership 时可传 `--expected-version <version>` 防止覆盖并发修改。
 
 ## UI
 

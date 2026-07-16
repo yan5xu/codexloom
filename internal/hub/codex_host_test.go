@@ -145,8 +145,10 @@ func TestSharedCodexHostAdoptsRemoteResumedThreadOnTurnStart(t *testing.T) {
 }
 
 func TestTwoAgentsShareOneCodexHost(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	logPath := installFakeSharedCodexHost(t)
-	st, err := store.Open(t.TempDir())
+	dataDir := t.TempDir()
+	st, err := store.Open(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,13 +179,39 @@ func TestTwoAgentsShareOneCodexHost(t *testing.T) {
 	if got := countRequestMethod(t, logPath, "initialize"); got != 1 {
 		t.Fatalf("initialize requests = %d, want one", got)
 	}
+	if got := countRequestMethod(t, logPath, "skills/extraRoots/set"); got != 1 {
+		t.Fatalf("skills/extraRoots/set requests = %d, want one", got)
+	}
+	if got := countRequestMethod(t, logPath, "skills/list"); got < 1 {
+		t.Fatalf("skills/list requests = %d, want at least one", got)
+	}
+	inventory, err := h.ReloadSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Data) != 1 || len(inventory.Data[0].Skills) != 2 || inventory.Data[0].Skills[0].Name != "loom-needs-you" || inventory.Data[0].Skills[1].Name != "loom-external-messaging" {
+		t.Fatalf("reloaded skill inventory = %#v", inventory)
+	}
+	reload := lastRequestParams(t, logPath, "skills/list")
+	if reload["forceReload"] != true {
+		t.Fatalf("skills/list forceReload = %#v, want true", reload["forceReload"])
+	}
+	cwds, ok := reload["cwds"].([]any)
+	if !ok || len(cwds) != 2 || cwds[0] != "/tmp/one" || cwds[1] != "/tmp/two" {
+		t.Fatalf("skills/list cwds = %#v, want both Agent workspaces", reload["cwds"])
+	}
+	for _, name := range []string{"loom-communication", "domain-agent-coaching", "loom-integrations", "loom-external-messaging", "loom-parall", "loom-feishu", "loom-needs-you", "loom-artifacts"} {
+		if _, err := os.Stat(filepath.Join(dataDir, "builtin-skills", name, "SKILL.md")); err != nil {
+			t.Fatalf("materialized %s: %v", name, err)
+		}
+	}
 	if got := countRequestMethod(t, logPath, "thread/start"); got != 2 {
 		t.Fatalf("thread/start requests = %d, want two", got)
 	}
 }
 
 func TestSendTaskResumesCachedThreadBeforeTurnStart(t *testing.T) {
-	installFakeSharedCodexHost(t)
+	logPath := installFakeSharedCodexHost(t)
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -220,6 +248,83 @@ func TestSendTaskResumesCachedThreadBeforeTurnStart(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("cached Thread was not resumed before turn/start: %v", err)
 	}
+	resume := lastRequestParams(t, logPath, "thread/resume")
+	if resume["sandbox"] != "danger-full-access" {
+		t.Fatalf("thread/resume sandbox = %#v, want danger-full-access", resume["sandbox"])
+	}
+	turn := lastRequestParams(t, logPath, "turn/start")
+	policy, ok := turn["sandboxPolicy"].(map[string]any)
+	if !ok || policy["type"] != "dangerFullAccess" {
+		t.Fatalf("turn/start sandboxPolicy = %#v, want dangerFullAccess", turn["sandboxPolicy"])
+	}
+	input, ok := turn["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("internal Agent turn input = %#v, want only task text", turn["input"])
+	}
+	text, ok := input[0].(map[string]any)
+	if !ok || text["type"] != "text" || text["text"] != "hello" {
+		t.Fatalf("task text input = %#v", input[0])
+	}
+}
+
+func TestSendTaskDoesNotPinSkillsForExternalFacingAgent(t *testing.T) {
+	logPath := installFakeSharedCodexHost(t)
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	defer h.Shutdown()
+	h.addresses = map[string]*AgentAddress{}
+	h.agents["agent-external"] = &Agent{
+		ID: "agent-external", Name: "external", Cwd: "/tmp/one", ThreadID: "thr-stale",
+		Sandbox: "danger-full-access", ApprovalPolicy: "never", Status: "idle",
+		CreatedAt: now(), UpdatedAt: now(),
+	}
+	h.addresses["addr-external"] = &AgentAddress{
+		ID: "addr-external", AgentID: "agent-external", Enabled: true,
+		CreatedAt: now(), UpdatedAt: now(),
+	}
+
+	if _, err := h.SendTask("agent-external", "publish the report", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	turn := lastRequestParams(t, logPath, "turn/start")
+	input, ok := turn["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("external Agent turn input = %#v, want only task text", turn["input"])
+	}
+	text, ok := input[0].(map[string]any)
+	if !ok || text["type"] != "text" || text["text"] != "publish the report" {
+		t.Fatalf("task text input = %#v", input[0])
+	}
+}
+
+func lastRequestParams(t *testing.T, path, method string) map[string]any {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var params map[string]any
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var request struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &request); err == nil && request.Method == method {
+			params = request.Params
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if params == nil {
+		t.Fatalf("request %q not found in %s", method, path)
+	}
+	return params
 }
 
 func countRequestMethod(t *testing.T, path, method string) int {
@@ -246,6 +351,37 @@ func countRequestMethod(t *testing.T, path, method string) int {
 	return count
 }
 
+func TestCodexHostEnvAddsConfiguredLoomDirectory(t *testing.T) {
+	dir := t.TempDir()
+	loomBin := filepath.Join(dir, "loom")
+	if err := os.WriteFile(loomBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_LOOM_CLI_BIN", loomBin)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	env := codexHostEnv()
+	want := dir + string(os.PathListSeparator) + "/usr/bin:/bin"
+	if env["PATH"] != want {
+		t.Fatalf("CodexHost PATH = %q, want %q", env["PATH"], want)
+	}
+}
+
+func TestMissingUserSkillsLetsUserSkillWin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userSkill := filepath.Join(home, ".agents", "skills", "loom-communication")
+	if err := os.MkdirAll(userSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkill, "SKILL.md"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := missingUserSkills()
+	if len(missing) != 7 || missing[0] != "domain-agent-coaching" || missing[1] != "loom-integrations" || missing[2] != "loom-external-messaging" || missing[3] != "loom-parall" || missing[4] != "loom-feishu" || missing[5] != "loom-needs-you" || missing[6] != "loom-artifacts" {
+		t.Fatalf("missing user skills = %#v", missing)
+	}
+}
+
 func installFakeSharedCodexHost(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -260,8 +396,12 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
       printf '{"id":%s,"result":{"userAgent":"fake-shared"}}\n' "$id" ;;
-    *'"method":"remoteControl/status/read"'*)
-      printf '{"id":%s,"result":{"status":"disabled","serverName":"shared.local","installationId":"install-shared","environmentId":null}}\n' "$id" ;;
+	*'"method":"remoteControl/status/read"'*)
+	  printf '{"id":%s,"result":{"status":"disabled","serverName":"shared.local","installationId":"install-shared","environmentId":null}}\n' "$id" ;;
+	*'"method":"skills/list"'*'/tmp/stale'*)
+	  printf '{"id":%s,"result":{"data":[{"cwd":"/tmp/stale","skills":[{"name":"loom-needs-you","description":"Human requests","path":"/tmp/needs/SKILL.md","scope":"user","enabled":true}],"errors":[]}]}}\n' "$id" ;;
+	*'"method":"skills/list"'*)
+	  printf '{"id":%s,"result":{"data":[{"cwd":"/tmp/one","skills":[{"name":"loom-needs-you","description":"Human requests","path":"/tmp/needs/SKILL.md","scope":"user","enabled":true},{"name":"loom-external-messaging","description":"External messaging","path":"/tmp/skill/SKILL.md","scope":"user","enabled":true}],"errors":[]}]}}\n' "$id" ;;
 	*'"method":"thread/start"'*'"cwd":"/tmp/one"'*)
 	  printf '{"method":"thread/started","params":{"thread":{"id":"thr-one","name":null,"cwd":"/tmp/one"}}}\n'
 	  printf '{"id":%s,"result":{"thread":{"id":"thr-one"}}}\n' "$id" ;;

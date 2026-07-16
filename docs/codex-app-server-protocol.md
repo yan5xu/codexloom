@@ -57,12 +57,15 @@ CodexLoom 用到的核心子集：
 | `thread/start` | 新建线程 | `{cwd, sandbox}` → `{thread:{id}}` |
 | `thread/resume` | 恢复线程(跨进程续上下文) | `{threadId, sandbox, cwd}`;线程 rollout 不存在时报错含 `no rollout` / `not found` → 回退 `thread/start` |
 | `thread/read` | 读元数据或历史(**运行中也安全**) | `{threadId, includeTurns:false}` 回填 adoption 元数据；`true` 返回 turns/items |
+| `thread/goal/get` | 读取 Thread 当前原生 Goal | `{threadId}` → `{goal: ThreadGoal|null}` |
+| `thread/goal/set` | 创建或更新 Goal | `{threadId, objective?, status?, tokenBudget?}` → `{goal}`；省略字段表示保持，`tokenBudget:null` 表示清除预算 |
+| `thread/goal/clear` | 清除 Goal | `{threadId}` → `{cleared}` |
 | `thread/inject_items` | 不启动 turn，向模型可见历史追加原始 Responses API item | `{threadId, items:[...]}`；需要 `experimentalApi:true` |
 | `thread/archive` | 归档 Agent 时归档其线程 | `{threadId}` |
 | `thread/unarchive` | 恢复误归档线程 | `{threadId}` → `{thread}`；0.144.1 实测 |
-| `turn/start` | 派任务(异步,响应先回,事件走通知) | `{threadId, input:[{type:"text",text}], approvalPolicy, model?}` → `{turn:{id}}` |
+| `turn/start` | 派任务(异步,响应先回,事件走通知) | `{threadId, input:[{type:"text",text},{type:"localImage",path}], approvalPolicy, model?}` → `{turn:{id}}` |
 | `turn/interrupt` | 中断当前 turn | `{threadId, turnId?}`(实测缺 `threadId` 报 `missing field \`threadId\``,即方法存在) |
-| `turn/steer` | 运行中追加引导(未用,留作扩展) | — |
+| `turn/steer` | 将因果关联的 Agent reply 追加到仍在运行的原 Turn | `{threadId, input:[{type:"text",text}], expectedTurnId}` → `{turnId}`；只接受精确 active Turn，失败时回退 message queue |
 | `thread/list` | 列全部线程 | `{}` → `{data:[{id,sessionId,preview,...}]}` |
 
 其余可用方法(未用,备查):`thread/fork`、`thread/delete`、`thread/rollback`、
@@ -71,6 +74,44 @@ CodexLoom 用到的核心子集：
 `command/exec*`、`review/start`、`skills/list`、`mcpServer/*`、`config/*` 等。
 
 错误形状:`{"code":-32600,"message":"Invalid request: missing field `threadId`"}`。
+
+## 原生 Thread Goal
+
+Goal 是 Codex 拥有的 Thread 级持久状态，不是 Loom Message，也不是一个超长 Turn。一个 Thread
+同时只有一个当前 Goal；Codex 负责状态持久化、Token/时间统计、上下文压缩后的延续，以及 active
+Goal 在 Turn 结束后的自动 continuation。Loom 不把 Goal 写进自己的 store，只维护来自原生 API
+和通知的内存投影。
+
+`ThreadGoal` 的稳定字段为：
+
+```json
+{
+  "threadId": "019f...",
+  "objective": "完成 Connector 回执审计并交付修复",
+  "status": "active",
+  "tokenBudget": 120000,
+  "tokensUsed": 4300,
+  "timeUsedSeconds": 92,
+  "createdAt": 1784080000,
+  "updatedAt": 1784080092
+}
+```
+
+状态为 `active`、`paused`、`blocked`、`usageLimited`、`budgetLimited`、`complete`。通知为：
+
+- `thread/goal/updated {threadId, turnId?, goal}`
+- `thread/goal/cleared {threadId}`
+
+关键运行语义：
+
+1. `thread/goal/set` 创建 active Goal 后，已加载的 Thread 会由 Codex 自动开始或继续工作。
+2. 共享 Host 启动时，Loom 对已登记 Thread 调 `thread/goal/get`；只对 active Goal执行
+   `thread/resume`，把自动 continuation 交还 Codex。
+3. active Goal 可能正处于两个 Turn 之间。Loom 的 `Agent.status=idle` 只表示当前没有 active Turn，
+   不能据此把普通队列工作插进未结束 Goal。
+4. Loom 的 UI、HTTP 与 CLI 直接映射 `thread/goal/*`。发送字符串 `/goal ...` 不是 Goal API。
+5. Agent 可通过 Codex Goal tools 将 Goal 标记为 complete 或 blocked；用户控制创建、编辑、暂停、
+   恢复、预算和清除。
 
 ## `thread/inject_items`
 
@@ -133,13 +174,15 @@ turn/start 之后事件全部以通知到达:
 - 方法名包含 `approval`(如 `item/commandExecution/requestApproval`),
   带 `id`,**必须应答**:`{"id":<同 id>,"result":{"decision":"accept"}}`；当前实现将拒绝映射为
   `cancel`，并以 app-server 返回的 `availableDecisions` 为准。
-- `turn/start` 传 `approvalPolicy:"never"` + `sandbox:"danger-full-access"`
+- `turn/start` 传 `approvalPolicy:"never"` + `sandboxPolicy:{"type":"dangerFullAccess"}`
   可全程免审批(无人值守模式);`on-request` 则会收到审批请求。
 - 不认识的 server→client 请求要回 error(`-32601`),不要挂着不答。
 
 ## 经验值(来自参考实现,生产验证过)
 
-- sandbox 用 `danger-full-access`,approvalPolicy 默认 `never`。
+- 当前随 Loom 部署的 Codex `0.144.1` 在 `thread/start` / `thread/resume` 的 sandbox
+  仍使用 `danger-full-access`；`turn/start` 使用
+  `sandboxPolicy:{"type":"dangerFullAccess"}`，approvalPolicy 默认 `never`。
 - 请求超时:普通请求 10~30s;turn 完成不靠请求返回,靠 `turn/completed` 通知。
 - turn 看门狗:无活动 30min 或绝对 4h 上限 → interrupt。
 - 命令输出截断 4000 字符;diff 截断展示。

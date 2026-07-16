@@ -1,6 +1,19 @@
-import { MessageSquare, Reply, Send, SkipForward, XCircle } from "lucide-react";
+import { CheckCircle2, Clock3, MessageSquare, Reply, RotateCcw, Send, SkipForward, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { api, type AgentMessage, type Agent } from "./types";
+
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+function isStale(message: AgentMessage) {
+  if (message.status !== "open" || message.deliveryStatus !== "delivered") return false;
+  const createdAt = new Date(message.createdAt).getTime();
+  return Number.isFinite(createdAt) && Date.now() - createdAt >= STALE_AFTER_MS;
+}
+
+function isWaiting(message: AgentMessage) {
+  return message.status === "open" && message.deliveryStatus === "delivered" && !["interrupted", "failed"].includes(message.handlingStatus || "") && !isStale(message);
+}
 
 interface Props {
   agents: Agent[];
@@ -10,7 +23,7 @@ interface Props {
 
 export function MessagesPane({ agents, onError, initialTo }: Props) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [filter, setFilter] = useState<"all" | "open" | "queued" | "failed">("all");
+  const [filter, setFilter] = useState<"all" | "waiting" | "queued" | "held" | "stale" | "failed">("all");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [subject, setSubject] = useState("");
@@ -18,6 +31,10 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
   const [response, setResponse] = useState<"required" | "none">("required");
   const [replyTo, setReplyTo] = useState<AgentMessage | null>(null);
   const [sending, setSending] = useState(false);
+  const [resolveTarget, setResolveTarget] = useState<string | null>(null);
+  const [resolveKind, setResolveKind] = useState<"completed_elsewhere" | "superseded">("completed_elsewhere");
+  const [resolveReason, setResolveReason] = useState("");
+  const [resolving, setResolving] = useState(false);
 
   const refresh = async () => {
     const data = await api("GET", "/api/comms");
@@ -30,7 +47,7 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
     es.onmessage = (e) => {
       try {
         const evt = JSON.parse(e.data);
-        if (evt.type === "loom/comms-message") refresh().catch(() => {});
+        if (evt.type === "loom/reconcile" || evt.type === "loom/comms-message") refresh().catch(() => {});
       } catch {
         /* ignore */
       }
@@ -63,14 +80,18 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
 
   const visible = useMemo(() => {
     const roots = messages.filter((m) => !m.replyTo);
-    if (filter === "open") return roots.filter((m) => m.status === "open");
+    if (filter === "waiting") return roots.filter((m) => isWaiting(m));
     if (filter === "queued") return roots.filter((m) => m.deliveryStatus === "queued" || m.deliveryStatus === "delivering");
+    if (filter === "held") return roots.filter((m) => m.handlingStatus === "interrupted" || m.handlingStatus === "failed");
+    if (filter === "stale") return roots.filter((m) => isStale(m));
     if (filter === "failed") return roots.filter((m) => m.deliveryStatus === "failed");
     return roots;
   }, [messages, filter]);
   const rootMessages = useMemo(() => messages.filter((m) => !m.replyTo), [messages]);
-  const openCount = rootMessages.filter((m) => m.status === "open").length;
+  const waitingCount = rootMessages.filter(isWaiting).length;
   const queuedCount = rootMessages.filter((m) => m.deliveryStatus === "queued" || m.deliveryStatus === "delivering").length;
+  const heldCount = rootMessages.filter((m) => m.handlingStatus === "interrupted" || m.handlingStatus === "failed").length;
+  const staleCount = rootMessages.filter(isStale).length;
   const failedCount = rootMessages.filter((m) => m.deliveryStatus === "failed").length;
 
   const beginReply = (msg: AgentMessage) => {
@@ -137,6 +158,35 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
     }
   };
 
+  const continueMessage = async (msg: AgentMessage) => {
+    try {
+      await api("POST", `/api/comms/messages/${encodeURIComponent(msg.id)}/retry`, {});
+      await refresh();
+    } catch (err: any) {
+      onError(err.message);
+    }
+  };
+
+  const resolveMessage = async (msg: AgentMessage) => {
+    if (!resolveReason.trim() || resolving) return;
+    setResolving(true);
+    try {
+      await api("POST", `/api/comms/messages/${encodeURIComponent(msg.id)}/resolve`, {
+        from: msg.fromAgentId || msg.from,
+        resolution: resolveKind,
+        reason: resolveReason.trim(),
+      });
+      setResolveTarget(null);
+      setResolveReason("");
+      setResolveKind("completed_elsewhere");
+      await refresh();
+    } catch (err: any) {
+      onError(err.message);
+    } finally {
+      setResolving(false);
+    }
+  };
+
   const statusClass = (status: AgentMessage["status"]) => {
     if (status === "open") return "bg-warning/10 text-warning";
     if (status === "answered") return "bg-success/10 text-success";
@@ -150,9 +200,17 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
     return "bg-muted text-muted-foreground";
   };
 
+  const deliveryModeLabel = (msg: AgentMessage) => {
+    if (msg.deliveryMode === "turn_steer") return "active turn";
+    if (msg.deliveryMode === "turn_start") return "new turn";
+    return "";
+  };
+
   const filterCount = (f: typeof filter) => {
-    if (f === "open") return openCount;
+    if (f === "waiting") return waitingCount;
     if (f === "queued") return queuedCount;
+    if (f === "held") return heldCount;
+    if (f === "stale") return staleCount;
     if (f === "failed") return failedCount;
     return rootMessages.length;
   };
@@ -175,8 +233,8 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
             agent communication history
           </div>
         </div>
-        <div className="flex rounded-lg border border-border bg-background p-0.5">
-          {(["all", "open", "queued", "failed"] as const).map((f) => (
+        <div className="flex max-w-[70vw] overflow-x-auto rounded-lg border border-border bg-background p-0.5">
+          {(["all", "waiting", "queued", "held", "stale", "failed"] as const).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -286,12 +344,18 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {isStale(msg) && (
+                      <span className="flex items-center gap-1 rounded-md bg-warning/10 px-2 py-1 text-[11px] font-medium text-warning">
+                        <Clock3 className="size-3" /> stale
+                      </span>
+                    )}
                     <span className={`rounded-md px-2 py-1 text-[11px] font-medium ${statusClass(msg.status)}`}>
-                      {msg.status}
+                      {msg.resolution || msg.status}
                     </span>
                     <span className={`rounded-md px-2 py-1 text-[11px] font-medium ${deliveryClass(msg.deliveryStatus)}`}>
                       {msg.deliveryStatus}
                     </span>
+                    {msg.handlingStatus && msg.deliveryStatus === "delivered" ? <span className={`rounded-md px-2 py-1 text-[11px] font-medium ${msg.handlingStatus === "interrupted" ? "bg-warning/10 text-warning" : msg.handlingStatus === "failed" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"}`}>{msg.handlingStatus === "interrupted" ? "held" : msg.handlingStatus}</span> : null}
                     <span className="font-mono text-[10.5px] text-muted-foreground">{fmt(msg.createdAt)}</span>
                   </div>
                 </div>
@@ -301,8 +365,11 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
                 <div className="mt-3 flex items-center justify-between">
                   <div className="font-mono text-[10.5px] text-muted-foreground">
                     response {msg.response}
-                    {msg.deliveredTurnId ? ` · turn ${msg.deliveredTurnId}` : ""}
+                    {msg.sourceTurnId ? ` · source turn ${msg.sourceTurnId}` : ""}
+                    {deliveryModeLabel(msg) ? ` · ${deliveryModeLabel(msg)}` : ""}
+                    {msg.deliveredTurnId ? ` ${msg.deliveredTurnId}` : ""}
                     {msg.lastDeliveryError ? ` · ${msg.lastDeliveryError}` : ""}
+                    {msg.lastHandlingError ? ` · ${msg.lastHandlingError}` : ""}
                   </div>
                   <div className="flex items-center gap-2">
                   {msg.deliveryStatus === "queued" && (
@@ -316,6 +383,7 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
                   )}
                   {msg.status === "open" && msg.deliveryStatus === "delivered" && (
                     <>
+                      {(msg.handlingStatus === "interrupted" || msg.handlingStatus === "failed") && <button onClick={() => continueMessage(msg)} className="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-[12px] font-medium text-primary-foreground"><RotateCcw className="size-3.5" />Continue</button>}
                       <button
                         onClick={() => closeWithoutReply(msg)}
                         className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-[12px] font-medium text-muted-foreground hover:text-foreground"
@@ -332,8 +400,64 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
                       </button>
                     </>
                   )}
+                  {msg.status === "open" && msg.response === "required" && msg.deliveryStatus !== "queued" && msg.deliveryStatus !== "delivering" && (
+                    <Popover open={resolveTarget === msg.id} onOpenChange={(open) => {
+                      setResolveTarget(open ? msg.id : null);
+                      if (!open) {
+                        setResolveReason("");
+                        setResolveKind("completed_elsewhere");
+                      }
+                    }}>
+                      <PopoverTrigger className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-[12px] font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30">
+                        <CheckCircle2 className="size-3.5" />
+                        Resolve
+                      </PopoverTrigger>
+                      <PopoverContent side="bottom" align="end" className="w-[min(22rem,calc(100vw-1rem))] space-y-3" aria-label={`Resolve ${msg.subject}`}>
+                        <div>
+                          <div className="text-[12px] font-semibold">Resolve request</div>
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">Close this request without inventing a reply link.</div>
+                        </div>
+                        <label className="block space-y-1">
+                          <span className="text-[10.5px] font-medium text-muted-foreground">Outcome</span>
+                          <select value={resolveKind} onChange={(event) => setResolveKind(event.target.value as typeof resolveKind)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-[12px] outline-none focus:ring-2 focus:ring-ring/25">
+                            <option value="completed_elsewhere">Completed elsewhere</option>
+                            <option value="superseded">Superseded</option>
+                          </select>
+                        </label>
+                        <label className="block space-y-1">
+                          <span className="text-[10.5px] font-medium text-muted-foreground">Reason</span>
+                          <textarea value={resolveReason} onChange={(event) => setResolveReason(event.target.value)} placeholder="Where it completed, or what replaced it" className="min-h-20 w-full resize-none rounded-md border border-border bg-background px-2.5 py-2 text-[12px] outline-none focus:ring-2 focus:ring-ring/25" />
+                        </label>
+                        <button type="button" onClick={() => resolveMessage(msg)} disabled={resolving || !resolveReason.trim()} className="flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">
+                          <CheckCircle2 className="size-3.5" /> {resolving ? "Resolving" : "Resolve request"}
+                        </button>
+                      </PopoverContent>
+                    </Popover>
+                  )}
                   </div>
                 </div>
+                {msg.resolutionReason && (
+                  <div className="mt-2 border-t border-border/70 pt-2 text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground/80">Resolution:</span> {msg.resolutionReason}
+                    {msg.resolvedBy ? ` · ${msg.resolvedBy}` : ""}
+                    {msg.resolvedAt ? ` · ${fmt(msg.resolvedAt)}` : ""}
+                  </div>
+                )}
+                {(msg.handlingAttempts || []).length > 0 && (
+                  <details className="mt-3 border-t border-border pt-3">
+                    <summary className="cursor-pointer font-mono text-[10px] uppercase text-muted-foreground">Handling attempts · {msg.handlingAttempts!.length}</summary>
+                    <div className="mt-2 divide-y divide-border/70">
+                      {msg.handlingAttempts!.map((attempt) => (
+                        <div key={attempt.id} className="grid gap-1 py-2 text-[10.5px] sm:grid-cols-[88px_1fr_auto]">
+                          <span className="font-mono uppercase text-muted-foreground">{attempt.status}</span>
+                          <span className="truncate font-mono" title={attempt.turnId}>{attempt.turnId || attempt.id}</span>
+                          <span className="text-muted-foreground">{fmt(attempt.completedAt || attempt.startedAt)}</span>
+                          {attempt.error ? <span className="text-destructive sm:col-span-3">{attempt.error}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 {(repliesByParent.get(msg.id) || []).length > 0 && (
                   <div className="mt-3 space-y-2 border-t border-border pt-3">
                     {(repliesByParent.get(msg.id) || []).map((reply) => (
@@ -353,7 +477,10 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
                           {reply.body}
                         </pre>
                         <div className="mt-1 font-mono text-[10.5px] text-muted-foreground">
-                          {reply.deliveredTurnId ? `turn ${reply.deliveredTurnId}` : ""}
+                          {reply.sourceTurnId ? `source turn ${reply.sourceTurnId}` : ""}
+                          {reply.sourceTurnId && deliveryModeLabel(reply) ? " · " : ""}
+                          {deliveryModeLabel(reply)}
+                          {reply.deliveredTurnId ? ` ${reply.deliveredTurnId}` : ""}
                           {reply.lastDeliveryError ? ` · ${reply.lastDeliveryError}` : ""}
                         </div>
                       </div>
@@ -364,7 +491,7 @@ export function MessagesPane({ agents, onError, initialTo }: Props) {
             ))}
             {visible.length === 0 && (
               <div className="rounded-lg border border-dashed border-border bg-card/50 px-4 py-10 text-center text-sm text-muted-foreground">
-                {filter === "open" ? "No open messages." : "No messages."}
+                {filter === "waiting" ? "No messages waiting for a reply." : filter === "stale" ? "No stale requests." : "No messages."}
               </div>
             )}
           </div>

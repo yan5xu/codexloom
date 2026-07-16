@@ -15,7 +15,7 @@
  * - Iteration-based rendering: completed iterations collapse, intermediate text sunken,
  *   final text prominent with primary border, reasoning collapsible as "Reasoning"
  */
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { Check, ChevronRight, Copy, Loader2, Wrench } from "lucide-react";
@@ -156,7 +156,7 @@ export function groupMessages(msgs: ChatMessage[]): MessageGroup[] {
     for (const m of turnMsgs) {
       if (m.role === "assistant") {
         // Start a new iteration
-        const reasoning = m.reasoning || extractThinking(m.content).thinking;
+        const reasoning = (m.reasoning || extractThinking(m.content).thinking).trim();
         const cleanContent = m.reasoning ? m.content : extractThinking(m.content).content;
 
         currentIter = {
@@ -614,7 +614,7 @@ export function AssistantBubble({ group, streaming = false }: { group: Assistant
    UserBubble — renders user message
    ================================================================ */
 
-export function UserBubble({ message }: { message: ChatMessage }) {
+export function UserBubble({ message, children }: { message: ChatMessage; children?: ReactNode }) {
   const { t } = useTranslation();
   return (
     <div className="flex flex-col items-end py-3">
@@ -623,7 +623,8 @@ export function UserBubble({ message }: { message: ChatMessage }) {
         <span className="text-[10px] font-mono text-muted-foreground/40">{shortTime(message.created_at)}</span>
       </div>
       <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-md border border-border bg-secondary px-3 py-2 text-sm leading-6 sm:max-w-[78%]">
-        {message.content}
+        {message.content ? <div>{message.content}</div> : null}
+        {children}
       </div>
     </div>
   );

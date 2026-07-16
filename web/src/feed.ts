@@ -3,8 +3,33 @@
 // item/completed all land on the same block.
 import type { LoomEvent } from "./types";
 
+export interface ExternalAttachment {
+  id?: string;
+  name?: string;
+  mimeType?: string;
+  size?: string | number;
+  url?: string;
+  path?: string;
+}
+
+export interface ExternalThreadContext {
+  rootMessageId: string;
+  truncated: boolean;
+  unavailableReason?: string;
+  messages: Array<{
+    id: string;
+    role: "root" | "reply";
+    senderId?: string;
+    sender: string;
+    occurredAt?: string;
+    body: string;
+    textTruncated: boolean;
+    attachments: ExternalAttachment[];
+  }>;
+}
+
 export type Block =
-  | { kind: "user"; ts: string; text: string }
+  | { kind: "user"; ts: string; text: string; attachments: ExternalAttachment[] }
   | {
       kind: "agentMessage";
       id: string;
@@ -41,14 +66,8 @@ export type Block =
       noReplyCommand?: string;
       body: string;
       raw: string;
-      attachments: Array<{
-        id?: string;
-        name?: string;
-        mimeType?: string;
-        size?: string;
-        url?: string;
-        path?: string;
-      }>;
+      attachments: ExternalAttachment[];
+      threadContext?: ExternalThreadContext;
     }
   | { kind: "agent"; id: string; text: string; streaming: boolean }
   | { kind: "think"; id: string; text: string; done: boolean }
@@ -69,6 +88,18 @@ export type Block =
     }
   | { kind: "sys"; ts: string; cls: "ok" | "warn" | "err" | "dim"; text: string }
   | { kind: "image"; id: string; data: string; path?: string }
+  | { kind: "artifact"; id: string; ts: string; artifact: ExternalAttachment }
+  | {
+      kind: "usage";
+      id: string;
+      model?: string;
+      inputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+      reasoningOutputTokens: number;
+      totalTokens: number;
+      calls: number;
+    }
   | { kind: "raw"; id: string; type: string; json: string };
 
 export interface FeedState {
@@ -104,10 +135,28 @@ function finishStreaming(state: FeedState): FeedState {
   return { ...state, blocks };
 }
 
-function deltaText(delta: any): string {
-  if (typeof delta === "string") return delta;
-  if (delta && typeof delta.text === "string") return delta.text;
+function eventMessage(data: any) {
+  const value = data?.error?.message ?? data?.message ?? data?.error ?? "";
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function structuredText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map(structuredText).filter(Boolean).join("\n\n");
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["text", "content", "summary"]) {
+      const text = structuredText(record[key]);
+      if (text) return text;
+    }
+  }
   return "";
+}
+
+function deltaText(delta: unknown): string {
+  return structuredText(delta);
 }
 
 function kindString(k: any): string {
@@ -146,6 +195,55 @@ function childText(root: Element, name: string): string {
 
 function childElement(root: Element, name: string): Element | null {
   return root.getElementsByTagName(name)[0] || null;
+}
+
+function directChildElement(root: Element, name: string): Element | null {
+  return Array.from(root.children).find((child) => child.nodeName === name) || null;
+}
+
+function directChildText(root: Element, name: string): string {
+  return directChildElement(root, name)?.textContent?.trim() || "";
+}
+
+function externalAttachments(root: Element | null): ExternalAttachment[] {
+  if (!root) return [];
+  return Array.from(root.children)
+    .filter((child) => child.nodeName === "attachment")
+    .map((attachment) => ({
+      id: attachment.getAttribute("id") || undefined,
+      name: attachment.getAttribute("name") || undefined,
+      mimeType: attachment.getAttribute("mime_type") || undefined,
+      size: attachment.getAttribute("size") || undefined,
+      url: attachment.getAttribute("url") || undefined,
+      path: attachment.getAttribute("path") || undefined,
+    }));
+}
+
+function externalThreadContext(root: Element): ExternalThreadContext | undefined {
+  const context = directChildElement(root, "thread_context");
+  if (!context) return undefined;
+  const messages = Array.from(context.children)
+    .filter((child) => child.nodeName === "message")
+    .map((message) => {
+      const sender = directChildElement(message, "sender");
+      const role: "root" | "reply" = message.getAttribute("role") === "root" ? "root" : "reply";
+      return {
+        id: message.getAttribute("id") || "",
+        role,
+        senderId: sender?.getAttribute("id") || undefined,
+        sender: sender?.textContent?.trim() || sender?.getAttribute("id") || "Unknown sender",
+        occurredAt: message.getAttribute("occurred_at") || undefined,
+        body: directChildText(message, "body"),
+        textTruncated: message.getAttribute("text_truncated") === "true",
+        attachments: externalAttachments(directChildElement(message, "attachments")),
+      };
+    });
+  return {
+    rootMessageId: context.getAttribute("root_message_id") || "",
+    truncated: context.getAttribute("truncated") === "true",
+    unavailableReason: directChildText(context, "unavailable_reason") || undefined,
+    messages,
+  };
 }
 
 function agentMessageBody(root: Element): string {
@@ -196,20 +294,13 @@ function externalMessageBlock(text: string, ts: string): Block | null {
     if (!root || root.nodeName !== "inbox_message" || doc.getElementsByTagName("parsererror").length > 0) {
       return null;
     }
-    const origin = childElement(root, "origin");
-    const sender = childElement(root, "sender");
-    const conversation = childElement(root, "conversation");
-    const membership = childElement(root, "membership");
+    const origin = directChildElement(root, "origin");
+    const sender = directChildElement(root, "sender");
+    const conversation = directChildElement(root, "conversation");
+    const membership = directChildElement(root, "membership");
     const rawVersion = membership?.getAttribute("version") || "";
     const membershipVersion = Number.parseInt(rawVersion, 10);
-    const attachments = Array.from(root.getElementsByTagName("attachment")).map((attachment) => ({
-      id: attachment.getAttribute("id") || undefined,
-      name: attachment.getAttribute("name") || undefined,
-      mimeType: attachment.getAttribute("mime_type") || undefined,
-      size: attachment.getAttribute("size") || undefined,
-      url: attachment.getAttribute("url") || undefined,
-      path: attachment.getAttribute("path") || undefined,
-    }));
+    const attachments = externalAttachments(directChildElement(root, "attachments"));
     return {
       kind: "externalMessage",
       id: root.getAttribute("id") || `imsg-${Math.random().toString(16).slice(2)}`,
@@ -226,24 +317,77 @@ function externalMessageBlock(text: string, ts: string): Block | null {
       membershipName: membership?.getAttribute("name") || undefined,
       membershipVersion: Number.isFinite(membershipVersion) ? membershipVersion : undefined,
       expectation: root.getAttribute("expectation") || "optional",
-      replyPolicy: childText(root, "reply_policy"),
-      replyInstruction: childText(root, "reply_instruction") || undefined,
-      replyCommand: childText(root, "reply_command") || undefined,
-      noReplyCommand: childText(root, "no_reply_command") || undefined,
-      body: childText(root, "body"),
+      replyPolicy: directChildText(root, "reply_policy"),
+      replyInstruction: directChildText(root, "reply_instruction") || undefined,
+      replyCommand: directChildText(root, "reply_command") || undefined,
+      noReplyCommand: directChildText(root, "no_reply_command") || undefined,
+      body: directChildText(root, "body"),
       raw,
       attachments,
+      threadContext: externalThreadContext(root),
     };
   } catch {
     return null;
   }
 }
 
-function userBlock(ts: string, text: string): Block {
-  return agentMessageBlock(text, ts) || externalMessageBlock(text, ts) || { kind: "user", ts, text };
+function normalizeAttachment(value: any): ExternalAttachment {
+  return {
+    id: typeof value?.id === "string" ? value.id : undefined,
+    name: typeof value?.name === "string" ? value.name : undefined,
+    mimeType: typeof value?.mimeType === "string" ? value.mimeType : undefined,
+    size: typeof value?.size === "string" || typeof value?.size === "number" ? value.size : undefined,
+    url: typeof value?.url === "string" ? value.url : undefined,
+    path: typeof value?.path === "string" ? value.path : undefined,
+  };
+}
+
+function mergeAttachments(...groups: ExternalAttachment[][]): ExternalAttachment[] {
+  const seen = new Set<string>();
+  const merged: ExternalAttachment[] = [];
+  for (const group of groups) {
+    for (const attachment of group) {
+      const keys = [attachment.id, attachment.path, attachment.url, attachment.name ? `${attachment.name}:${attachment.size}` : undefined].filter(Boolean) as string[];
+      if (keys.length === 0 || keys.some((key) => seen.has(key))) continue;
+      for (const key of keys) seen.add(key);
+      merged.push(attachment);
+    }
+  }
+  return merged;
+}
+
+function extractLoomAttachments(text: string): { text: string; attachments: ExternalAttachment[] } {
+  const match = text.match(/(?:\n\n)?<loom_attachments\b[\s\S]*?<\/loom_attachments>\s*$/i);
+  if (!match) return { text, attachments: [] };
+  const attachments: ExternalAttachment[] = [];
+  try {
+    const root = new DOMParser().parseFromString(match[0].trim(), "application/xml").documentElement;
+    for (const node of Array.from(root.getElementsByTagName("attachment"))) {
+      attachments.push({
+        id: node.getAttribute("id") || undefined,
+        name: node.getAttribute("name") || undefined,
+        mimeType: node.getAttribute("mime_type") || undefined,
+        size: node.getAttribute("size") || undefined,
+        path: node.getAttribute("path") || undefined,
+        url: node.getAttribute("url") || undefined,
+      });
+    }
+  } catch {
+    return { text, attachments: [] };
+  }
+  return { text: text.slice(0, match.index).trimEnd(), attachments };
+}
+
+function userBlock(ts: string, rawText: string, rawAttachments: any[] = []): Block {
+  const extracted = extractLoomAttachments(rawText);
+  const special = agentMessageBlock(extracted.text, ts) || externalMessageBlock(extracted.text, ts);
+  if (special) return special;
+  const attachments = mergeAttachments(extracted.attachments, rawAttachments.map(normalizeAttachment));
+  return { kind: "user", ts, text: extracted.text, attachments };
 }
 
 export function summarizeTask(text: string): string {
+  text = extractLoomAttachments(text).text;
   const external = externalMessageBlock(text, "");
   if (external?.kind === "externalMessage") {
     const destination = external.membershipName || external.conversationId;
@@ -263,20 +407,26 @@ export function summarizeTask(text: string): string {
 function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
   const blocks: Block[] = [];
   for (let i = 0; i < turns.length; i++) {
-    const items = turns[i].items || [];
+    const turn = turns[i];
+    const items = turn.items || [];
     for (let j = 0; j < items.length; j++) {
       const it = items[j];
       const id = `${keyPrefix}-${i}-${j}`;
+      const timestamp = typeof it.timestamp === "string" ? it.timestamp : "";
       switch (it.type) {
         case "user":
-          blocks.push(userBlock("", it.text || ""));
+          blocks.push(userBlock(timestamp, structuredText(it.text), Array.isArray(it.attachments) ? it.attachments : []));
           break;
         case "answer":
-          blocks.push({ kind: "agent", id, text: it.text || "", streaming: false });
+          blocks.push({ kind: "agent", id, text: structuredText(it.text), streaming: false });
           break;
-        case "thinking":
-          blocks.push({ kind: "think", id, text: it.text || "", done: true });
+        case "thinking": {
+          const text = structuredText(it.text) || structuredText(it.summary) || structuredText(it.content);
+          if (text.trim()) {
+            blocks.push({ kind: "think", id, text, done: true });
+          }
           break;
+        }
         case "command":
           blocks.push({
             kind: "command", id,
@@ -297,6 +447,19 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
           }
           break;
       }
+    }
+    if (turn.usage?.totalTokens) {
+      blocks.push({
+        kind: "usage",
+        id: turn.id || `${keyPrefix}-turn-${i}`,
+        model: turn.model,
+        inputTokens: turn.usage.inputTokens || 0,
+        cachedInputTokens: turn.usage.cachedInputTokens || 0,
+        outputTokens: turn.usage.outputTokens || 0,
+        reasoningOutputTokens: turn.usage.reasoningOutputTokens || 0,
+        totalTokens: turn.usage.totalTokens || 0,
+        calls: turn.usage.calls || 0,
+      });
     }
   }
   return blocks;
@@ -322,17 +485,54 @@ export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
       const blocks = buildHistoryBlocks((d as any).turns || [], "h");
       return { blocks, index: {}, approvals: {} };
     }
+    case "__history_reconcile__": {
+      const blocks = buildHistoryBlocks((d as any).turns || [], "r");
+	  const artifacts = state.blocks.filter((block) => block.kind === "artifact");
+	  return { blocks: [...blocks, ...artifacts], index: {}, approvals: {} };
+    }
+	case "__published_artifacts__": {
+	  let next = state;
+	  for (const raw of Array.isArray((d as any).artifacts) ? (d as any).artifacts : []) {
+		const artifact = normalizeAttachment(raw);
+		const id = artifact.id || artifact.path || artifact.url;
+		if (!id || next.blocks.some((block) => block.kind === "artifact" && block.id === id)) continue;
+		next = push(next, { kind: "artifact", id, ts: raw.publishedAt || raw.createdAt || ev.ts, artifact });
+	  }
+	  return next;
+	}
     case "__history_prepend__": {
       // Scroll-up lazy load: older turns prepended before the current feed.
       const older = buildHistoryBlocks((d as any).turns || [], `p${(d as any).offset || 0}`);
       return { ...state, blocks: [...older, ...state.blocks] };
+    }
+    case "__turn_usage__": {
+      const turn = (d as any).turn;
+      if (!turn?.usage?.totalTokens || state.blocks.some((block) => block.kind === "usage" && block.id === turn.id)) return state;
+      return push(state, {
+        kind: "usage",
+        id: turn.id,
+        model: turn.model,
+        inputTokens: turn.usage.inputTokens || 0,
+        cachedInputTokens: turn.usage.cachedInputTokens || 0,
+        outputTokens: turn.usage.outputTokens || 0,
+        reasoningOutputTokens: turn.usage.reasoningOutputTokens || 0,
+        totalTokens: turn.usage.totalTokens || 0,
+        calls: turn.usage.calls || 0,
+      });
     }
     case "loom/live":
       return sys(state, ev.ts, "dim", "— live —");
     case "loom/agent-created":
       return sys(state, ev.ts, "dim", `agent created · ${d.cwd}`);
     case "loom/user-message":
-      return push(state, userBlock(ev.ts, d.text || ""));
+      return push(state, userBlock(ev.ts, d.text || "", Array.isArray(d.attachments) ? d.attachments : []));
+    case "loom/artifact-published": {
+      const artifact = normalizeAttachment(d.artifact);
+      if (!artifact.id && !artifact.path && !artifact.url) return state;
+	  const id = artifact.id || `${ev.seq}`;
+	  if (state.blocks.some((block) => block.kind === "artifact" && block.id === id)) return state;
+	  return push(state, { kind: "artifact", id, ts: ev.ts, artifact });
+    }
     case "loom/turn-started":
       return sys(state, ev.ts, "dim", `turn started ${d.turnId || ""}`);
     case "loom/turn-completed":
@@ -344,6 +544,10 @@ export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
     case "loom/error":
     case "loom/host-error":
       return sys(state, ev.ts, "err", `CodexLoom error: ${d.message || ""}`);
+    case "warning":
+      return sys(state, ev.ts, "warn", eventMessage(d) || "Codex warning");
+    case "error":
+      return sys(finishStreaming(state), ev.ts, "err", eventMessage(d) || "Codex turn failed");
     case "loom/agent-archived":
       return sys(state, ev.ts, "warn", "agent archived");
     case "loom/approval-requested": {
@@ -370,6 +574,7 @@ export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
     if (t.includes("reasoning")) {
       const key = `t:${itemId}`;
       if (state.index[key] === undefined) {
+        if (!text.trim()) return state;
         return push(state, { kind: "think", id: itemId, text, done: false }, key);
       }
       return update(state, key, (b) => (b.kind === "think" ? { ...b, text: b.text + text } : b));
@@ -392,22 +597,24 @@ export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
       case "agentMessage": {
         const key = `a:${itemId}`;
         const done = t === "item/completed";
+        const text = structuredText(item.text) || structuredText(item.content);
         if (state.index[key] === undefined) {
-          if (!done || !item.text) return state;
+          if (!done || !text) return state;
           const isFinal = item.phase === "final_answer" || !item.phase;
           return isFinal
-            ? push(state, { kind: "agent", id: itemId, text: item.text, streaming: false }, key)
-            : push(state, { kind: "think", id: itemId, text: item.text, done: true }, `t:${itemId}`);
+            ? push(state, { kind: "agent", id: itemId, text, streaming: false }, key)
+            : push(state, { kind: "think", id: itemId, text, done: true }, `t:${itemId}`);
         }
         return update(state, key, (b) =>
-          b.kind === "agent" ? { ...b, text: item.text || b.text, streaming: !done } : b,
+          b.kind === "agent" ? { ...b, text: text || b.text, streaming: !done } : b,
         );
       }
       case "reasoning": {
         const key = `t:${itemId}`;
-        const text = item.text || item.summary || "";
+        const text =
+          structuredText(item.text) || structuredText(item.summary) || structuredText(item.content);
         if (state.index[key] === undefined) {
-          if (!text) return state;
+          if (!text.trim()) return state;
           return push(state, { kind: "think", id: itemId, text, done: t === "item/completed" }, key);
         }
         return update(state, key, (b) =>

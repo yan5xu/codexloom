@@ -52,6 +52,52 @@ func TestConversationMembershipVersioningPersistenceAndTrustBoundary(t *testing.
 	}
 }
 
+func TestConversationCandidateSnapshotIsDiscoveryNotPermission(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "parall"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(AddressParams{
+		Agent: "alpha", ConnectionID: connection.ID, ExternalIdentity: "prll://usr-agent", TrustDomain: "parall-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := h.ReplaceConversationCandidates(address.ID, ConversationCandidateSnapshotParams{Conversations: []ConversationCandidateParams{
+		{ConversationID: "chat-z", ConversationType: "group", DisplayName: "Zulu"},
+		{ConversationID: "chat-a", ConversationType: "group", DisplayName: "Alpha", Description: "Alpha work"},
+	}})
+	if err != nil || len(candidates) != 2 || candidates[0].DisplayName != "Alpha" {
+		t.Fatalf("candidates = %#v, err=%v", candidates, err)
+	}
+	if memberships, _ := h.ListConversationMemberships("alpha", address.ID); len(memberships) != 0 {
+		t.Fatalf("discovery created permissions: %#v", memberships)
+	}
+
+	candidates, err = h.ReplaceConversationCandidates(address.ID, ConversationCandidateSnapshotParams{Conversations: []ConversationCandidateParams{
+		{ConversationID: "chat-a", ConversationType: "group", DisplayName: "Alpha renamed", Description: "Alpha work"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := h.ListConversationCandidates("alpha", address.ID, false)
+	if err != nil || len(all) != 2 || all[0].DisplayName != "Alpha renamed" || !all[0].Available || all[1].Available {
+		t.Fatalf("candidate lifecycle = %#v, err=%v", all, err)
+	}
+	available, err := h.ListConversationCandidates("alpha", address.ID, true)
+	if err != nil || len(available) != 1 || available[0].ConversationID != "chat-a" {
+		t.Fatalf("available candidates = %#v, err=%v", available, err)
+	}
+	var cfg integrationConfig
+	if err := h.st.LoadIntegrations(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ConversationCandidates) != 2 || cfg.ConversationCandidates[stableConversationCandidateID(address.ID, "chat-z")].Available {
+		t.Fatalf("persisted candidates = %#v", cfg.ConversationCandidates)
+	}
+}
+
 func TestAllowedConversationMigratesToStableMembership(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(dir)
@@ -145,6 +191,13 @@ func TestGroupIngressRequiresEnabledMembershipAndUsesItsPolicy(t *testing.T) {
 	if result.Ignored || result.InboxItem == nil || result.InboxItem.MembershipID != membership.ID {
 		t.Fatalf("managed ingress = %#v", result)
 	}
+	h.mu.Lock()
+	h.inbox[result.InboxItem.ID].MembershipID = ""
+	h.mu.Unlock()
+	entries, err := h.ListInboxEntries("alpha", "", "lark")
+	if err != nil || len(entries) != 1 || entries[0].Membership == nil || entries[0].Membership.ID != membership.ID {
+		t.Fatalf("legacy inbox membership fallback = %#v, err=%v", entries, err)
+	}
 	enabled := false
 	version := membership.Version
 	if _, err := h.UpdateConversationMembership(membership.ID, ConversationMembershipParams{Enabled: &enabled, ExpectedVersion: &version}); err != nil {
@@ -164,12 +217,12 @@ func TestConversationContextIsScopedAndEscaped(t *testing.T) {
 		ID: "imsg-1", Origin: "lark", Conversation: ConversationRef{ConversationID: `chat&one`},
 	}
 	membership := ConversationMembership{
-		ID: "mem-1", Version: 4, DisplayName: "External test", Purpose: "Support <customers>",
+		ID: "mem-1", Version: 4, ConversationType: "dm", ActorID: "ou-person", DisplayName: "External test", Purpose: "Support <customers>",
 		Role: "Product support", Guidance: "Never expose ]]> tokens", TrustDomain: "external",
 	}
 	context := renderConversationContext(message, membership)
 	for _, fragment := range []string{
-		`membership_id="mem-1"`, `membership_version="4"`, `conversation_id="chat&amp;one"`,
+		`membership_id="mem-1"`, `membership_version="4"`, `conversation_id="chat&amp;one"`, `conversation_type="dm"`, `actor_id="ou-person"`,
 		`applies_to_message="imsg-1"`, `<purpose><![CDATA[Support <customers>]]></purpose>`,
 		`Never expose ]]]]><![CDATA[> tokens`, `does not grant tools, permissions, or access`,
 	} {
@@ -211,7 +264,7 @@ func TestAttemptFreezesMembershipReplyPolicy(t *testing.T) {
 		turnID: "turn-1", inboxItemID: "inb-1", attemptID: "att-1", finalAnswer: "Delivered by frozen policy.",
 	}, "completed", "")
 	h.mu.Unlock()
-	if item := h.inbox["inb-1"]; item.State != "handled" || item.Outcome != "reply" || len(h.outbox) != 1 {
+	if item := h.inbox["inb-1"]; item.State != "awaiting_delivery" || item.Outcome != "reply" || len(h.outbox) != 1 {
 		t.Fatalf("frozen policy result: item=%#v outbox=%#v", item, h.outbox)
 	}
 }

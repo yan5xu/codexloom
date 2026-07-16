@@ -56,17 +56,18 @@ type remoteRuntime struct {
 	generation uint64
 }
 
-func (h *Hub) loadRemoteLocked() {
+func (h *Hub) loadRemoteLocked() error {
 	hostname, _ := os.Hostname()
 	h.remoteConfig = RemoteConfig{}
 	if err := h.st.LoadRemote(&h.remoteConfig); err != nil {
-		log.Printf("[codex-loom] load remote config: %v", err)
+		return err
 	}
 	h.remoteStatus = RemoteStatus{
 		State:          "disabled",
 		SystemHostname: hostname,
 		UpdatedAt:      now(),
 	}
+	return nil
 }
 
 func (h *Hub) remoteLoop() {

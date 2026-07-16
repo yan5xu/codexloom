@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Integrations"
+  short_description: "Configure external Agent identities and conversations"
+  default_prompt: "Use $loom-integrations to configure and verify an external platform integration with the Loom CLI."

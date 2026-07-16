@@ -47,6 +47,7 @@ type connectorCommand struct {
 	OutboxItem struct {
 		ID             string `json:"id"`
 		IdempotencyKey string `json:"idempotencyKey"`
+		AttemptToken   string `json:"attemptToken"`
 		Content        struct {
 			Text string `json:"text"`
 		} `json:"content"`
@@ -138,7 +139,7 @@ func consumeCommands(ctx context.Context, cfg config) error {
 			continue
 		}
 		if err := deliverFake(cfg.output, command); err != nil {
-			_ = reportResult(ctx, cfg, command.OutboxItem.ID, false, "", err.Error())
+			_ = reportResult(ctx, cfg, command.OutboxItem.ID, command.OutboxItem.AttemptToken, false, "", err.Error())
 			continue
 		}
 		if cfg.ackDelay > 0 {
@@ -149,7 +150,7 @@ func consumeCommands(ctx context.Context, cfg config) error {
 			}
 		}
 		externalID := "fake_" + strings.TrimPrefix(command.OutboxItem.ID, "out_")
-		if err := reportResult(ctx, cfg, command.OutboxItem.ID, true, externalID, ""); err != nil {
+		if err := reportResult(ctx, cfg, command.OutboxItem.ID, command.OutboxItem.AttemptToken, true, externalID, ""); err != nil {
 			return err
 		}
 		log.Printf("delivered %s as %s", command.OutboxItem.ID, externalID)
@@ -204,10 +205,10 @@ func fakeAlreadyDelivered(path, idempotencyKey string) bool {
 	return false
 }
 
-func reportResult(ctx context.Context, cfg config, outboxID string, success bool, externalID, message string) error {
+func reportResult(ctx context.Context, cfg config, outboxID, attemptToken string, success bool, externalID, message string) error {
 	return postJSON(ctx, cfg,
 		"/api/integrations/connections/"+cfg.connection+"/outbox/"+outboxID+"/result",
-		map[string]any{"success": success, "externalMessageId": externalID, "error": message}, nil)
+		map[string]any{"attemptToken": attemptToken, "success": success, "externalMessageId": externalID, "error": message}, nil)
 }
 
 func postJSON(ctx context.Context, cfg config, path string, body, result any) error {

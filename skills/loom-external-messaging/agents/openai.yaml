@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom External Messaging"
+  short_description: "Reply and publish through governed Loom connectors"
+  default_prompt: "Use $loom-external-messaging to reply or send an external message through CodexLoom."

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,6 +45,51 @@ func TestOpenMigratesLegacyCodexHubDirectory(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(st.Dir(), name)); err != nil {
 			t.Fatalf("%s missing: %v", name, err)
 		}
+	}
+}
+
+func TestReadNDJSONRejectsMalformedRecord(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(st.Dir(), "comms.ndjson")
+	if err := os.WriteFile(path, []byte("{\"message\":{\"id\":\"one\"}}\nnot-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var records []json.RawMessage
+	err = st.ReadComms(func(raw json.RawMessage) { records = append(records, raw) })
+	if err == nil {
+		t.Fatal("malformed NDJSON was accepted")
+	}
+	if len(records) != 1 {
+		t.Fatalf("records before corruption = %d, want 1", len(records))
+	}
+}
+
+func TestSaveAgentsUsesPrivateAtomicFiles(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveAgents(map[string]any{"agent": map[string]any{"id": "agent"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"agents.json", "sessions.json"} {
+		info, err := os.Stat(filepath.Join(st.Dir(), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
+	}
+	matches, err := filepath.Glob(filepath.Join(st.Dir(), ".*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("atomic save left temporary files: %v", matches)
 	}
 }
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Domain Agent Coaching"
+  short_description: "Coach durable Agent scopes and organization design"
+  default_prompt: "Use $domain-agent-coaching to examine this Agent scope and surface the decisions that need an owner."

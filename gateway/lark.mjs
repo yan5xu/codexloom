@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 
+// Legacy migration adapter. New Feishu connections use bin/loom-feishu-gateway
+// and the official Go SDK; keep this file only until existing deployments move.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import { hasLarkBotMention, larkBotIdentities, larkReactionAction } from './lark-protocol.mjs';
+import {
+  hasLarkBotMention,
+  larkBotIdentities,
+  larkLocalImageAttachment,
+  larkOutboundContentArgs,
+  larkReactionAction,
+} from './lark-protocol.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const config = {
@@ -37,6 +45,8 @@ const state = await readState(config.stateFile);
 state.reactionMonitors ||= {};
 let stateWrite = Promise.resolve();
 const activeReactionMonitors = new Set();
+let eventConsumerRunning = false;
+let lastEventError = '';
 const botIdentities = await resolveBotIdentities();
 restoreReactionMonitors();
 await Promise.all([runEventLoop(), runCommandLoop(), runHeartbeatLoop()]);
@@ -46,7 +56,10 @@ async function runEventLoop() {
     try {
       await consumeLarkEvents();
     } catch (error) {
-      if (!controller.signal.aborted) console.error(`[lark] ${errorText(error)}; restarting consumer`);
+      if (!controller.signal.aborted) {
+        lastEventError = errorText(error);
+        console.error(`[lark] ${lastEventError}; restarting consumer`);
+      }
     }
     await delay(1000);
   }
@@ -56,7 +69,12 @@ async function consumeLarkEvents() {
   const child = spawn(config.larkCli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  const closed = new Promise((resolve) => child.once('close', resolve));
+  eventConsumerRunning = true;
+  lastEventError = '';
+  const closed = new Promise((resolve, reject) => {
+    child.once('close', resolve);
+    child.once('error', reject);
+  });
   const abort = () => child.kill('SIGTERM');
   controller.signal.addEventListener('abort', abort, { once: true });
   child.stderr.setEncoding('utf8');
@@ -66,17 +84,21 @@ async function consumeLarkEvents() {
     }
   });
   const lines = readline.createInterface({ input: child.stdout });
-  for await (const line of lines) {
-    if (!String(line).trim()) continue;
-    try {
-      await ingestLarkEvent(JSON.parse(line));
-    } catch (error) {
-      console.error(`[lark] event: ${errorText(error)}`);
+  try {
+    for await (const line of lines) {
+      if (!String(line).trim()) continue;
+      try {
+        await ingestLarkEvent(JSON.parse(line));
+      } catch (error) {
+        console.error(`[lark] event: ${errorText(error)}`);
+      }
     }
+    const code = await closed;
+    if (!controller.signal.aborted) throw new Error(`event consumer exited ${code}`);
+  } finally {
+    controller.signal.removeEventListener('abort', abort);
+    eventConsumerRunning = false;
   }
-  controller.signal.removeEventListener('abort', abort);
-  const code = await closed;
-  if (!controller.signal.aborted) throw new Error(`event consumer exited ${code}`);
 }
 
 async function ingestLarkEvent(event) {
@@ -305,33 +327,39 @@ async function runCommandLoop() {
 async function sendOutbox(command) {
   const item = command?.outboxItem;
   if (!item?.id) return;
-  const cliArgs = ['im'];
-  if (item.conversation?.messageId) {
-    cliArgs.push(
-      '+messages-reply',
-      '--message-id', item.conversation.messageId,
-      '--text', item.content?.text || '',
-      '--idempotency-key', item.idempotencyKey,
-      '--as', 'bot',
-    );
-    if (item.conversation.threadId) cliArgs.push('--reply-in-thread');
-  } else {
-    cliArgs.push(
-      '+messages-send',
-      '--chat-id', item.conversation?.conversationId || '',
-      '--text', item.content?.text || '',
-      '--idempotency-key', item.idempotencyKey,
-      '--as', 'bot',
-    );
-  }
   try {
-    const result = await runJSONCommand(config.larkCli, cliArgs);
+    const attachments = item.content?.attachments || [];
+    const image = larkLocalImageAttachment(item);
+    if (attachments.length > 1 || (attachments.length === 1 && !image)) {
+      throw new Error('legacy Lark gateway currently supports one local image attachment');
+    }
+    const imageInput = image ? `./${path.basename(image.path)}` : '';
+    const cliArgs = ['im'];
+    if (item.conversation?.messageId) {
+      cliArgs.push(
+        '+messages-reply',
+        '--message-id', item.conversation.messageId,
+        ...larkOutboundContentArgs(item, imageInput),
+        '--idempotency-key', item.idempotencyKey,
+        '--as', 'bot',
+      );
+      if (item.conversation.threadId) cliArgs.push('--reply-in-thread');
+    } else {
+      cliArgs.push(
+        '+messages-send',
+        '--chat-id', item.conversation?.conversationId || '',
+        ...larkOutboundContentArgs(item, imageInput),
+        '--idempotency-key', item.idempotencyKey,
+        '--as', 'bot',
+      );
+    }
+    const result = await runJSONCommand(config.larkCli, cliArgs, image ? { cwd: path.dirname(image.path) } : undefined);
     const externalID = result?.data?.message_id || result?.message_id || result?.data?.message?.message_id;
     if (!externalID) throw new Error(`lark-cli returned no message_id: ${JSON.stringify(result)}`);
-    await reportOutbox(item.id, { success: true, externalMessageId: externalID });
+    await reportOutbox(item.id, { attemptToken: item.attemptToken, success: true, externalMessageId: externalID });
     console.error(`[lark] sent ${item.id} as ${externalID}`);
   } catch (error) {
-    await reportOutbox(item.id, { success: false, error: errorText(error) }).catch(() => {});
+    await reportOutbox(item.id, { attemptToken: item.attemptToken, success: false, error: errorText(error) }).catch(() => {});
     console.error(`[lark] send ${item.id}: ${errorText(error)}`);
   }
 }
@@ -348,17 +376,18 @@ async function runHeartbeatLoop() {
     await hub(`/api/integrations/connections/${config.connectionId}/heartbeat`, {
       method: 'POST',
       body: {
-        status: 'connected',
-        capabilities: ['receive_events', 'threads', 'mentions', 'attachments', 'proactive_send'],
+        status: eventConsumerRunning ? 'connected' : lastEventError ? 'degraded' : 'connecting',
+        capabilities: ['receive_events', 'threads', 'mentions', 'attachments', 'reactions', 'proactive_send'],
+        error: eventConsumerRunning ? '' : lastEventError,
       },
     }).catch((error) => console.error(`[hub] heartbeat: ${errorText(error)}`));
     await delay(10000);
   }
 }
 
-function runJSONCommand(command, commandArgs) {
+function runJSONCommand(command, commandArgs, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, commandArgs, { stdio: ['ignore', 'pipe', 'pipe'], ...options });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');

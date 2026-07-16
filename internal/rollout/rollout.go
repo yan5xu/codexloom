@@ -33,10 +33,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // DefaultSessionsDir is where codex writes rollout files. Override with
@@ -78,11 +81,21 @@ type Transcript struct {
 // FindRollout locates the rollout file for a threadId by recursively globbing
 // the official Codex sessions directory for rollout-*-<threadId>.jsonl. If several match
 // (rare), the lexically-last one (newest ISO timestamp in the name) wins.
+var rolloutPathCache sync.Map
+
 func FindRollout(threadID string) (string, error) {
 	if threadID == "" {
 		return "", fmt.Errorf("empty threadId")
 	}
 	dir := DefaultSessionsDir()
+	cacheKey := dir + "\x00" + threadID
+	if cached, ok := rolloutPathCache.Load(cacheKey); ok {
+		path := cached.(string)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+		rolloutPathCache.Delete(cacheKey)
+	}
 	var best string
 	suffix := "-" + threadID + ".jsonl"
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -106,14 +119,16 @@ func FindRollout(threadID string) (string, error) {
 	if best == "" {
 		return "", fmt.Errorf("no rollout file for threadId %s under %s", threadID, dir)
 	}
+	rolloutPathCache.Store(cacheKey, best)
 	return best, nil
 }
 
 var exitCodeRe = regexp.MustCompile(`(?m)(?:Process exited with code|Exit code:)\s+(-?\d+)`)
 
 type line struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
+	Timestamp string          `json:"timestamp"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
 }
 
 // Read parses the whole rollout for threadID into a Transcript.
@@ -127,11 +142,24 @@ func Read(threadID string) (*Transcript, error) {
 
 // ReadFile parses a specific rollout file.
 func ReadFile(path, threadID string) (*Transcript, error) {
+	return readFileRange(path, threadID, 0, -1)
+}
+
+func readFileRange(path, threadID string, start, end int64) (*Transcript, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if start > 0 {
+		if _, err := f.Seek(start, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	var source io.Reader = f
+	if end >= start && end >= 0 {
+		source = io.LimitReader(f, end-start)
+	}
 
 	tr := &Transcript{ThreadID: threadID, Path: path}
 
@@ -139,7 +167,7 @@ func ReadFile(path, threadID string) (*Transcript, error) {
 	// function_call (the output line follows the call line, but a two-pass keeps
 	// the join order-independent).
 	outputs := map[string]cmdOutput{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(source)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<26)
 	var raw [][]byte
 	for sc.Scan() {
@@ -185,82 +213,12 @@ func ReadFile(path, threadID string) (*Transcript, error) {
 				tr.Cwd = p.Cwd
 			}
 		case "event_msg":
-			tr.handleEvent(ln.Payload, outputs)
+			tr.handleEvent(ln.Timestamp, ln.Payload, outputs)
 		case "response_item":
-			tr.handleResponseItem(ln.Payload, outputs)
+			tr.handleResponseItem(ln.Timestamp, ln.Payload, outputs)
 		}
 	}
 	return tr, nil
-}
-
-// LatestTurn returns the latest turn status without constructing the full
-// transcript. It is used to display externally driven Threads that are still
-// writing to the rollout even when CodexLoom is not online for their active Turn.
-func LatestTurn(threadID string) (*LatestTurnSummary, error) {
-	path, err := FindRollout(threadID)
-	if err != nil {
-		return nil, err
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var latest *LatestTurnSummary
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<26)
-	for sc.Scan() {
-		b := strings.TrimSpace(sc.Text())
-		if b == "" {
-			continue
-		}
-		var ln struct {
-			Timestamp string          `json:"timestamp"`
-			Type      string          `json:"type"`
-			Payload   json.RawMessage `json:"payload"`
-		}
-		if json.Unmarshal([]byte(b), &ln) != nil || ln.Type != "event_msg" {
-			continue
-		}
-		var p struct {
-			Type    string `json:"type"`
-			TurnID  string `json:"turn_id"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(ln.Payload, &p) != nil {
-			continue
-		}
-		switch p.Type {
-		case "task_started":
-			latest = &LatestTurnSummary{ID: p.TurnID, Status: "running", UpdatedAt: ln.Timestamp}
-		case "user_message":
-			if latest != nil && latest.Task == "" {
-				latest.Task = p.Message
-			}
-			if latest != nil {
-				latest.UpdatedAt = ln.Timestamp
-			}
-		case "task_complete":
-			if latest != nil && (p.TurnID == "" || p.TurnID == latest.ID) {
-				latest.Status = "completed"
-				latest.UpdatedAt = ln.Timestamp
-			}
-		case "turn_aborted":
-			if latest != nil && (p.TurnID == "" || p.TurnID == latest.ID) {
-				latest.Status = "interrupted"
-				latest.UpdatedAt = ln.Timestamp
-			}
-		default:
-			if latest != nil {
-				latest.UpdatedAt = ln.Timestamp
-			}
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return latest, nil
 }
 
 type cmdOutput struct {
@@ -286,13 +244,15 @@ func (tr *Transcript) cur() *Turn {
 	return &tr.Turns[len(tr.Turns)-1]
 }
 
-func (tr *Transcript) handleEvent(payload json.RawMessage, outputs map[string]cmdOutput) {
+func (tr *Transcript) handleEvent(timestamp string, payload json.RawMessage, outputs map[string]cmdOutput) {
 	var p struct {
-		Type    string `json:"type"`
-		TurnID  string `json:"turn_id"`
-		Message string `json:"message"`
-		Phase   string `json:"phase"`
-		Changes map[string]struct {
+		Type        string   `json:"type"`
+		TurnID      string   `json:"turn_id"`
+		Message     string   `json:"message"`
+		Phase       string   `json:"phase"`
+		Images      []string `json:"images"`
+		LocalImages []string `json:"local_images"`
+		Changes     map[string]struct {
 			Type    string `json:"type"`
 			Content string `json:"content"`
 		} `json:"changes"`
@@ -305,11 +265,28 @@ func (tr *Transcript) handleEvent(payload json.RawMessage, outputs map[string]cm
 		// New turn boundary.
 		tr.Turns = append(tr.Turns, Turn{ID: p.TurnID, Status: "running"})
 	case "user_message":
-		if strings.TrimSpace(p.Message) == "" {
+		if strings.TrimSpace(p.Message) == "" && len(p.Images) == 0 && len(p.LocalImages) == 0 {
 			return
 		}
 		t := tr.cur()
-		t.Items = append(t.Items, map[string]any{"type": "user", "text": p.Message})
+		item := map[string]any{"type": "user", "text": p.Message, "timestamp": timestamp}
+		attachments := make([]map[string]any, 0, len(p.Images)+len(p.LocalImages))
+		for _, path := range p.LocalImages {
+			mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+			if mimeType == "" {
+				mimeType = "image/*"
+			}
+			attachments = append(attachments, map[string]any{
+				"name": filepath.Base(path), "mimeType": mimeType, "path": path,
+			})
+		}
+		for _, url := range p.Images {
+			attachments = append(attachments, map[string]any{"mimeType": "image/*", "url": url})
+		}
+		if len(attachments) > 0 {
+			item["attachments"] = attachments
+		}
+		t.Items = append(t.Items, item)
 	case "agent_message":
 		if strings.TrimSpace(p.Message) == "" {
 			return
@@ -319,7 +296,7 @@ func (tr *Transcript) handleEvent(payload json.RawMessage, outputs map[string]cm
 			typ = "answer"
 		}
 		t := tr.cur()
-		t.Items = append(t.Items, map[string]any{"type": typ, "text": p.Message})
+		t.Items = append(t.Items, map[string]any{"type": typ, "text": p.Message, "timestamp": timestamp})
 	case "patch_apply_end":
 		changes := []map[string]any{}
 		for path, ch := range p.Changes {
@@ -331,7 +308,7 @@ func (tr *Transcript) handleEvent(payload json.RawMessage, outputs map[string]cm
 			return
 		}
 		t := tr.cur()
-		t.Items = append(t.Items, map[string]any{"type": "file_change", "changes": changes})
+		t.Items = append(t.Items, map[string]any{"type": "file_change", "changes": changes, "timestamp": timestamp})
 	case "turn_aborted":
 		t := tr.cur()
 		if p.TurnID == "" || p.TurnID == t.ID {
@@ -345,7 +322,7 @@ func (tr *Transcript) handleEvent(payload json.RawMessage, outputs map[string]cm
 	}
 }
 
-func (tr *Transcript) handleResponseItem(payload json.RawMessage, outputs map[string]cmdOutput) {
+func (tr *Transcript) handleResponseItem(timestamp string, payload json.RawMessage, outputs map[string]cmdOutput) {
 	var p struct {
 		Type      string `json:"type"`
 		Name      string `json:"name"`
@@ -363,8 +340,9 @@ func (tr *Transcript) handleResponseItem(payload json.RawMessage, outputs map[st
 		}
 		if json.Unmarshal(payload, &img) == nil && img.Result != "" {
 			tr.cur().Items = append(tr.cur().Items, map[string]any{
-				"type": "image",
-				"data": "data:image/png;base64," + img.Result,
+				"type":      "image",
+				"data":      "data:image/png;base64," + img.Result,
+				"timestamp": timestamp,
 			})
 		}
 		return
@@ -376,8 +354,9 @@ func (tr *Transcript) handleResponseItem(payload json.RawMessage, outputs map[st
 		_ = json.Unmarshal([]byte(p.Arguments), &argv)
 		if argv.Path != "" {
 			tr.cur().Items = append(tr.cur().Items, map[string]any{
-				"type": "image",
-				"path": argv.Path,
+				"type":      "image",
+				"path":      argv.Path,
+				"timestamp": timestamp,
 			})
 		}
 		return
@@ -393,10 +372,11 @@ func (tr *Transcript) handleResponseItem(payload json.RawMessage, outputs map[st
 	}
 	_ = json.Unmarshal([]byte(p.Arguments), &argv)
 	item := map[string]any{
-		"type":    "command",
-		"command": argv.Cmd,
-		"cwd":     argv.Workdir,
-		"status":  "completed",
+		"type":      "command",
+		"command":   argv.Cmd,
+		"cwd":       argv.Workdir,
+		"status":    "completed",
+		"timestamp": timestamp,
 	}
 	if co, ok := outputs[p.CallID]; ok {
 		item["output"] = truncate(co.text, 4000)

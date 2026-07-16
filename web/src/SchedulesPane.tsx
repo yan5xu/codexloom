@@ -40,7 +40,7 @@ export function SchedulesPane({ agents, onError, initialTo }: Props) {
     es.onmessage = (e) => {
       try {
         const evt = JSON.parse(e.data);
-        if (evt.type === "loom/schedule" || evt.type === "loom/schedule-deleted") {
+        if (evt.type === "loom/reconcile" || evt.type === "loom/schedule" || evt.type === "loom/schedule-deleted") {
           refresh().catch(() => {});
         }
       } catch {

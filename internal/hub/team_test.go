@@ -2,6 +2,7 @@ package hub
 
 import (
 	"testing"
+	"time"
 
 	"github.com/yan5xu/codex-loom/internal/store"
 )
@@ -65,5 +66,25 @@ func TestTeamAggregatesMessagesAndReplies(t *testing.T) {
 	}
 	if a.MessageOut != 1 || a.MessageIn != 1 || b.MessageOut != 1 || b.MessageIn != 1 {
 		t.Fatalf("a=%#v b=%#v, want bidirectional message metrics", a, b)
+	}
+}
+
+func TestTeamActivityAppliesWindowWithoutLosingReplyDirection(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	h.agents["a"] = &Agent{ID: "a", Name: "a", Status: "idle"}
+	h.agents["b"] = &Agent{ID: "b", Name: "b", Status: "idle"}
+	oldRoot := AgentMessage{ID: "old", FromAgentID: "a", From: "a", ToAgentID: "b", To: "b", CreatedAt: time.Now().UTC().Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano)}
+	recentRoot := AgentMessage{ID: "recent", FromAgentID: "a", From: "a", ToAgentID: "b", To: "b", Status: "answered", CreatedAt: time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano)}
+	reply := AgentMessage{ID: "reply", FromAgentID: "b", From: "b", ToAgentID: "a", To: "a", ReplyTo: recentRoot.ID, CreatedAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)}
+	h.comms[oldRoot.ID], h.comms[recentRoot.ID], h.comms[reply.ID] = &oldRoot, &recentRoot, &reply
+	h.commOrder = []string{oldRoot.ID, recentRoot.ID, reply.ID}
+
+	links := h.TeamActivity(7)
+	if len(links) != 1 || links[0].MessageCount != 1 || links[0].ReplyCount != 1 || links[0].FromAgentID != "a" {
+		t.Fatalf("activity = %#v", links)
 	}
 }

@@ -13,6 +13,20 @@ export function shortTime(ts: string): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** Format an ISO timestamp in the browser's local timezone with seconds. */
+export function localTimeWithSeconds(value: string, timeZone?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.length >= 19 ? value.slice(11, 19) : value;
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+    ...(timeZone ? { timeZone } : {}),
+  });
+}
+
 /** Format token count to human-readable (e.g., 1500 → "1.5k", 2000000 → "2.0M") */
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

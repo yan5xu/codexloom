@@ -1,11 +1,16 @@
 package hub
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 type TeamView struct {
-	Agents        []TeamAgent        `json:"agents"`
-	ObservedLinks []TeamObservedLink `json:"observedLinks"`
-	ExplicitLinks []TeamRelationship `json:"explicitLinks"`
+	Agents             []TeamAgent                `json:"agents"`
+	OrganizationLinks  []OrganizationRelationship `json:"organizationLinks"`
+	CollaborationLinks []TeamRelationship         `json:"collaborationLinks"`
+	ObservedLinks      []TeamObservedLink         `json:"observedLinks"`
+	ExplicitLinks      []TeamRelationship         `json:"explicitLinks"` // compatibility alias
 }
 
 type TeamAgent struct {
@@ -14,6 +19,7 @@ type TeamAgent struct {
 	Cwd           string       `json:"cwd,omitempty"`
 	Status        string       `json:"status,omitempty"`
 	Source        string       `json:"source,omitempty"`
+	Goal          *ThreadGoal  `json:"goal,omitempty"`
 	Profile       AgentProfile `json:"profile"`
 	MessageIn     int          `json:"messageIn"`
 	MessageOut    int          `json:"messageOut"`
@@ -44,9 +50,10 @@ func (h *Hub) Team() TeamView {
 	h.mu.Lock()
 	agents := map[string]*TeamAgent{}
 	for _, s := range h.agents {
+		goal := cloneGoal(h.goals[s.ID])
 		agents[s.ID] = &TeamAgent{
 			Name: s.Name, ID: s.ID, Cwd: s.Cwd, Status: s.Status, Source: s.Source,
-			Profile: profileCopy(h.profiles[s.ID], s.ID),
+			Goal: goal, Profile: profileCopy(h.profiles[s.ID], s.ID),
 		}
 	}
 	for id, profile := range h.profiles {
@@ -67,62 +74,23 @@ func (h *Hub) Team() TeamView {
 		cp.To = h.agentNameLocked(cp.ToAgentID, cp.To)
 		explicit = append(explicit, cp)
 	}
+	organization := make([]OrganizationRelationship, 0, len(h.organizationLinks))
+	for _, relationship := range h.organizationLinks {
+		copy := *relationship
+		copy.Parent = h.agentNameLocked(copy.ParentAgentID, copy.Parent)
+		copy.Child = h.agentNameLocked(copy.ChildAgentID, copy.Child)
+		organization = append(organization, copy)
+	}
 	h.mu.Unlock()
 
-	links := map[string]*TeamObservedLink{}
-	roots := map[string]AgentMessage{}
-	for _, msg := range messages {
-		msg.FromAgentID = teamAgentID(agents, msg.FromAgentID, msg.From)
-		msg.ToAgentID = teamAgentID(agents, msg.ToAgentID, msg.To)
-		from := ensureTeamAgent(agents, msg.FromAgentID, msg.From)
-		to := ensureTeamAgent(agents, msg.ToAgentID, msg.To)
-		from.MessageOut++
-		to.MessageIn++
-		mergeLastMessageAt(from, msg.CreatedAt)
-		mergeLastMessageAt(to, msg.CreatedAt)
-		if msg.FromAgentID == schedulerAgentID {
-			to.ScheduledIn++
-		}
-		if msg.Status == "open" {
-			from.OpenOut++
-			to.OpenIn++
-		}
-		if msg.ReplyTo == "" {
-			roots[msg.ID] = msg
-			link := ensureObservedLink(links, msg.FromAgentID, msg.ToAgentID, from.Name, to.Name)
-			link.MessageCount++
-			switch msg.Status {
-			case "open":
-				link.OpenCount++
-			case "answered":
-				link.AnsweredCount++
-			case "closed":
-				link.ClosedCount++
-			}
-			if msg.DeliveryStatus == "queued" || msg.DeliveryStatus == "delivering" {
-				link.QueuedCount++
-			} else if msg.DeliveryStatus == "failed" {
-				link.FailedCount++
-			}
-			mergeLinkLastMessageAt(link, msg.CreatedAt)
-			addLinkSubject(link, msg.Subject)
-		}
-	}
-	for _, msg := range messages {
-		if msg.ReplyTo == "" {
-			continue
-		}
-		if root, ok := roots[msg.ReplyTo]; ok {
-			link := ensureObservedLink(links, root.FromAgentID, root.ToAgentID, root.From, root.To)
-			link.ReplyCount++
-			if msg.CreatedAt > link.LastReplyAt {
-				link.LastReplyAt = msg.CreatedAt
-			}
-		}
-	}
+	outLinks := aggregateTeamMessages(agents, messages, time.Time{})
 	for _, rel := range explicit {
 		ensureTeamAgent(agents, rel.FromAgentID, rel.From)
 		ensureTeamAgent(agents, rel.ToAgentID, rel.To)
+	}
+	for _, relationship := range organization {
+		ensureTeamAgent(agents, relationship.ParentAgentID, relationship.Parent)
+		ensureTeamAgent(agents, relationship.ChildAgentID, relationship.Child)
 	}
 
 	outAgents := make([]TeamAgent, 0, len(agents))
@@ -130,10 +98,10 @@ func (h *Hub) Team() TeamView {
 		outAgents = append(outAgents, *agent)
 	}
 	sort.SliceStable(outAgents, func(i, j int) bool {
-		if outAgents[i].Status == "running" && outAgents[j].Status != "running" {
+		if teamAgentWorking(outAgents[i]) && !teamAgentWorking(outAgents[j]) {
 			return true
 		}
-		if outAgents[i].Status != "running" && outAgents[j].Status == "running" {
+		if !teamAgentWorking(outAgents[i]) && teamAgentWorking(outAgents[j]) {
 			return false
 		}
 		if outAgents[i].MessageIn+outAgents[i].MessageOut != outAgents[j].MessageIn+outAgents[j].MessageOut {
@@ -142,27 +110,140 @@ func (h *Hub) Team() TeamView {
 		return outAgents[i].Name < outAgents[j].Name
 	})
 
-	outLinks := make([]TeamObservedLink, 0, len(links))
-	for _, link := range links {
-		outLinks = append(outLinks, *link)
-	}
-	sort.SliceStable(outLinks, func(i, j int) bool {
-		if outLinks[i].LastMessageAt != outLinks[j].LastMessageAt {
-			return outLinks[i].LastMessageAt > outLinks[j].LastMessageAt
-		}
-		if outLinks[i].MessageCount != outLinks[j].MessageCount {
-			return outLinks[i].MessageCount > outLinks[j].MessageCount
-		}
-		return outLinks[i].FromAgentID < outLinks[j].FromAgentID
-	})
 	sort.SliceStable(explicit, func(i, j int) bool {
 		if explicit[i].UpdatedAt != explicit[j].UpdatedAt {
 			return explicit[i].UpdatedAt > explicit[j].UpdatedAt
 		}
 		return explicit[i].ID < explicit[j].ID
 	})
+	sort.SliceStable(organization, func(i, j int) bool {
+		if organization[i].Parent != organization[j].Parent {
+			return organization[i].Parent < organization[j].Parent
+		}
+		if organization[i].Child != organization[j].Child {
+			return organization[i].Child < organization[j].Child
+		}
+		return organization[i].ID < organization[j].ID
+	})
 
-	return TeamView{Agents: outAgents, ObservedLinks: outLinks, ExplicitLinks: explicit}
+	return TeamView{
+		Agents: outAgents, OrganizationLinks: organization, CollaborationLinks: explicit,
+		ObservedLinks: outLinks, ExplicitLinks: explicit,
+	}
+}
+
+// TeamActivity returns message evidence for a bounded recent window. The
+// directory and declared relationships stay all-time; only this projection is
+// time-scoped.
+func (h *Hub) TeamActivity(days int) []TeamObservedLink {
+	h.mu.Lock()
+	agents := map[string]*TeamAgent{}
+	for _, agent := range h.agents {
+		agents[agent.ID] = &TeamAgent{Name: agent.Name, ID: agent.ID, Status: agent.Status, Goal: cloneGoal(h.goals[agent.ID]), Profile: profileCopy(h.profiles[agent.ID], agent.ID)}
+	}
+	messages := make([]AgentMessage, 0, len(h.commOrder))
+	for _, id := range h.commOrder {
+		if message := h.comms[id]; message != nil {
+			messages = append(messages, *message)
+		}
+	}
+	h.mu.Unlock()
+	cutoff := time.Time{}
+	if days > 0 {
+		cutoff = time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
+	}
+	return aggregateTeamMessages(agents, messages, cutoff)
+}
+
+func teamAgentWorking(agent TeamAgent) bool {
+	return agent.Status == "running" || agent.Goal != nil && agent.Goal.Status == GoalStatusActive
+}
+
+func aggregateTeamMessages(agents map[string]*TeamAgent, messages []AgentMessage, cutoff time.Time) []TeamObservedLink {
+	links := map[string]*TeamObservedLink{}
+	roots := map[string]AgentMessage{}
+	for _, message := range messages {
+		if message.ReplyTo != "" {
+			continue
+		}
+		message.FromAgentID = teamAgentID(agents, message.FromAgentID, message.From)
+		message.ToAgentID = teamAgentID(agents, message.ToAgentID, message.To)
+		roots[message.ID] = message
+	}
+	for _, message := range messages {
+		if !messageInActivityWindow(message.CreatedAt, cutoff) {
+			continue
+		}
+		message.FromAgentID = teamAgentID(agents, message.FromAgentID, message.From)
+		message.ToAgentID = teamAgentID(agents, message.ToAgentID, message.To)
+		from := ensureTeamAgent(agents, message.FromAgentID, message.From)
+		to := ensureTeamAgent(agents, message.ToAgentID, message.To)
+		from.MessageOut++
+		to.MessageIn++
+		mergeLastMessageAt(from, message.CreatedAt)
+		mergeLastMessageAt(to, message.CreatedAt)
+		if message.FromAgentID == schedulerAgentID {
+			to.ScheduledIn++
+		}
+		if message.Status == "open" {
+			from.OpenOut++
+			to.OpenIn++
+		}
+		if message.ReplyTo != "" {
+			continue
+		}
+		link := ensureObservedLink(links, message.FromAgentID, message.ToAgentID, from.Name, to.Name)
+		link.MessageCount++
+		switch message.Status {
+		case "open":
+			link.OpenCount++
+		case "answered":
+			link.AnsweredCount++
+		case "closed":
+			link.ClosedCount++
+		}
+		if message.DeliveryStatus == "queued" || message.DeliveryStatus == "delivering" {
+			link.QueuedCount++
+		} else if message.DeliveryStatus == "failed" {
+			link.FailedCount++
+		}
+		mergeLinkLastMessageAt(link, message.CreatedAt)
+		addLinkSubject(link, message.Subject)
+	}
+	for _, message := range messages {
+		if message.ReplyTo == "" || !messageInActivityWindow(message.CreatedAt, cutoff) {
+			continue
+		}
+		if root, ok := roots[message.ReplyTo]; ok {
+			link := ensureObservedLink(links, root.FromAgentID, root.ToAgentID, root.From, root.To)
+			link.ReplyCount++
+			if message.CreatedAt > link.LastReplyAt {
+				link.LastReplyAt = message.CreatedAt
+			}
+		}
+	}
+	out := make([]TeamObservedLink, 0, len(links))
+	for _, link := range links {
+		out = append(out, *link)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].LastMessageAt != out[j].LastMessageAt {
+			return out[i].LastMessageAt > out[j].LastMessageAt
+		}
+		if out[i].MessageCount != out[j].MessageCount {
+			return out[i].MessageCount > out[j].MessageCount
+		}
+		return out[i].FromAgentID < out[j].FromAgentID
+	})
+	return out
+}
+
+func messageInActivityWindow(createdAt string, cutoff time.Time) bool {
+	if cutoff.IsZero() {
+		return true
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, createdAt)
+	return err == nil && !timestamp.Before(cutoff)
 }
 
 func profileCopy(profile *AgentProfile, agentID string) AgentProfile {

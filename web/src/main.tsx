@@ -5,6 +5,26 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import App from "./App";
 
+function reloadAfterStaleChunk() {
+  const key = "codexloom-stale-chunk-reload";
+  const lastReload = Number(sessionStorage.getItem(key) || "0");
+  if (Date.now() - lastReload < 10_000) return;
+  sessionStorage.setItem(key, String(Date.now()));
+  window.location.reload();
+}
+
+window.addEventListener("vite:preloadError", (event) => {
+  event.preventDefault();
+  reloadAfterStaleChunk();
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const message = String(event.reason?.message || event.reason || "");
+  if (!/Failed to fetch dynamically imported module|Importing a module script failed/i.test(message)) return;
+  event.preventDefault();
+  reloadAfterStaleChunk();
+});
+
 if (localStorage.getItem("codexloom-theme") === "dark") {
   document.documentElement.classList.add("dark");
 }

@@ -6,10 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/yan5xu/codex-loom/internal/codex"
+	loomskills "github.com/yan5xu/codex-loom/skills"
 )
 
 // codexHostRuntime is the single Codex app-server owned by CodexLoom. Threads
@@ -24,11 +28,37 @@ type codexHostRuntime struct {
 	bin        string
 }
 
+type SkillInventorySkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	Scope       string `json:"scope"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type SkillInventoryError struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+type SkillInventoryEntry struct {
+	Cwd    string                `json:"cwd"`
+	Skills []SkillInventorySkill `json:"skills"`
+	Errors []SkillInventoryError `json:"errors"`
+}
+
+type SkillInventory struct {
+	Data []SkillInventoryEntry `json:"data"`
+}
+
 func (h *Hub) ensureCodexHostLocked() (*codexHostRuntime, error) {
 	if host := h.codexHost; host != nil && !host.client.Closed() {
 		return host, nil
 	}
-	client, err := codex.SpawnWithOptions(codex.SpawnOptions{Bin: codexHostBin()})
+	client, err := codex.SpawnWithOptions(codex.SpawnOptions{
+		Bin: codexHostBin(),
+		Env: codexHostEnv(),
+	})
 	if err != nil {
 		return nil, errf(500, "spawn CodexHost: %s", err)
 	}
@@ -47,8 +77,38 @@ func (h *Hub) ensureCodexHostLocked() (*codexHostRuntime, error) {
 	}
 	client.OnClose = func() { h.onHostClose(host.generation) }
 	h.codexHost = host
-	go h.initCodexHost(host)
+	if !h.startWorkerLocked(func() { h.initCodexHost(host) }) {
+		client.Close()
+		h.codexHost = nil
+		return nil, errf(503, "CodexLoom is shutting down")
+	}
 	return host, nil
+}
+
+func codexHostEnv() map[string]string {
+	loomBin := strings.TrimSpace(os.Getenv("CODEX_LOOM_CLI_BIN"))
+	if loomBin == "" {
+		if executable, err := os.Executable(); err == nil {
+			candidate := filepath.Join(filepath.Dir(executable), "loom")
+			if info, statErr := os.Stat(candidate); statErr == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+				loomBin = candidate
+			}
+		}
+	}
+	if loomBin == "" {
+		return nil
+	}
+	dir := filepath.Dir(loomBin)
+	path := os.Getenv("PATH")
+	for _, existing := range filepath.SplitList(path) {
+		if filepath.Clean(existing) == filepath.Clean(dir) {
+			return nil
+		}
+	}
+	if path == "" {
+		return map[string]string{"PATH": dir}
+	}
+	return map[string]string{"PATH": dir + string(os.PathListSeparator) + path}
 }
 
 func (h *Hub) ensureCodexHost() (*codexHostRuntime, error) {
@@ -74,7 +134,121 @@ func (h *Hub) initCodexHost(host *codexHostRuntime) {
 	})
 	if host.initErr != nil {
 		host.client.Close()
+		return
 	}
+	if h.st != nil {
+		skillRoot := filepath.Join(h.st.Dir(), "builtin-skills")
+		missing := missingUserSkills()
+		if len(missing) == 0 {
+			_ = os.RemoveAll(skillRoot)
+		} else {
+			if _, err := loomskills.MaterializeSelected(skillRoot, missing); err != nil {
+				host.initErr = fmt.Errorf("materialize CodexLoom skills: %w", err)
+				host.client.Close()
+				return
+			}
+			if _, err := host.client.Request("skills/extraRoots/set", map[string]any{
+				"extraRoots": []string{skillRoot},
+			}, 20*time.Second); err != nil {
+				host.initErr = fmt.Errorf("register CodexLoom skills: %w", err)
+				host.client.Close()
+				return
+			}
+		}
+	}
+	if _, err := h.requestSkillInventory(host); err != nil {
+		host.initErr = fmt.Errorf("load CodexLoom skill inventory: %w", err)
+		host.client.Close()
+		return
+	}
+	h.hydrateGoals(host)
+}
+
+// ReloadSkills forces the shared CodexHost to rebuild its per-Agent skill
+// catalogs. It is used after installing a new user skill and when the app-server
+// reports that a watched skill root changed.
+func (h *Hub) ReloadSkills() (SkillInventory, error) {
+	host, err := h.ensureCodexHost()
+	if err != nil {
+		return SkillInventory{}, err
+	}
+	inventory, err := h.requestSkillInventory(host)
+	if err != nil {
+		return SkillInventory{}, errf(500, "reload Codex skills: %s", err)
+	}
+	return inventory, nil
+}
+
+func (h *Hub) requestSkillInventory(host *codexHostRuntime) (SkillInventory, error) {
+	params := map[string]any{"forceReload": true}
+	h.mu.Lock()
+	seen := map[string]bool{}
+	cwds := make([]string, 0, len(h.agents))
+	for _, agent := range h.agents {
+		cwd := strings.TrimSpace(agent.Cwd)
+		if cwd != "" && !seen[cwd] {
+			seen[cwd] = true
+			cwds = append(cwds, cwd)
+		}
+	}
+	h.mu.Unlock()
+	if len(cwds) > 0 {
+		sort.Strings(cwds)
+		params["cwds"] = cwds
+	}
+	raw, err := host.client.Request("skills/list", params, 30*time.Second)
+	if err != nil {
+		return SkillInventory{}, err
+	}
+	var inventory SkillInventory
+	if err := json.Unmarshal(raw, &inventory); err != nil {
+		return SkillInventory{}, fmt.Errorf("decode skills/list: %w", err)
+	}
+	return inventory, nil
+}
+
+func (h *Hub) reloadSkillsForGeneration(generation uint64) {
+	h.mu.Lock()
+	host := h.codexHost
+	if host == nil || host.generation != generation {
+		h.mu.Unlock()
+		return
+	}
+	h.mu.Unlock()
+	if err := waitCodexHost(host); err != nil {
+		return
+	}
+	if _, err := h.requestSkillInventory(host); err != nil {
+		log.Printf("[codex-loom] refresh skill inventory: %v", err)
+	}
+}
+
+func missingUserSkills() []string {
+	root, err := loomskills.UserRoot()
+	if err != nil {
+		definitions := loomskills.Definitions()
+		names := make([]string, 0, len(definitions))
+		for _, definition := range definitions {
+			names = append(names, definition.Name)
+		}
+		return names
+	}
+	statuses, err := loomskills.Inspect(root, nil)
+	if err != nil {
+		definitions := loomskills.Definitions()
+		names := make([]string, 0, len(definitions))
+		for _, definition := range definitions {
+			names = append(names, definition.Name)
+		}
+		return names
+	}
+	missing := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		if status.State == loomskills.StateMissing {
+			missing = append(missing, status.Name)
+		}
+	}
+	return missing
 }
 
 func waitCodexHost(host *codexHostRuntime) error {
@@ -170,9 +344,14 @@ func (h *Hub) bindOrAdoptStartedThreadLocked(params json.RawMessage) *runtime {
 	}
 	if pendingCount == 1 {
 		if meta := h.agents[pending.agentID]; meta != nil {
+			previous := *meta
 			meta.ThreadID = threadID
 			meta.UpdatedAt = now()
-			h.persistLocked()
+			if err := h.persistAgentsLocked(); err != nil {
+				*meta = previous
+				log.Printf("[codex-loom] persist pending Thread binding %s: %v", threadID, err)
+				return nil
+			}
 		}
 		return pending
 	}
@@ -210,7 +389,12 @@ func (h *Hub) adoptThreadLocked(threadID, threadName, cwd string) *runtime {
 	}
 	h.agents[id] = meta
 	h.seqs[id] = h.st.LastSeq(id)
-	h.persistLocked()
+	if err := h.persistAgentsLocked(); err != nil {
+		delete(h.agents, id)
+		delete(h.seqs, id)
+		log.Printf("[codex-loom] persist adopted Thread %s: %v", threadID, err)
+		return nil
+	}
 	ready := make(chan struct{})
 	close(ready)
 	rt := &runtime{
@@ -228,6 +412,10 @@ func (h *Hub) adoptThreadLocked(threadID, threadName, cwd string) *runtime {
 func (h *Hub) onHostNotification(generation uint64, method string, params json.RawMessage) {
 	if method == "remoteControl/status/changed" {
 		h.onRemoteNotification(generation, method, params)
+		return
+	}
+	if method == "skills/changed" {
+		h.startWorker(func() { h.reloadSkillsForGeneration(generation) })
 		return
 	}
 	threadID := notificationThreadID(params)
@@ -251,7 +439,7 @@ func (h *Hub) onHostNotification(generation uint64, method string, params json.R
 	}
 	h.mu.Unlock()
 	if hydrateAgentID != "" {
-		go h.hydrateAdoptedAgent(generation, hydrateAgentID, threadID)
+		h.startWorker(func() { h.hydrateAdoptedAgent(generation, hydrateAgentID, threadID) })
 	}
 	if rt != nil {
 		h.onNotification(rt, method, params)
@@ -294,6 +482,7 @@ func (h *Hub) hydrateAdoptedAgent(generation uint64, agentID, threadID string) {
 	if agent == nil || agent.ThreadID != threadID || agent.Source != "remote" {
 		return
 	}
+	previous := *agent
 	changed := false
 	if cwd := strings.TrimSpace(result.Thread.Cwd); cwd != "" && cwd != agent.Cwd {
 		agent.Cwd = cwd
@@ -307,7 +496,11 @@ func (h *Hub) hydrateAdoptedAgent(generation uint64, agentID, threadID string) {
 	}
 	if changed {
 		agent.UpdatedAt = now()
-		h.persistLocked()
+		if err := h.persistAgentsLocked(); err != nil {
+			*agent = previous
+			log.Printf("[codex-loom] persist hydrated Agent %s: %v", agentID, err)
+			return
+		}
 		h.emitStatusLocked(agent, agent.Status)
 	}
 }

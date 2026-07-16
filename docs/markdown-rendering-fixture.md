@@ -80,6 +80,7 @@ Inline command example: `loom msg pinix-lead --from codex-loom-dev --response no
 
 ```xml
 <agent_message version="1" id="msg_example" response="required" status="open">
+  <timing sent_at="2026-07-15T08:30:00+08:00" current_time="2026-07-15T08:35:00+08:00" />
   <from>codex-loom-dev</from>
   <to>pinix-lead</to>
   <subject>Rendering check</subject>

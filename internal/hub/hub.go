@@ -16,15 +16,10 @@
 package hub
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
-	"errors"
 	"fmt"
 	"log"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +95,7 @@ type AgentView struct {
 	Agent
 	ProcessAlive     bool           `json:"processAlive"`
 	PendingApprovals []ApprovalView `json:"pendingApprovals"`
+	Goal             *ThreadGoal    `json:"goal,omitempty"`
 	LastSeq          int64          `json:"lastSeq"`
 }
 
@@ -123,25 +119,48 @@ type ActiveAgent struct {
 type RunningSession = ActiveAgent
 
 type AgentMessage struct {
-	ID                 string `json:"id"`
-	FromAgentID        string `json:"fromAgentId"`
-	ToAgentID          string `json:"toAgentId"`
-	From               string `json:"from"`
-	To                 string `json:"to"`
-	Subject            string `json:"subject"`
-	Body               string `json:"body"`
-	Response           string `json:"response"`
-	ReplyTo            string `json:"replyTo,omitempty"`
-	Status             string `json:"status"`               // open, answered, closed
-	Resolution         string `json:"resolution,omitempty"` // reply, no_reply
-	DeliveryStatus     string `json:"deliveryStatus"`       // queued, delivering, delivered, failed, cancelled
-	CreatedAt          string `json:"createdAt"`
-	UpdatedAt          string `json:"updatedAt"`
-	DeliveredAt        string `json:"deliveredAt,omitempty"`
-	LastDeliveryError  string `json:"lastDeliveryError,omitempty"`
-	DeliveredAgentID   string `json:"deliveredAgentId,omitempty"`
-	DeliveredSessionID string `json:"deliveredSessionId,omitempty"` // compatibility
-	DeliveredTurnID    string `json:"deliveredTurnId,omitempty"`
+	ID                 string                        `json:"id"`
+	FromAgentID        string                        `json:"fromAgentId"`
+	ToAgentID          string                        `json:"toAgentId"`
+	From               string                        `json:"from"`
+	To                 string                        `json:"to"`
+	Subject            string                        `json:"subject"`
+	Body               string                        `json:"body"`
+	Response           string                        `json:"response"`
+	ReplyTo            string                        `json:"replyTo,omitempty"`
+	SourceTurnID       string                        `json:"sourceTurnId,omitempty"`
+	ScheduleID         string                        `json:"scheduleId,omitempty"`
+	ScheduledAt        string                        `json:"scheduledAt,omitempty"`
+	Status             string                        `json:"status"`               // open, answered, closed
+	Resolution         string                        `json:"resolution,omitempty"` // reply, no_reply, cancelled, completed_elsewhere, superseded
+	ResolutionReason   string                        `json:"resolutionReason,omitempty"`
+	ResolvedBy         string                        `json:"resolvedBy,omitempty"`
+	ResolvedAt         string                        `json:"resolvedAt,omitempty"`
+	DeliveryStatus     string                        `json:"deliveryStatus"`         // queued, delivering, delivered, failed, cancelled
+	DeliveryMode       string                        `json:"deliveryMode,omitempty"` // turn_start, turn_steer
+	CreatedAt          string                        `json:"createdAt"`
+	UpdatedAt          string                        `json:"updatedAt"`
+	DeliveredAt        string                        `json:"deliveredAt,omitempty"`
+	LastDeliveryError  string                        `json:"lastDeliveryError,omitempty"`
+	DeliveredAgentID   string                        `json:"deliveredAgentId,omitempty"`
+	DeliveredSessionID string                        `json:"deliveredSessionId,omitempty"` // compatibility
+	DeliveredTurnID    string                        `json:"deliveredTurnId,omitempty"`
+	HandlingStatus     string                        `json:"handlingStatus,omitempty"` // pending, running, completed, interrupted, failed
+	ActiveHandlingID   string                        `json:"activeHandlingAttemptId,omitempty"`
+	LastHandlingError  string                        `json:"lastHandlingError,omitempty"`
+	HandlingAttempts   []AgentMessageHandlingAttempt `json:"handlingAttempts,omitempty"`
+}
+
+// AgentMessageHandlingAttempt records one Turn that handled an already
+// delivered internal message. Delivery and handling are separate lifecycles:
+// interrupting an attempt never makes the original delivery pending again.
+type AgentMessageHandlingAttempt struct {
+	ID          string `json:"id"`
+	TurnID      string `json:"turnId,omitempty"`
+	Status      string `json:"status"` // running, completed, interrupted, failed
+	StartedAt   string `json:"startedAt"`
+	CompletedAt string `json:"completedAt,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type CommParams struct {
@@ -204,15 +223,17 @@ type approval struct {
 }
 
 type turnState struct {
-	turnID       string
-	task         string
-	inboxItemID  string
-	attemptID    string
-	finalAnswer  string
-	startedAt    time.Time
-	lastActivity time.Time
-	finished     bool
-	stopWatchdog chan struct{}
+	turnID            string
+	task              string
+	inboxItemID       string
+	attemptID         string
+	agentMessageID    string
+	handlingAttemptID string
+	finalAnswer       string
+	startedAt         time.Time
+	lastActivity      time.Time
+	finished          bool
+	stopWatchdog      chan struct{}
 }
 
 type runtime struct {
@@ -247,9 +268,11 @@ type Hub struct {
 	schedules               map[string]*Schedule
 	profiles                map[string]*AgentProfile
 	teamLinks               map[string]*TeamRelationship
+	organizationLinks       map[string]*OrganizationRelationship
 	connections             map[string]*PlatformConnection
 	addresses               map[string]*AgentAddress
 	memberships             map[string]*ConversationMembership
+	conversationCandidates  map[string]*ConversationCandidate
 	messages                map[string]*InboxMessage
 	messageOrder            []string
 	externalMessages        map[string]string
@@ -258,7 +281,13 @@ type Hub struct {
 	attempts                map[string]*HandlingAttempt
 	outbox                  map[string]*OutboxItem
 	outboxOrder             []string
+	providerOperations      map[string]*ProviderOperation
+	providerOperationOrder  []string
+	humanRequests           map[string]*HumanRequest
+	humanRequestOrder       []string
+	goals                   map[string]*ThreadGoal
 	seqs                    map[string]int64
+	globalSeq               int64
 	runtimes                map[string]*runtime
 	subs                    map[string]map[*subscriber]struct{}
 	globalSubs              map[*subscriber]struct{}
@@ -273,79 +302,146 @@ type Hub struct {
 	codexHostGeneration     uint64
 	stop                    chan struct{}
 	stopOnce                sync.Once
+	stopping                bool
+	draining                bool
 	background              sync.WaitGroup
+	workers                 sync.WaitGroup
+	steerTurn               func(threadID, expectedTurnID, input string, timeout time.Duration) (string, error)
+	dispatchHumanAnswer     func(key, text string) (SendResult, error)
 }
 
+// New is retained for in-process callers that cannot recover from an invalid
+// store. The service entry point uses Open so it can report the startup error.
 func New(st *store.Store) *Hub {
-	h := &Hub{
-		st:               st,
-		agents:           map[string]*Agent{},
-		comms:            map[string]*AgentMessage{},
-		schedules:        map[string]*Schedule{},
-		profiles:         map[string]*AgentProfile{},
-		teamLinks:        map[string]*TeamRelationship{},
-		connections:      map[string]*PlatformConnection{},
-		addresses:        map[string]*AgentAddress{},
-		memberships:      map[string]*ConversationMembership{},
-		messages:         map[string]*InboxMessage{},
-		externalMessages: map[string]string{},
-		inbox:            map[string]*InboxItem{},
-		attempts:         map[string]*HandlingAttempt{},
-		outbox:           map[string]*OutboxItem{},
-		seqs:             map[string]int64{},
-		runtimes:         map[string]*runtime{},
-		subs:             map[string]map[*subscriber]struct{}{},
-		globalSubs:       map[*subscriber]struct{}{},
-		stop:             make(chan struct{}),
+	h, err := Open(st)
+	if err != nil {
+		panic(err)
 	}
+	return h
+}
+
+// OpenOptions controls process-level behavior that is intentionally separate
+// from the durable Hub model. Passive mode is used by read-only development
+// canaries: it loads projections without importing external registries,
+// reconciling live runtime state, or starting workers.
+type OpenOptions struct {
+	Passive bool
+}
+
+// Open loads all durable projections before starting background work. Required
+// state is fail-closed: malformed data is never replaced with an empty map.
+func Open(st *store.Store) (*Hub, error) {
+	return OpenWithOptions(st, OpenOptions{})
+}
+
+func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
+	h := &Hub{
+		st:                     st,
+		agents:                 map[string]*Agent{},
+		comms:                  map[string]*AgentMessage{},
+		schedules:              map[string]*Schedule{},
+		profiles:               map[string]*AgentProfile{},
+		teamLinks:              map[string]*TeamRelationship{},
+		organizationLinks:      map[string]*OrganizationRelationship{},
+		connections:            map[string]*PlatformConnection{},
+		addresses:              map[string]*AgentAddress{},
+		memberships:            map[string]*ConversationMembership{},
+		conversationCandidates: map[string]*ConversationCandidate{},
+		messages:               map[string]*InboxMessage{},
+		externalMessages:       map[string]string{},
+		inbox:                  map[string]*InboxItem{},
+		attempts:               map[string]*HandlingAttempt{},
+		outbox:                 map[string]*OutboxItem{},
+		providerOperations:     map[string]*ProviderOperation{},
+		humanRequests:          map[string]*HumanRequest{},
+		goals:                  map[string]*ThreadGoal{},
+		seqs:                   map[string]int64{},
+		runtimes:               map[string]*runtime{},
+		subs:                   map[string]map[*subscriber]struct{}{},
+		globalSubs:             map[*subscriber]struct{}{},
+		stop:                   make(chan struct{}),
+	}
+	h.globalSeq = st.LastSeq(globalEventLogID)
 	if err := st.LoadAgents(&h.agents); err != nil {
-		log.Printf("[codex-loom] load agents: %v", err)
+		return nil, fmt.Errorf("load agents: %w", err)
 	}
 	if h.agents == nil {
 		h.agents = map[string]*Agent{}
 	}
 	if err := h.st.LoadProfiles(&h.profiles); err != nil {
-		log.Printf("[codex-loom] load profiles: %v", err)
+		return nil, fmt.Errorf("load profiles: %w", err)
 	}
 	if h.profiles == nil {
 		h.profiles = map[string]*AgentProfile{}
 	}
 	if err := h.st.LoadTeamLinks(&h.teamLinks); err != nil {
-		log.Printf("[codex-loom] load team links: %v", err)
+		return nil, fmt.Errorf("load team links: %w", err)
 	}
 	if h.teamLinks == nil {
 		h.teamLinks = map[string]*TeamRelationship{}
 	}
+	if err := h.st.LoadOrganizationLinks(&h.organizationLinks); err != nil {
+		return nil, fmt.Errorf("load organization links: %w", err)
+	}
+	if h.organizationLinks == nil {
+		h.organizationLinks = map[string]*OrganizationRelationship{}
+	}
 	if err := h.loadIntegrations(); err != nil {
-		log.Printf("[codex-loom] load integrations: %v", err)
+		return nil, fmt.Errorf("load integrations: %w", err)
 	}
 	if err := h.loadInboxState(); err != nil {
-		log.Printf("[codex-loom] load inbox state: %v", err)
+		return nil, fmt.Errorf("load inbox state: %w", err)
+	}
+	if err := h.loadProviderOperations(); err != nil {
+		return nil, fmt.Errorf("load provider operations: %w", err)
 	}
 	if err := h.loadComms(); err != nil {
-		log.Printf("[codex-loom] load comms: %v", err)
+		return nil, fmt.Errorf("load communications: %w", err)
+	}
+	if err := h.loadHumanRequests(); err != nil {
+		return nil, fmt.Errorf("load human requests: %w", err)
 	}
 	if err := h.st.LoadSchedules(&h.schedules); err != nil {
-		log.Printf("[codex-loom] load schedules: %v", err)
+		return nil, fmt.Errorf("load schedules: %w", err)
 	}
 	if h.schedules == nil {
 		h.schedules = map[string]*Schedule{}
 	}
-	h.loadRemoteLocked()
-	// Mirror pinix-edge's registry: edge-created agents become visible here
-	// (read-only) and their rollout history is immediately viewable.
-	h.importEdgeLocked()
-	if err := h.migrateCommAgentIDsLocked(); err != nil {
-		log.Printf("[codex-loom] migrate comm agent ids: %v", err)
+	if err := h.loadRemoteLocked(); err != nil {
+		return nil, fmt.Errorf("load Remote config: %w", err)
 	}
-	// Reconcile: tasks running when the hub last died are interrupted.
-	h.mu.Lock()
+	if !options.Passive {
+		// Mirror pinix-edge's registry: edge-created agents become visible here
+		// (read-only) and their rollout history is immediately viewable.
+		h.importEdgeLocked()
+	}
+	if err := h.migrateCommAgentIDsLocked(); err != nil {
+		return nil, fmt.Errorf("migrate communication agent ids: %w", err)
+	}
 	for _, meta := range h.agents {
 		h.seqs[meta.ID] = st.LastSeq(meta.ID)
+	}
+	if options.Passive {
+		return h, nil
+	}
+
+	// Reconcile: tasks running when the Hub last died are interrupted.
+	h.mu.Lock()
+	for _, meta := range h.agents {
 		if meta.Source == "edge" {
 			continue // edge mirrors carry no CodexLoom-driven turn state
 		}
 		if meta.Status == "running" {
+			interruptedTurnID := meta.CurrentTurnID
+			if interruptedTurnID != "" {
+				for _, messageID := range h.commOrder {
+					msg := h.comms[messageID]
+					if msg == nil || msg.ToAgentID != meta.ID || msg.DeliveryMode != "turn_start" || msg.DeliveredTurnID != interruptedTurnID {
+						continue
+					}
+					h.finishAgentMessageTurnLocked(&turnState{turnID: interruptedTurnID, agentMessageID: msg.ID}, "interrupted", "CodexLoom restarted while delivery Turn was running")
+				}
+			}
 			h.emitLocked(meta.ID, "loom/turn-interrupted", map[string]any{
 				"reason": "loom-restart",
 				"task":   meta.CurrentTask,
@@ -358,20 +454,25 @@ func New(st *store.Store) *Hub {
 			meta.UpdatedAt = now()
 		}
 	}
-	h.persistLocked()
+	if err := h.persistAgentsLocked(); err != nil {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("persist startup recovery: %w", err)
+	}
 	h.mu.Unlock()
-	h.background.Add(4)
+	h.background.Add(5)
 	go func() { defer h.background.Done(); h.deliveryLoop() }()
 	go func() { defer h.background.Done(); h.schedulerLoop() }()
 	go func() { defer h.background.Done(); h.inboxLoop() }()
 	go func() { defer h.background.Done(); h.remoteLoop() }()
-	return h
+	go func() { defer h.background.Done(); h.eventMaintenanceLoop() }()
+	return h, nil
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func (h *Hub) loadComms() error {
-	return h.st.ReadComms(func(raw json.RawMessage) {
+	repairLatest := map[string]bool{}
+	if err := h.st.ReadComms(func(raw json.RawMessage) {
 		var rec commRecord
 		if err := json.Unmarshal(raw, &rec); err != nil || rec.Message.ID == "" {
 			return
@@ -380,12 +481,25 @@ func (h *Hub) loadComms() error {
 		if _, exists := h.comms[msg.ID]; !exists {
 			h.commOrder = append(h.commOrder, msg.ID)
 		}
-		normalizeAgentMessage(&msg)
+		repairLatest[msg.ID] = normalizeAgentMessage(&msg)
 		h.comms[msg.ID] = &msg
-	})
+	}); err != nil {
+		return err
+	}
+	for _, id := range h.commOrder {
+		if !repairLatest[id] {
+			continue
+		}
+		msg := h.comms[id]
+		if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
+			return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+		}
+	}
+	return nil
 }
 
-func normalizeAgentMessage(msg *AgentMessage) {
+func normalizeAgentMessage(msg *AgentMessage) bool {
+	repaired := false
 	if msg.DeliveredAgentID == "" {
 		msg.DeliveredAgentID = msg.DeliveredSessionID
 	}
@@ -415,23 +529,43 @@ func normalizeAgentMessage(msg *AgentMessage) {
 		msg.DeliveryStatus = "queued"
 		msg.LastDeliveryError = "recovered from interrupted delivery"
 	}
-}
-
-func (h *Hub) appendCommLocked(msg *AgentMessage) {
-	rec := commRecord{Message: *msg}
-	if err := h.st.AppendComm(rec); err != nil {
-		log.Printf("[codex-loom] append comm: %v", err)
+	// Older Loom versions turned an interrupted handling Turn back into a
+	// queued delivery. That creates an infinite stop/redeliver loop. Recover
+	// those exact records as an already-delivered but held request.
+	if msg.DeliveryStatus == "queued" && strings.Contains(msg.LastDeliveryError, "delivery Turn interrupted") {
+		msg.DeliveryStatus = "delivered"
+		msg.HandlingStatus = "interrupted"
+		msg.LastHandlingError = msg.LastDeliveryError
+		msg.LastDeliveryError = ""
+		repaired = true
 	}
-	if _, exists := h.comms[msg.ID]; !exists {
-		h.commOrder = append(h.commOrder, msg.ID)
+	if msg.DeliveryMode == "" && msg.DeliveryStatus == "delivered" && msg.DeliveredTurnID != "" {
+		msg.DeliveryMode = "turn_start"
 	}
-	cp := *msg
-	h.comms[msg.ID] = &cp
-	h.emitGlobalLocked("loom/comms-message", map[string]any{"message": cp})
+	if msg.HandlingStatus == "" {
+		switch msg.DeliveryStatus {
+		case "queued", "delivering", "failed":
+			msg.HandlingStatus = "pending"
+		case "delivered":
+			msg.HandlingStatus = "completed"
+		}
+	}
+	if msg.DeliveryStatus == "cancelled" && msg.Status == "open" {
+		msg.Status = "closed"
+		msg.Resolution = "cancelled"
+		msg.ResolvedBy = msg.From
+		msg.ResolvedAt = msg.UpdatedAt
+		repaired = true
+	}
+	return repaired
 }
 
 func (h *Hub) emitGlobalLocked(typ string, data any) {
-	ev := store.Event{TS: now(), Type: typ, Data: toRaw(data)}
+	h.globalSeq++
+	ev := store.Event{Seq: h.globalSeq, TS: now(), Type: typ, Data: toRaw(data)}
+	if err := h.st.AppendEvent(globalEventLogID, ev); err != nil {
+		log.Printf("[codex-loom] append global event: %v", err)
+	}
 	for sub := range h.globalSubs {
 		select {
 		case sub.ch <- ev:
@@ -442,7 +576,19 @@ func (h *Hub) emitGlobalLocked(typ string, data any) {
 	}
 }
 
-func (h *Hub) persistLocked() {
+const globalEventLogID = "__global__"
+
+func (h *Hub) LastGlobalSeq() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.globalSeq
+}
+
+func (h *Hub) ReadGlobalEvents(since int64, tail int) ([]store.Event, error) {
+	return h.st.ReadEvents(globalEventLogID, since, tail)
+}
+
+func (h *Hub) persistAgentsLocked() error {
 	// Persist only agents CodexLoom owns. Edge mirrors are re-imported from
 	// pinix-edge's registry on every startup, so writing them here would only
 	// let them drift out of sync.
@@ -453,7 +599,15 @@ func (h *Hub) persistLocked() {
 		}
 		own[id] = meta
 	}
-	if err := h.st.SaveAgents(own); err != nil {
+	return h.st.SaveAgents(own)
+}
+
+// persistRuntimeProjectionLocked checkpoints observed Codex runtime state. The
+// rollout remains authoritative and Open reconciles this projection after a
+// crash, so notification callbacks log checkpoint failures instead of blocking
+// the shared app-server read loop. User-authored state uses explicit commits.
+func (h *Hub) persistRuntimeProjectionLocked() {
+	if err := h.persistAgentsLocked(); err != nil {
 		log.Printf("[codex-loom] persist: %v", err)
 	}
 }
@@ -539,6 +693,10 @@ func (h *Hub) emitLocked(agentID, typ string, data any) store.Event {
 			sub.close()
 		}
 	}
+	// The workbench keeps multiple Agent tabs live over its single global SSE
+	// connection. Preserve the Agent-local event unchanged inside the envelope
+	// so each mounted Thread view can reduce its own stream independently.
+	h.emitGlobalLocked("loom/thread-event", map[string]any{"agentId": agentID, "event": ev})
 	return ev
 }
 
@@ -558,6 +716,7 @@ func (h *Hub) emitStatusLocked(meta *Agent, status string) {
 		"approvalPolicy": meta.ApprovalPolicy,
 		"updatedAt":      meta.UpdatedAt,
 	}
+	data["goal"] = h.goals[meta.ID]
 	h.emitGlobalLocked("loom/agent-status", data)
 }
 
@@ -651,7 +810,10 @@ func (h *Hub) getRuntimeLocked(meta *Agent) (*runtime, error) {
 		ready: make(chan struct{}), approvals: map[string]*approval{},
 	}
 	h.runtimes[meta.ID] = rt
-	go h.initRuntime(meta.ID, rt)
+	if !h.startWorkerLocked(func() { h.initRuntime(meta.ID, rt) }) {
+		delete(h.runtimes, meta.ID)
+		return nil, errf(503, "CodexLoom is shutting down")
+	}
 	return rt, nil
 }
 
@@ -697,9 +859,14 @@ func (h *Hub) initRuntime(agentID string, rt *runtime) {
 		threadID := parsed.Thread.ID
 		h.mu.Lock()
 		if m := h.agents[agentID]; m != nil {
+			previous := *m
 			m.ThreadID = threadID
 			m.UpdatedAt = now()
-			h.persistLocked()
+			if err := h.persistAgentsLocked(); err != nil {
+				*m = previous
+				h.mu.Unlock()
+				return fmt.Errorf("persist started Thread binding: %w", err)
+			}
 		}
 		h.mu.Unlock()
 		if err := setThreadName(rt.client, threadID, threadName); err != nil {
@@ -731,6 +898,23 @@ func resumeThread(client *codex.Client, threadID, sandbox, cwd string) error {
 		"threadId": threadID, "sandbox": sandbox, "cwd": cwd,
 	}, 60*time.Second)
 	return err
+}
+
+func codexSandboxMode(sandbox string) string {
+	switch strings.TrimSpace(sandbox) {
+	case "danger-full-access", "dangerFullAccess":
+		return "dangerFullAccess"
+	case "workspace-write", "workspaceWrite":
+		return "workspaceWrite"
+	case "read-only", "readOnly":
+		return "readOnly"
+	default:
+		return strings.TrimSpace(sandbox)
+	}
+}
+
+func codexSandboxPolicy(sandbox string) map[string]any {
+	return map[string]any{"type": codexSandboxMode(sandbox)}
 }
 
 func (h *Hub) resumeAgentThread(agentID string, rt *runtime) error {
@@ -810,6 +994,19 @@ func notificationUserText(params json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
+func displayUserTask(text string) string {
+	text = strings.TrimSpace(text)
+	if index := strings.Index(text, "\n\n<loom_attachments"); index >= 0 {
+		text = strings.TrimSpace(text[:index])
+	} else if strings.HasPrefix(text, "<loom_attachments") {
+		text = ""
+	}
+	if text == "" {
+		return "Attached files"
+	}
+	return text
+}
+
 func (h *Hub) onNotification(rt *runtime, method string, params json.RawMessage) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -834,15 +1031,19 @@ func (h *Hub) onNotification(rt *runtime, method string, params json.RawMessage)
 		meta.CurrentTurnID = turnID
 		meta.LastError = ""
 		meta.UpdatedAt = now()
-		h.persistLocked()
+		h.persistRuntimeProjectionLocked()
 		h.emitStatusLocked(meta, "running")
 	}
 	if text := notificationUserText(params); text != "" && rt.activeTurn != nil && !rt.activeTurn.finished {
-		rt.activeTurn.task = text
-		meta.CurrentTask = text
+		task := displayUserTask(text)
+		rt.activeTurn.task = task
+		meta.CurrentTask = task
 		meta.UpdatedAt = now()
-		h.persistLocked()
+		h.persistRuntimeProjectionLocked()
 		h.emitStatusLocked(meta, "running")
+	}
+	if method == "thread/goal/updated" || method == "thread/goal/cleared" {
+		h.onGoalNotificationLocked(meta.ID, method, params)
 	}
 
 	if rt.activeTurn != nil && !rt.activeTurn.finished {
@@ -853,8 +1054,11 @@ func (h *Hub) onNotification(rt *runtime, method string, params json.RawMessage)
 		if turnID != "" && rt.activeTurn.turnID == "" {
 			rt.activeTurn.turnID = turnID
 			h.markInboxAttemptRunningLocked(rt.activeTurn)
+			if err := h.markAgentMessageHandlingRunningLocked(rt.activeTurn, meta.ID); err != nil {
+				log.Printf("[codex-loom] save notification message handling %s: %v", rt.activeTurn.agentMessageID, err)
+			}
 			meta.CurrentTurnID = turnID
-			h.persistLocked()
+			h.persistRuntimeProjectionLocked()
 		}
 	}
 
@@ -870,9 +1074,9 @@ func (h *Hub) onNotification(rt *runtime, method string, params json.RawMessage)
 			errMsg = tp.Error.Message
 		}
 		switch {
-		case method == "turn/failed":
+		case method == "turn/failed", tp.Turn.Status == "failed":
 			status = "failed"
-		case method == "turn/aborted", tp.Turn.Status == "interrupted":
+		case method == "turn/aborted", tp.Turn.Status == "interrupted", tp.Turn.Status == "aborted", tp.Turn.Status == "cancelled", tp.Turn.Status == "canceled":
 			status = "interrupted"
 		}
 		h.finishTurnLocked(meta, rt, status, errMsg)
@@ -979,16 +1183,118 @@ func (h *Hub) finishTurnLocked(meta *Agent, rt *runtime, status, errMsg string) 
 	meta.LastTurn = &TurnSummary{TurnID: turn.turnID, Task: turn.task, Status: status, CompletedAt: now()}
 	meta.UpdatedAt = now()
 	h.finishInboxAttemptLocked(turn, status, errMsg)
-	h.persistLocked()
+	h.finishAgentMessageTurnLocked(turn, status, errMsg)
+	h.persistRuntimeProjectionLocked()
 	h.emitStatusLocked(meta, "idle")
-	go h.deliverNextQueuedForTarget(meta.ID, defaultInactivity)
-	go h.deliverNextInboxForAgent(meta.ID)
+	h.startPendingWorkersLocked(meta.ID)
+}
+
+// finishAgentMessageTurnLocked completes the handling attempt associated with
+// this Turn. Once turn/start succeeded, delivery remains delivered forever;
+// an interrupted or failed attempt is held until an explicit retry.
+func (h *Hub) finishAgentMessageTurnLocked(turn *turnState, status, errMsg string) {
+	if turn == nil || turn.agentMessageID == "" {
+		return
+	}
+	msg := h.comms[turn.agentMessageID]
+	if msg == nil {
+		return
+	}
+	if msg.DeliveryStatus == "delivering" && turn.turnID != "" {
+		if err := h.markAgentMessageHandlingRunningLocked(turn, msg.ToAgentID); err != nil {
+			log.Printf("[codex-loom] establish message handling before finish %s: %v", msg.ID, err)
+			return
+		}
+		msg = h.comms[turn.agentMessageID]
+	}
+	if msg == nil || (msg.DeliveryStatus != "delivering" && msg.DeliveryStatus != "delivered") {
+		return
+	}
+	if msg.DeliveredTurnID != "" && turn.turnID != "" && msg.DeliveredTurnID != turn.turnID {
+		return
+	}
+
+	next := *msg
+	next.HandlingAttempts = cloneAgentMessageHandlingAttempts(msg.HandlingAttempts)
+	next.UpdatedAt = now()
+
+	// A failure before Codex confirms a Turn is still a delivery failure. It
+	// requires an explicit retry and must never enter the automatic queue.
+	if next.DeliveryStatus == "delivering" {
+		next.DeliveryStatus = "failed"
+		next.LastDeliveryError = strings.TrimSpace(errMsg)
+		if next.LastDeliveryError == "" {
+			next.LastDeliveryError = "turn did not start"
+		}
+		next.HandlingStatus = "pending"
+		if err := h.commitAgentMessageLocked(next); err != nil {
+			log.Printf("[codex-loom] save pre-start message failure: %v", err)
+		}
+		return
+	}
+
+	attemptIndex := -1
+	for i := range next.HandlingAttempts {
+		attempt := &next.HandlingAttempts[i]
+		if (turn.handlingAttemptID != "" && attempt.ID == turn.handlingAttemptID) ||
+			(turn.handlingAttemptID == "" && next.ActiveHandlingID != "" && attempt.ID == next.ActiveHandlingID) ||
+			(turn.handlingAttemptID == "" && next.ActiveHandlingID == "" && turn.turnID != "" && attempt.TurnID == turn.turnID) {
+			attemptIndex = i
+			break
+		}
+	}
+	if attemptIndex < 0 {
+		startedAt := next.DeliveredAt
+		if startedAt == "" {
+			startedAt = next.UpdatedAt
+		}
+		attempt := AgentMessageHandlingAttempt{
+			ID: newIntegrationID("matt"), TurnID: turn.turnID, Status: "running", StartedAt: startedAt,
+		}
+		next.HandlingAttempts = append(next.HandlingAttempts, attempt)
+		attemptIndex = len(next.HandlingAttempts) - 1
+	}
+
+	attempt := &next.HandlingAttempts[attemptIndex]
+	attempt.CompletedAt = next.UpdatedAt
+	attempt.Error = strings.TrimSpace(errMsg)
+	next.ActiveHandlingID = ""
+	next.LastHandlingError = ""
+	switch status {
+	case "completed":
+		attempt.Status = "completed"
+		attempt.Error = ""
+		next.HandlingStatus = "completed"
+	case "interrupted":
+		attempt.Status = "interrupted"
+		next.HandlingStatus = "interrupted"
+		next.LastHandlingError = attempt.Error
+		if next.LastHandlingError == "" {
+			next.LastHandlingError = "handling Turn interrupted"
+			attempt.Error = next.LastHandlingError
+		}
+	default:
+		attempt.Status = "failed"
+		next.HandlingStatus = "failed"
+		next.LastHandlingError = attempt.Error
+		if next.LastHandlingError == "" {
+			next.LastHandlingError = "handling Turn failed"
+			attempt.Error = next.LastHandlingError
+		}
+	}
+	if err := h.commitAgentMessageLocked(next); err != nil {
+		log.Printf("[codex-loom] save message handling result: %v", err)
+	}
 }
 
 // ---- public API ----
 
 func (h *Hub) viewLocked(meta *Agent) AgentView {
 	view := AgentView{Agent: *meta, PendingApprovals: []ApprovalView{}, LastSeq: h.seqs[meta.ID]}
+	if goal := h.goals[meta.ID]; goal != nil {
+		copy := *goal
+		view.Goal = &copy
+	}
 	if rt, ok := h.runtimes[meta.ID]; ok && !rt.client.Closed() {
 		view.ProcessAlive = true
 		for id, ap := range rt.approvals {
@@ -1069,1296 +1375,4 @@ func timestampWithin(ts string, d time.Duration) bool {
 	}
 	age := time.Since(t)
 	return age >= 0 && age <= d
-}
-
-func (h *Hub) ListAgents() []AgentView {
-	h.mu.Lock()
-	out := make([]AgentView, 0, len(h.agents))
-	for _, meta := range h.agents {
-		out = append(out, h.viewLocked(meta))
-	}
-	h.mu.Unlock()
-	for i := range out {
-		applyRolloutStatus(&out[i])
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].CreatedAt != out[j].CreatedAt {
-			return out[i].CreatedAt > out[j].CreatedAt
-		}
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
-		}
-		return out[i].ID < out[j].ID
-	})
-	return out
-}
-
-// ListSessions is the pre-CodexLoom compatibility method.
-func (h *Hub) ListSessions() []SessionView { return h.ListAgents() }
-
-func (h *Hub) ListComms(agent, status string) []AgentMessage {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	agent = strings.TrimSpace(agent)
-	agentID := ""
-	if meta := h.resolveLocked(agent); meta != nil {
-		agentID = meta.ID
-	}
-	status = strings.TrimSpace(status)
-	out := []AgentMessage{}
-	for i := len(h.commOrder) - 1; i >= 0; i-- {
-		msg := h.comms[h.commOrder[i]]
-		if msg == nil {
-			continue
-		}
-		if agent != "" && msg.From != agent && msg.To != agent && msg.FromAgentID != agent && msg.ToAgentID != agent && msg.FromAgentID != agentID && msg.ToAgentID != agentID {
-			continue
-		}
-		if status != "" && msg.Status != status {
-			continue
-		}
-		out = append(out, *msg)
-	}
-	return out
-}
-
-func (h *Hub) GetAgentMessage(id string) (AgentMessage, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	msg := h.comms[strings.TrimSpace(id)]
-	if msg == nil {
-		return AgentMessage{}, errf(404, "message not found: %s", id)
-	}
-	return *msg, nil
-}
-
-func (h *Hub) CancelAgentMessage(id string) (AgentMessage, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	msg := h.comms[strings.TrimSpace(id)]
-	if msg == nil {
-		return AgentMessage{}, errf(404, "message not found: %s", id)
-	}
-	if msg.DeliveryStatus != "queued" {
-		return AgentMessage{}, errf(409, "message %s is %s; only queued messages can be cancelled", msg.ID, msg.DeliveryStatus)
-	}
-	msg.DeliveryStatus = "cancelled"
-	msg.UpdatedAt = now()
-	h.appendCommLocked(msg)
-	return *msg, nil
-}
-
-// NoReplyAgentMessage explicitly closes a response-required internal message.
-// It is idempotent for the same recipient and mutually exclusive with a reply.
-func (h *Hub) NoReplyAgentMessage(id, fromKey string) (AgentMessage, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	msg := h.comms[strings.TrimSpace(id)]
-	if msg == nil {
-		return AgentMessage{}, errf(404, "message not found: %s", id)
-	}
-	from := h.resolveLocked(strings.TrimSpace(fromKey))
-	if from == nil || from.ID != msg.ToAgentID {
-		return AgentMessage{}, errf(403, "only %s can close message %s", msg.To, msg.ID)
-	}
-	if msg.Resolution == "no_reply" {
-		return *msg, nil
-	}
-	if msg.Status == "answered" || msg.Resolution == "reply" {
-		return AgentMessage{}, errf(409, "message %s already has a reply", msg.ID)
-	}
-	if msg.Response != "required" {
-		return AgentMessage{}, errf(409, "message %s does not require a response", msg.ID)
-	}
-	msg.Status = "closed"
-	msg.Resolution = "no_reply"
-	msg.UpdatedAt = now()
-	h.appendCommLocked(msg)
-	return *msg, nil
-}
-
-func (h *Hub) SendAgentMessage(p CommParams) (CommResult, error) {
-	if p.Timeout == 0 && p.TimeoutSec > 0 {
-		p.Timeout = time.Duration(p.TimeoutSec) * time.Second
-	}
-	if p.ReplyTo != "" {
-		return h.replyAgentMessage(p)
-	}
-	return h.createAgentMessage(p)
-}
-
-func (h *Hub) createAgentMessage(p CommParams) (CommResult, error) {
-	from, to, err := h.validateCommEndpoints(p.From, p.To, p.System && p.From == schedulerIdentity)
-	if err != nil {
-		return CommResult{}, err
-	}
-	subject := strings.TrimSpace(p.Subject)
-	body := strings.TrimSpace(p.Body)
-	if subject == "" {
-		return CommResult{}, errf(400, "subject is required")
-	}
-	if body == "" {
-		return CommResult{}, errf(400, "body is required")
-	}
-	response := strings.TrimSpace(p.Response)
-	if response == "" {
-		response = "required"
-	}
-	if response != "required" && response != "none" {
-		return CommResult{}, errf(400, "response must be required or none")
-	}
-	id := newMessageID()
-	status := "closed"
-	if response == "required" {
-		status = "open"
-	}
-	msg := &AgentMessage{
-		ID:             id,
-		FromAgentID:    endpointID(from, p.From),
-		ToAgentID:      to.ID,
-		From:           endpointName(from, p.From),
-		To:             to.Name,
-		Subject:        subject,
-		Body:           body,
-		Response:       response,
-		Status:         status,
-		DeliveryStatus: "queued",
-		CreatedAt:      now(),
-		UpdatedAt:      now(),
-	}
-	h.mu.Lock()
-	h.appendCommLocked(msg)
-	h.mu.Unlock()
-
-	delivered, _ := h.deliverNextQueuedForTarget(to.ID, p.Timeout)
-	current, err := h.GetAgentMessage(id)
-	if err != nil {
-		return CommResult{}, err
-	}
-	result := CommResult{Message: &current}
-	if delivered != nil && delivered.ID == id {
-		result.TurnID = delivered.DeliveredTurnID
-	}
-	return result, nil
-}
-
-func (h *Hub) replyAgentMessage(p CommParams) (CommResult, error) {
-	fromName := strings.TrimSpace(p.From)
-	body := strings.TrimSpace(p.Body)
-	if fromName == "" {
-		return CommResult{}, errf(400, "from is required")
-	}
-	if body == "" {
-		return CommResult{}, errf(400, "body is required")
-	}
-
-	h.mu.Lock()
-	orig := h.comms[p.ReplyTo]
-	if orig == nil {
-		h.mu.Unlock()
-		return CommResult{}, errf(404, "message not found: %s", p.ReplyTo)
-	}
-	if orig.Response != "required" {
-		h.mu.Unlock()
-		return CommResult{}, errf(409, "message %s does not require a response", orig.ID)
-	}
-	if orig.Status != "open" || orig.Resolution == "no_reply" {
-		h.mu.Unlock()
-		return CommResult{}, errf(409, "message %s is already resolved", orig.ID)
-	}
-	if orig.FromAgentID == "" {
-		if orig.From == schedulerIdentity {
-			orig.FromAgentID = schedulerAgentID
-		} else if sender := h.resolveLocked(orig.From); sender != nil {
-			orig.FromAgentID = sender.ID
-		}
-	}
-	if orig.ToAgentID == "" {
-		if target := h.resolveLocked(orig.To); target != nil {
-			orig.ToAgentID = target.ID
-		}
-	}
-	origID := orig.ID
-	origFrom := orig.From
-	origSubject := orig.Subject
-	from := h.resolveLocked(fromName)
-	if from == nil {
-		h.mu.Unlock()
-		return CommResult{}, errf(404, "from agent not found: %s", fromName)
-	}
-	if from.ID != orig.ToAgentID {
-		h.mu.Unlock()
-		return CommResult{}, errf(400, "message %s expects replies from %s", origID, orig.To)
-	}
-	subject := strings.TrimSpace(p.Subject)
-	if subject == "" {
-		subject = "Re: " + origSubject
-	}
-	toName := origFrom
-	var to *Agent
-	if orig.FromAgentID != schedulerAgentID {
-		to = h.resolveLocked(orig.FromAgentID)
-		if to == nil {
-			h.mu.Unlock()
-			return CommResult{}, errf(404, "original sender agent not found: %s", origFrom)
-		}
-		toName = to.Name
-	}
-	msg := &AgentMessage{
-		ID:             newMessageID(),
-		FromAgentID:    from.ID,
-		ToAgentID:      orig.FromAgentID,
-		From:           from.Name,
-		To:             toName,
-		Subject:        subject,
-		Body:           body,
-		Response:       "none",
-		ReplyTo:        origID,
-		Status:         "closed",
-		Resolution:     "reply",
-		DeliveryStatus: "queued",
-		CreatedAt:      now(),
-		UpdatedAt:      now(),
-	}
-	if orig.FromAgentID == schedulerAgentID {
-		msg.DeliveryStatus = "delivered"
-		msg.DeliveredAt = msg.CreatedAt
-		msg.UpdatedAt = msg.CreatedAt
-		h.appendCommLocked(msg)
-		h.markOriginalAnsweredLocked(msg)
-		cp := *msg
-		h.mu.Unlock()
-		return CommResult{Message: &cp}, nil
-	}
-	h.appendCommLocked(msg)
-	h.mu.Unlock()
-
-	delivered, _ := h.deliverNextQueuedForTarget(to.ID, p.Timeout)
-	current, err := h.GetAgentMessage(msg.ID)
-	if err != nil {
-		return CommResult{}, err
-	}
-	result := CommResult{Message: &current}
-	if delivered != nil && delivered.ID == msg.ID {
-		result.TurnID = delivered.DeliveredTurnID
-	}
-	return result, nil
-}
-
-func (h *Hub) validateCommEndpoints(fromKey, toKey string, allowSystemFrom bool) (*Agent, *Agent, error) {
-	fromKey = strings.TrimSpace(fromKey)
-	toKey = strings.TrimSpace(toKey)
-	if fromKey == "" {
-		return nil, nil, errf(400, "from is required")
-	}
-	if toKey == "" {
-		return nil, nil, errf(400, "to is required")
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	from := h.resolveLocked(fromKey)
-	if from == nil && !(allowSystemFrom && fromKey == schedulerIdentity) {
-		return nil, nil, errf(404, "from agent not found: %s", fromKey)
-	}
-	to := h.resolveLocked(toKey)
-	if to == nil {
-		return nil, nil, errf(404, "to agent not found: %s", toKey)
-	}
-	return from, to, nil
-}
-
-func endpointName(s *Agent, fallback string) string {
-	if s != nil {
-		return s.Name
-	}
-	return strings.TrimSpace(fallback)
-}
-
-func endpointID(s *Agent, fallback string) string {
-	if s != nil {
-		return s.ID
-	}
-	if strings.TrimSpace(fallback) == schedulerIdentity {
-		return schedulerAgentID
-	}
-	return legacyAgentID(fallback)
-}
-
-func (h *Hub) deliveryLoop() {
-	h.drainQueuedAll()
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			h.drainQueuedAll()
-		case <-h.stop:
-			return
-		}
-	}
-}
-
-func (h *Hub) drainQueuedAll() {
-	targets := h.queuedTargets()
-	for _, target := range targets {
-		h.deliverNextQueuedForTarget(target, defaultInactivity)
-	}
-}
-
-func (h *Hub) queuedTargets() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	seen := map[string]bool{}
-	out := []string{}
-	for _, id := range h.commOrder {
-		msg := h.comms[id]
-		if msg == nil || msg.DeliveryStatus != "queued" || seen[msg.ToAgentID] {
-			continue
-		}
-		seen[msg.ToAgentID] = true
-		out = append(out, msg.ToAgentID)
-	}
-	return out
-}
-
-func (h *Hub) deliverNextQueuedForTarget(target string, timeout time.Duration) (*AgentMessage, bool) {
-	view, err := h.GetAgent(target)
-	if err != nil {
-		if isNotFoundErr(err) {
-			h.failQueuedForTarget(target, err)
-		}
-		return nil, false
-	}
-	if view.Status == "running" {
-		return nil, false
-	}
-
-	h.mu.Lock()
-	targetMeta := h.resolveLocked(target)
-	if targetMeta == nil {
-		h.mu.Unlock()
-		h.failQueuedForTarget(target, errf(404, "agent not found: %s", target))
-		return nil, false
-	}
-	if rt := h.runtimes[targetMeta.ID]; rt != nil && rt.activeTurn != nil && !rt.activeTurn.finished {
-		h.mu.Unlock()
-		return nil, false
-	}
-	var snapshot *AgentMessage
-	for _, id := range h.commOrder {
-		msg := h.comms[id]
-		if msg == nil || msg.ToAgentID != targetMeta.ID || msg.DeliveryStatus != "queued" {
-			continue
-		}
-		msg.DeliveryStatus = "delivering"
-		msg.LastDeliveryError = ""
-		msg.UpdatedAt = now()
-		h.appendCommLocked(msg)
-		cp := *msg
-		snapshot = &cp
-		break
-	}
-	h.mu.Unlock()
-	if snapshot == nil {
-		return nil, false
-	}
-
-	result, err := h.SendTask(snapshot.ToAgentID, formatAgentEnvelope(snapshot), timeout)
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	current := h.comms[snapshot.ID]
-	if current == nil {
-		return nil, false
-	}
-	if err != nil {
-		current.UpdatedAt = now()
-		current.LastDeliveryError = err.Error()
-		if isBusyErr(err) {
-			current.DeliveryStatus = "queued"
-		} else {
-			current.DeliveryStatus = "failed"
-		}
-		h.appendCommLocked(current)
-		cp := *current
-		return &cp, false
-	}
-	current.DeliveryStatus = "delivered"
-	current.DeliveredAgentID = result.AgentID
-	current.DeliveredSessionID = result.AgentID
-	current.DeliveredTurnID = result.TurnID
-	current.DeliveredAt = now()
-	current.UpdatedAt = current.DeliveredAt
-	current.LastDeliveryError = ""
-	h.appendCommLocked(current)
-	h.markOriginalAnsweredLocked(current)
-	cp := *current
-	return &cp, true
-}
-
-func (h *Hub) failQueuedForTarget(target string, cause error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, id := range h.commOrder {
-		msg := h.comms[id]
-		if msg == nil || msg.ToAgentID != target || msg.DeliveryStatus != "queued" {
-			continue
-		}
-		msg.DeliveryStatus = "failed"
-		msg.LastDeliveryError = cause.Error()
-		msg.UpdatedAt = now()
-		h.appendCommLocked(msg)
-	}
-}
-
-func (h *Hub) markOriginalAnsweredLocked(reply *AgentMessage) {
-	if reply.ReplyTo == "" || reply.DeliveryStatus != "delivered" {
-		return
-	}
-	orig := h.comms[reply.ReplyTo]
-	if orig == nil || orig.Status != "open" {
-		return
-	}
-	orig.Status = "answered"
-	orig.Resolution = "reply"
-	orig.UpdatedAt = now()
-	h.appendCommLocked(orig)
-}
-
-func isBusyErr(err error) bool {
-	var hubErr *HubError
-	if ok := errors.As(err, &hubErr); ok && hubErr.Status == 409 {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "already running") || strings.Contains(msg, " is running")
-}
-
-func isNotFoundErr(err error) bool {
-	var hubErr *HubError
-	return errors.As(err, &hubErr) && hubErr.Status == 404
-}
-
-func newMessageID() string {
-	idBytes := make([]byte, 8)
-	_, _ = rand.Read(idBytes)
-	return "msg_" + hex.EncodeToString(idBytes)
-}
-
-func formatAgentEnvelope(msg *AgentMessage) string {
-	var b strings.Builder
-	b.WriteString(`<agent_message version="1" id="`)
-	b.WriteString(xmlEscape(msg.ID))
-	b.WriteString(`" response="`)
-	b.WriteString(xmlEscape(msg.Response))
-	b.WriteString(`" status="`)
-	b.WriteString(xmlEscape(msg.Status))
-	b.WriteString(`">` + "\n")
-	writeXMLText(&b, "from", msg.From)
-	writeXMLText(&b, "to", msg.To)
-	writeXMLText(&b, "subject", msg.Subject)
-	if msg.ReplyTo != "" {
-		writeXMLText(&b, "reply_to", msg.ReplyTo)
-	}
-	if msg.Response == "required" {
-		writeXMLText(&b, "reply_command", "loom msg --reply-to "+msg.ID+" --from "+msg.To+" --body \"...\"")
-	}
-	writeXMLCDATA(&b, "body", msg.Body)
-	b.WriteString("</agent_message>")
-	return b.String()
-}
-
-func xmlEscape(s string) string {
-	var b strings.Builder
-	_ = xml.EscapeText(&b, []byte(s))
-	return b.String()
-}
-
-func writeXMLText(b *strings.Builder, tag, value string) {
-	b.WriteString("  <")
-	b.WriteString(tag)
-	b.WriteString(">")
-	b.WriteString(xmlEscape(value))
-	b.WriteString("</")
-	b.WriteString(tag)
-	b.WriteString(">\n")
-}
-
-func writeXMLCDATA(b *strings.Builder, tag, value string) {
-	b.WriteString("  <")
-	b.WriteString(tag)
-	b.WriteString("><![CDATA[")
-	b.WriteString(strings.ReplaceAll(value, "]]>", "]]]]><![CDATA[>"))
-	b.WriteString("]]></")
-	b.WriteString(tag)
-	b.WriteString(">\n")
-}
-
-func (h *Hub) GetAgent(key string) (AgentView, error) {
-	h.mu.Lock()
-	meta := h.resolveLocked(key)
-	if meta == nil {
-		h.mu.Unlock()
-		return AgentView{}, errf(404, "agent not found: %s", key)
-	}
-	view := h.viewLocked(meta)
-	h.mu.Unlock()
-	applyRolloutStatus(&view)
-	return view, nil
-}
-
-// GetSession is the pre-CodexLoom compatibility method.
-func (h *Hub) GetSession(key string) (SessionView, error) { return h.GetAgent(key) }
-
-func (h *Hub) ActiveAgents() []ActiveAgent {
-	views := h.ListAgents()
-	out := []ActiveAgent{}
-	for _, view := range views {
-		if view.Status != "running" {
-			continue
-		}
-		out = append(out, ActiveAgent{ID: view.ID, Name: view.Name, CurrentTask: view.CurrentTask})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
-		}
-		return out[i].ID < out[j].ID
-	})
-	return out
-}
-
-// RunningSessions is the pre-CodexLoom compatibility method.
-func (h *Hub) RunningSessions() []RunningSession { return h.ActiveAgents() }
-
-type CreateParams struct {
-	Name           string `json:"name"`
-	Cwd            string `json:"cwd"`
-	Sandbox        string `json:"sandbox"`
-	ApprovalPolicy string `json:"approvalPolicy"`
-	Model          string `json:"model"`
-	Effort         string `json:"effort"`
-}
-
-// RestoreAgentParams re-registers a previously archived Agent without
-// creating a replacement identity or starting a Turn. Profiles and team
-// relationships are stored independently and reconnect through the stable ID.
-type RestoreAgentParams struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Cwd                string `json:"cwd"`
-	ThreadID           string `json:"threadId"`
-	Sandbox            string `json:"sandbox"`
-	ApprovalPolicy     string `json:"approvalPolicy"`
-	Model              string `json:"model"`
-	Effort             string `json:"effort"`
-	ProfileVersionSeen int    `json:"profileVersionSeen"`
-	CreatedAt          string `json:"createdAt"`
-}
-
-type ConfigParams struct {
-	Name           *string `json:"name"`
-	Model          *string `json:"model"`
-	Effort         *string `json:"effort"`
-	Sandbox        *string `json:"sandbox"`
-	ApprovalPolicy *string `json:"approvalPolicy"`
-}
-
-func (h *Hub) CreateAgent(p CreateParams) (AgentView, error) {
-	if p.Name == "" || p.Cwd == "" {
-		return AgentView{}, errf(400, "name and cwd are required")
-	}
-	if !nameRe.MatchString(p.Name) {
-		return AgentView{}, errf(400, "name must match [a-zA-Z0-9_-]+")
-	}
-	if p.Sandbox == "" {
-		p.Sandbox = "danger-full-access"
-	}
-	if p.ApprovalPolicy == "" {
-		p.ApprovalPolicy = "never"
-	}
-	p.Model = strings.TrimSpace(p.Model)
-	p.Effort = normalizeEffort(strings.TrimSpace(p.Effort))
-	if p.Effort != "" {
-		if !validEffort(p.Effort) {
-			return AgentView{}, errf(400, "effort must be one of: minimal, low, medium, high, xhigh")
-		}
-	}
-	idBytes := make([]byte, 4)
-	_, _ = rand.Read(idBytes)
-	id := hex.EncodeToString(idBytes)
-
-	h.mu.Lock()
-	if h.resolveLocked(p.Name) != nil {
-		h.mu.Unlock()
-		return AgentView{}, errf(409, "agent %q already exists", p.Name)
-	}
-	meta := &Agent{
-		ID: id, Name: p.Name, Cwd: p.Cwd,
-		Sandbox: p.Sandbox, ApprovalPolicy: p.ApprovalPolicy, Model: p.Model, Effort: p.Effort,
-		Status: "idle", CreatedAt: now(), UpdatedAt: now(),
-	}
-	h.agents[id] = meta
-	h.seqs[id] = 0
-	rt, err := h.getRuntimeLocked(meta)
-	if err != nil {
-		delete(h.agents, id)
-		h.mu.Unlock()
-		return AgentView{}, err
-	}
-	h.mu.Unlock()
-
-	if err := waitReady(rt); err != nil {
-		h.mu.Lock()
-		delete(h.agents, id)
-		delete(h.runtimes, id)
-		h.persistLocked()
-		h.mu.Unlock()
-		return AgentView{}, errf(500, "failed to start codex thread: %s", err)
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.persistLocked()
-	h.emitLocked(id, "loom/agent-created", map[string]any{
-		"id": id, "name": meta.Name, "cwd": meta.Cwd, "threadId": meta.ThreadID,
-	})
-	h.emitStatusLocked(meta, meta.Status)
-	return h.viewLocked(meta), nil
-}
-
-func (h *Hub) RestoreAgent(p RestoreAgentParams) (AgentView, error) {
-	p.ID = strings.TrimSpace(p.ID)
-	p.Name = strings.TrimSpace(p.Name)
-	p.Cwd = strings.TrimSpace(p.Cwd)
-	p.ThreadID = strings.TrimSpace(p.ThreadID)
-	if p.ID == "" || p.Name == "" || p.Cwd == "" || p.ThreadID == "" {
-		return AgentView{}, errf(400, "id, name, cwd, and threadId are required")
-	}
-	if !nameRe.MatchString(p.Name) {
-		return AgentView{}, errf(400, "name must match [a-zA-Z0-9_-]+")
-	}
-	if p.Sandbox == "" {
-		p.Sandbox = "danger-full-access"
-	}
-	if p.ApprovalPolicy == "" {
-		p.ApprovalPolicy = "never"
-	}
-	p.Effort = normalizeEffort(strings.TrimSpace(p.Effort))
-	if p.Effort != "" && !validEffort(p.Effort) {
-		return AgentView{}, errf(400, "effort must be one of: minimal, low, medium, high, xhigh")
-	}
-	if p.CreatedAt == "" {
-		p.CreatedAt = now()
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.agents[p.ID] != nil {
-		return AgentView{}, errf(409, "agent id %q already exists", p.ID)
-	}
-	if existing := h.resolveLocked(p.Name); existing != nil {
-		return AgentView{}, errf(409, "agent %q already exists", p.Name)
-	}
-	for _, existing := range h.agents {
-		if existing.ThreadID == p.ThreadID {
-			return AgentView{}, errf(409, "thread %q is already bound to agent %q", p.ThreadID, existing.Name)
-		}
-	}
-	meta := &Agent{
-		ID: p.ID, Name: p.Name, Cwd: p.Cwd, ThreadID: p.ThreadID,
-		Sandbox: p.Sandbox, ApprovalPolicy: p.ApprovalPolicy,
-		Model: p.Model, Effort: p.Effort, ProfileVersionSeen: p.ProfileVersionSeen,
-		Status: "idle", CreatedAt: p.CreatedAt, UpdatedAt: now(),
-	}
-	h.agents[p.ID] = meta
-	h.seqs[p.ID] = h.st.LastSeq(p.ID)
-	h.persistLocked()
-	h.emitLocked(p.ID, "loom/agent-restored", map[string]any{
-		"id": p.ID, "name": p.Name, "cwd": p.Cwd, "threadId": p.ThreadID,
-	})
-	h.emitStatusLocked(meta, meta.Status)
-	return h.viewLocked(meta), nil
-}
-
-// CreateSession is the pre-CodexLoom compatibility method.
-func (h *Hub) CreateSession(p CreateParams) (SessionView, error) { return h.CreateAgent(p) }
-
-func (h *Hub) UpdateAgentConfig(key string, p ConfigParams) (AgentView, error) {
-	h.mu.Lock()
-	meta := h.resolveLocked(key)
-	if meta == nil {
-		h.mu.Unlock()
-		return AgentView{}, errf(404, "agent not found: %s", key)
-	}
-	if meta.Status == "running" {
-		h.mu.Unlock()
-		return AgentView{}, errf(409, "agent %q is running; config changes apply between Turns", meta.Name)
-	}
-
-	nextName := meta.Name
-	nextModel := meta.Model
-	nextEffort := meta.Effort
-	nextSandbox := meta.Sandbox
-	nextApprovalPolicy := meta.ApprovalPolicy
-
-	if p.Name != nil {
-		name := strings.TrimSpace(*p.Name)
-		if name == "" {
-			h.mu.Unlock()
-			return AgentView{}, errf(400, "name is required")
-		}
-		if !nameRe.MatchString(name) {
-			h.mu.Unlock()
-			return AgentView{}, errf(400, "name must match [a-zA-Z0-9_-]+")
-		}
-		for _, existing := range h.agents {
-			if existing.ID == meta.ID {
-				continue
-			}
-			if existing.ID == name || existing.Name == name {
-				h.mu.Unlock()
-				return AgentView{}, errf(409, "agent %q already exists", name)
-			}
-		}
-		nextName = name
-	}
-	if p.Model != nil {
-		nextModel = strings.TrimSpace(*p.Model)
-	}
-	if p.Effort != nil {
-		effort := normalizeEffort(strings.TrimSpace(*p.Effort))
-		if effort == "" || validEffort(effort) {
-			nextEffort = effort
-		} else {
-			h.mu.Unlock()
-			return AgentView{}, errf(400, "effort must be one of: minimal, low, medium, high, xhigh")
-		}
-	}
-	if p.Sandbox != nil {
-		nextSandbox = strings.TrimSpace(*p.Sandbox)
-	}
-	if p.ApprovalPolicy != nil {
-		nextApprovalPolicy = strings.TrimSpace(*p.ApprovalPolicy)
-	}
-	nameChanged := meta.Name != nextName
-	meta.Source = "" // editing config adopts an edge mirror into CodexLoom's registry
-	meta.Name = nextName
-	meta.Model = nextModel
-	meta.Effort = nextEffort
-	meta.Sandbox = nextSandbox
-	meta.ApprovalPolicy = nextApprovalPolicy
-	meta.UpdatedAt = now()
-	h.persistLocked()
-	h.emitStatusLocked(meta, meta.Status)
-	view := h.viewLocked(meta)
-	threadID := meta.ThreadID
-	rt := h.runtimes[meta.ID]
-	h.mu.Unlock()
-
-	if nameChanged && threadID != "" {
-		if err := h.syncThreadName(rt, threadID, nextName); err != nil {
-			// The Hub name remains authoritative. Runtime initialization and the
-			// startup backfill retry the Codex-side title later.
-			log.Printf("[codex-loom] sync renamed thread %s to %q: %v", threadID, nextName, err)
-		}
-	}
-	return view, nil
-}
-
-// UpdateConfig is the pre-CodexLoom compatibility method.
-func (h *Hub) UpdateConfig(key string, p ConfigParams) (SessionView, error) {
-	return h.UpdateAgentConfig(key, p)
-}
-
-func (h *Hub) syncThreadName(rt *runtime, threadID, name string) error {
-	if rt != nil && rt.client != nil && !rt.client.Closed() {
-		if err := waitReady(rt); err == nil {
-			return setThreadName(rt.client, threadID, name)
-		}
-	}
-	host, err := h.ensureCodexHost()
-	if err != nil {
-		return err
-	}
-	return setThreadName(host.client, threadID, name)
-}
-
-// SyncThreadNames backfills CodexLoom Agent names into Codex's persisted thread
-// metadata without resuming or taking ownership of those threads.
-func (h *Hub) SyncThreadNames() error {
-	type namedThread struct {
-		id     string
-		name   string
-		source string
-	}
-	h.mu.Lock()
-	byThreadID := make(map[string]namedThread, len(h.agents))
-	for _, meta := range h.agents {
-		if strings.TrimSpace(meta.ThreadID) == "" || strings.TrimSpace(meta.Name) == "" {
-			continue
-		}
-		current, exists := byThreadID[meta.ThreadID]
-		if !exists || (current.source == "edge" && meta.Source != "edge") {
-			byThreadID[meta.ThreadID] = namedThread{id: meta.ThreadID, name: meta.Name, source: meta.Source}
-		}
-	}
-	h.mu.Unlock()
-	threads := make([]namedThread, 0, len(byThreadID))
-	for _, thread := range byThreadID {
-		threads = append(threads, thread)
-	}
-	if len(threads) == 0 {
-		return nil
-	}
-	sort.Slice(threads, func(i, j int) bool { return threads[i].id < threads[j].id })
-
-	host, err := h.ensureCodexHost()
-	if err != nil {
-		return err
-	}
-	var syncErrs []error
-	for _, thread := range threads {
-		if err := setThreadName(host.client, thread.id, thread.name); err != nil {
-			syncErrs = append(syncErrs, fmt.Errorf("%s (%s): %w", thread.name, thread.id, err))
-		}
-	}
-	return errors.Join(syncErrs...)
-}
-
-func normalizeEffort(effort string) string {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "extra-high", "extra_high", "extra high":
-		return "xhigh"
-	default:
-		return strings.ToLower(strings.TrimSpace(effort))
-	}
-}
-
-func validEffort(effort string) bool {
-	switch effort {
-	case "minimal", "low", "medium", "high", "xhigh":
-		return true
-	default:
-		return false
-	}
-}
-
-type SendResult struct {
-	Dispatched bool   `json:"dispatched"`
-	AgentID    string `json:"agentId"`
-	SessionID  string `json:"sessionId"`
-	TurnID     string `json:"turnId"`
-}
-
-func (h *Hub) SendTask(key, text string, inactivity time.Duration) (SendResult, error) {
-	return h.sendTask(key, text, inactivity, "", "", "")
-}
-
-func (h *Hub) sendTask(key, text string, inactivity time.Duration, inboxItemID, attemptID, developerContext string) (SendResult, error) {
-	if strings.TrimSpace(text) == "" {
-		return SendResult{}, errf(400, "text is required")
-	}
-	if inactivity <= 0 {
-		inactivity = defaultInactivity
-	}
-
-	h.mu.Lock()
-	meta := h.resolveLocked(key)
-	if meta == nil {
-		h.mu.Unlock()
-		return SendResult{}, errf(404, "agent not found: %s", key)
-	}
-	if rt, ok := h.runtimes[meta.ID]; ok && rt.activeTurn != nil && !rt.activeTurn.finished {
-		h.mu.Unlock()
-		return SendResult{}, errf(409, "agent %q is already running a task", meta.Name)
-	}
-	if meta.Status == "running" {
-		// Stale state without a live turn (crash leftovers): repair.
-		meta.Status = "idle"
-		meta.LastError = "repaired stale running state"
-	}
-	rt, err := h.getRuntimeLocked(meta)
-	if err != nil {
-		h.mu.Unlock()
-		return SendResult{}, err
-	}
-	agentID := meta.ID
-	h.mu.Unlock()
-
-	// Serialize readiness, profile injection and turn reservation for one
-	// runtime. Concurrent callers must not inject the same profile version.
-	rt.startMu.Lock()
-	if err := waitReady(rt); err != nil {
-		rt.startMu.Unlock()
-		return SendResult{}, errf(500, "codex not ready: %s", err)
-	}
-	// A shared app-server may unload an idle Thread. Resume immediately before
-	// every Turn so Web, CLI and queued deliveries do not depend on a stale
-	// in-memory binding left by an earlier request.
-	if err := h.resumeAgentThread(agentID, rt); err != nil {
-		rt.startMu.Unlock()
-		return SendResult{}, err
-	}
-	if err := h.injectProfileIfNeeded(agentID, rt); err != nil {
-		rt.startMu.Unlock()
-		return SendResult{}, err
-	}
-	if strings.TrimSpace(developerContext) != "" {
-		if err := h.injectDeveloperContext(agentID, rt, developerContext); err != nil {
-			rt.startMu.Unlock()
-			return SendResult{}, err
-		}
-	}
-
-	h.mu.Lock()
-	meta = h.agents[agentID]
-	if meta == nil {
-		h.mu.Unlock()
-		rt.startMu.Unlock()
-		return SendResult{}, errf(404, "agent vanished")
-	}
-	if rt.activeTurn != nil && !rt.activeTurn.finished {
-		h.mu.Unlock()
-		rt.startMu.Unlock()
-		return SendResult{}, errf(409, "agent %q is already running a task", meta.Name)
-	}
-	turn := &turnState{
-		task:         text,
-		inboxItemID:  inboxItemID,
-		attemptID:    attemptID,
-		startedAt:    time.Now(),
-		lastActivity: time.Now(),
-		stopWatchdog: make(chan struct{}),
-	}
-	rt.activeTurn = turn
-	meta.Source = "" // adopting an edge mirror into CodexLoom's own registry
-	meta.Status = "running"
-	meta.CurrentTask = text
-	meta.CurrentTurnID = ""
-	meta.LastError = ""
-	meta.UpdatedAt = now()
-	h.persistLocked()
-	h.emitLocked(agentID, "loom/user-message", map[string]any{"text": text})
-	h.emitStatusLocked(meta, "running")
-	threadID, approvalPolicy, model, effort := meta.ThreadID, meta.ApprovalPolicy, meta.Model, meta.Effort
-	h.mu.Unlock()
-	rt.startMu.Unlock()
-
-	go h.watchdog(agentID, turn, inactivity)
-
-	params := map[string]any{
-		"threadId":       threadID,
-		"input":          []map[string]any{{"type": "text", "text": text}},
-		"approvalPolicy": approvalPolicy,
-	}
-	if model != "" {
-		params["model"] = model
-	}
-	if effort != "" {
-		params["effort"] = effort
-	}
-	startTurn := func() (json.RawMessage, error) {
-		return rt.client.Request("turn/start", params, 30*time.Second)
-	}
-	result, err := startTurn()
-	if err != nil && isThreadNotFoundError(err) {
-		// The Thread can be evicted between resume and turn/start. Keep the
-		// already-reserved Turn and retry this idempotent pre-start sequence once.
-		if resumeErr := h.resumeAgentThread(agentID, rt); resumeErr == nil {
-			result, err = startTurn()
-		} else {
-			err = fmt.Errorf("%v; retry %v", err, resumeErr)
-		}
-	}
-	if err != nil {
-		h.mu.Lock()
-		if m := h.agents[agentID]; m != nil {
-			h.finishTurnLocked(m, rt, "failed", "turn/start failed: "+err.Error())
-		}
-		h.mu.Unlock()
-		return SendResult{}, errf(500, "turn/start failed: %s", err)
-	}
-	var parsed struct {
-		Turn struct {
-			ID string `json:"id"`
-		} `json:"turn"`
-		TurnID string `json:"turnId"`
-		ID     string `json:"id"`
-	}
-	_ = json.Unmarshal(result, &parsed)
-	turnID := parsed.Turn.ID
-	if turnID == "" {
-		turnID = parsed.TurnID
-	}
-	if turnID == "" {
-		turnID = parsed.ID
-	}
-
-	h.mu.Lock()
-	if turnID != "" && turn.turnID == "" && !turn.finished {
-		turn.turnID = turnID
-		h.markInboxAttemptRunningLocked(turn)
-		if m := h.agents[agentID]; m != nil {
-			m.CurrentTurnID = turnID
-			h.persistLocked()
-		}
-	}
-	h.emitLocked(agentID, "loom/turn-started", map[string]any{"turnId": turn.turnID, "task": text})
-	h.mu.Unlock()
-
-	return SendResult{Dispatched: true, AgentID: agentID, SessionID: agentID, TurnID: turnID}, nil
-}
-
-func isThreadNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "thread not found") ||
-		(strings.Contains(message, "thread") && strings.Contains(message, "not found"))
-}
-
-func (h *Hub) watchdog(agentID string, turn *turnState, inactivity time.Duration) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-turn.stopWatchdog:
-			return
-		case <-ticker.C:
-			h.mu.Lock()
-			finished := turn.finished
-			idle := time.Since(turn.lastActivity)
-			total := time.Since(turn.startedAt)
-			h.mu.Unlock()
-			if finished {
-				return
-			}
-			if idle > inactivity {
-				_, _ = h.Interrupt(agentID, fmt.Sprintf("inactivity timeout (%s)", inactivity))
-				return
-			}
-			if total > absoluteTurnCap {
-				_, _ = h.Interrupt(agentID, "absolute turn cap (4h)")
-				return
-			}
-		}
-	}
-}
-
-type InterruptResult struct {
-	Interrupted bool   `json:"interrupted"`
-	Message     string `json:"message,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-}
-
-func (h *Hub) Interrupt(key, reason string) (InterruptResult, error) {
-	if reason == "" {
-		reason = "interrupted by caller"
-	}
-	h.mu.Lock()
-	meta := h.resolveLocked(key)
-	if meta == nil {
-		h.mu.Unlock()
-		return InterruptResult{}, errf(404, "agent not found: %s", key)
-	}
-	rt := h.runtimes[meta.ID]
-	if rt == nil || rt.activeTurn == nil || rt.activeTurn.finished {
-		if meta.Status == "running" {
-			meta.Status = "idle"
-			meta.CurrentTask = ""
-			meta.CurrentTurnID = ""
-			meta.LastError = reason
-			meta.UpdatedAt = now()
-			h.persistLocked()
-			h.emitStatusLocked(meta, "idle")
-		}
-		h.mu.Unlock()
-		return InterruptResult{Interrupted: false, Message: "no active task"}, nil
-	}
-	turn := rt.activeTurn
-	agentID := meta.ID
-	threadID := meta.ThreadID
-	turnID := turn.turnID
-	client := rt.client
-	h.mu.Unlock()
-
-	params := map[string]any{"threadId": threadID}
-	if turnID != "" {
-		params["turnId"] = turnID
-	}
-	_, err := client.Request("turn/interrupt", params, 10*time.Second)
-	if err != nil {
-		return InterruptResult{}, errf(500, "turn/interrupt failed: %s", err)
-	}
-	// codex should follow up with turn/completed(status=interrupted); force
-	// the bookkeeping if that doesn't arrive shortly.
-	go func() {
-		time.Sleep(3 * time.Second)
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if !turn.finished {
-			if m := h.agents[agentID]; m != nil {
-				h.finishTurnLocked(m, rt, "interrupted", reason)
-			}
-		}
-	}()
-	return InterruptResult{Interrupted: true, Reason: reason}, nil
-}
-
-func (h *Hub) ArchiveAgent(key string) (map[string]any, error) {
-	h.mu.Lock()
-	meta := h.resolveLocked(key)
-	if meta == nil {
-		h.mu.Unlock()
-		return nil, errf(404, "agent not found: %s", key)
-	}
-	agentID := meta.ID
-	rt := h.runtimes[agentID]
-	hasActive := rt != nil && rt.activeTurn != nil && !rt.activeTurn.finished
-	threadID := meta.ThreadID
-	name := meta.Name
-	h.mu.Unlock()
-
-	if hasActive {
-		_, _ = h.Interrupt(agentID, "agent archived")
-	}
-	// Best-effort thread archive on the shared CodexHost connection.
-	if rt != nil && !rt.client.Closed() {
-		if waitReady(rt) == nil {
-			_, _ = rt.client.Request("thread/archive", map[string]any{"threadId": threadID}, 10*time.Second)
-		}
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.runtimes, agentID)
-	if _, ok := h.agents[agentID]; !ok {
-		return nil, errf(404, "agent not found: %s", key)
-	}
-	h.emitLocked(agentID, "loom/agent-archived", map[string]any{"id": agentID, "name": name})
-	killed := *h.agents[agentID]
-	delete(h.agents, agentID)
-	h.persistLocked()
-	killed.Status = "killed"
-	h.emitStatusLocked(&killed, "killed")
-	return map[string]any{"archived": true, "killed": true, "id": agentID, "name": name}, nil
-}
-
-// KillSession is the pre-CodexLoom compatibility method.
-func (h *Hub) KillSession(key string) (map[string]any, error) { return h.ArchiveAgent(key) }
-
-// ---- history (read from codex rollout files) ----
-//
-// History is NOT reconstructed from CodexLoom's own event log. The real,
-// complete history of any Agent lives in the Codex rollout file that
-// `codex app-server` writes for its thread; we read it directly (see the
-// rollout package). This means imported/adopted agents show their full
-// history immediately, and no "migration/conversion" step exists. Live events
-// (from an Agent CodexLoom is actively driving) still flow through the store
-// event log for real-time SSE broadcast — but historical viewing always reads
-// the rollout, so a non-driven Agent is fully viewable too.
-
-type HistoryTurn struct {
-	ID     string           `json:"id"`
-	Status string           `json:"status"`
-	Items  []map[string]any `json:"items"`
-}
-
-type History struct {
-	ID       string        `json:"id"`
-	Name     string        `json:"name"`
-	Cwd      string        `json:"cwd"`
-	ThreadID string        `json:"threadId"`
-	Status   string        `json:"status"`
-	Total    int           `json:"total"` // total turns in the rollout (for scroll-up paging)
-	Turns    []HistoryTurn `json:"turns"`
-}
-
-func (h *Hub) History(key string, count, offset int) (History, error) {
-	if count <= 0 {
-		count = 10
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	h.mu.Lock()
-	meta := h.resolveLocked(key)
-	if meta == nil {
-		h.mu.Unlock()
-		return History{}, errf(404, "agent not found: %s", key)
-	}
-	view := h.viewLocked(meta)
-	h.mu.Unlock()
-	applyRolloutStatus(&view)
-
-	threadID := view.ThreadID
-	hist := History{ID: view.ID, Name: view.Name, Cwd: view.Cwd, ThreadID: threadID, Status: view.Status}
-
-	if threadID == "" {
-		return hist, nil // no thread started yet → no rollout, no history
-	}
-
-	tr, err := rollout.Read(threadID)
-	if err != nil {
-		// No rollout on disk (e.g. a new Agent before its first Turn is
-		// flushed). Not an error: report empty history for this Agent.
-		log.Printf("[codex-loom] history: no rollout for %s (thread %s): %v", view.Name, threadID, err)
-		return hist, nil
-	}
-	all := tr.Turns
-	hist.Total = len(all)
-	if len(all) > 0 && all[len(all)-1].Status == "running" && hist.Status != "running" {
-		if latest, err := rollout.LatestTurn(threadID); err == nil && latest != nil && latest.Status == "running" && externalTurnLooksLive(threadID, latest.UpdatedAt) {
-			hist.Status = "running"
-		} else {
-			all[len(all)-1].Status = "interrupted"
-		}
-	}
-	// Window from the end: skip the newest `offset` turns, take `count` before them.
-	end := len(all) - offset
-	if end < 0 {
-		end = 0
-	}
-	start := end - count
-	if start < 0 {
-		start = 0
-	}
-	turns := all[start:end]
-	for _, t := range turns {
-		items := t.Items
-		if items == nil {
-			items = []map[string]any{}
-		}
-		hist.Turns = append(hist.Turns, HistoryTurn{ID: t.ID, Status: t.Status, Items: items})
-	}
-	return hist, nil
-}
-
-// Shutdown closes all codex processes. Running agents keep status=running
-// on disk so the next startup marks them interrupted.
-func (h *Hub) Shutdown() {
-	h.stopOnce.Do(func() {
-		if h.stop != nil {
-			close(h.stop)
-		}
-	})
-	h.background.Wait()
-	h.mu.Lock()
-	host := h.codexHost
-	h.codexHost = nil
-	h.remoteRuntime = nil
-	for _, rt := range h.runtimes {
-		if rt.activeTurn != nil && !rt.activeTurn.finished {
-			rt.activeTurn.finished = true
-			if rt.activeTurn.stopWatchdog != nil {
-				close(rt.activeTurn.stopWatchdog)
-			}
-		}
-	}
-	h.persistLocked()
-	h.mu.Unlock()
-	if host != nil {
-		host.client.Close()
-	}
 }

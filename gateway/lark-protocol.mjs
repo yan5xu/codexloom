@@ -29,3 +29,20 @@ export function larkReactionAction(entry) {
   if (entry.item.outcome === 'reply' && entry.outboxItem?.state === 'sent') return 'remove';
   return 'wait';
 }
+
+export function larkLocalImageAttachment(item) {
+  const attachments = item?.content?.attachments || [];
+  for (const attachment of attachments) {
+    const localPath = String(attachment?.path || '').trim();
+    if (!localPath) continue;
+    const mimeType = String(attachment?.mimeType || '').toLowerCase();
+    const extension = localPath.toLowerCase().match(/\.(png|jpe?g|gif|webp|bmp|tiff?)$/)?.[1];
+    if (mimeType.startsWith('image/') || extension) return { ...attachment, path: localPath };
+  }
+  return null;
+}
+
+export function larkOutboundContentArgs(item, imageInput = '') {
+  if (imageInput) return ['--image', imageInput];
+  return ['--markdown', String(item?.content?.text || '')];
+}

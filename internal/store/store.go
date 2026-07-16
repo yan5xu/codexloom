@@ -5,7 +5,8 @@
 //	agents.json          Agent registry: stable identity plus primary Codex thread binding
 //	sessions.json        compatibility mirror for pre-CodexLoom binaries
 //	profiles.json        long-lived collaboration profiles keyed by agent id
-//	team-links.json      explicit long-lived relationships between agents
+//	team-links.json      explicit long-lived collaboration relationships
+//	organization-links.json explicit parent/child organization relationships
 //	comms.ndjson         append-only agent-to-agent communication log
 //	schedules.json       durable scheduler definitions
 //	integrations.json    platform connections, agent addresses and conversation memberships (no secrets)
@@ -13,6 +14,8 @@
 //	inbox.ndjson         per-agent inbox item snapshots
 //	attempts.ndjson      inbox handling attempt snapshots
 //	outbox.ndjson        durable outbound message snapshots
+//	provider-operations.ndjson durable credential-mediated provider operation snapshots
+//	human-requests.ndjson durable Agent-to-human request snapshots
 //	events/<id>.ndjson   append-only per-Agent event log, one JSON per line
 //
 // agents.json is a small registry, not a history store: Thread history lives in
@@ -26,9 +29,11 @@ package store
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type Event struct {
@@ -39,7 +44,10 @@ type Event struct {
 }
 
 type Store struct {
-	dir string
+	dir          string
+	eventMu      sync.Mutex
+	eventPolicy  EventLogPolicy
+	eventLastSeq map[string]int64
 }
 
 func DefaultDir() string {
@@ -63,7 +71,11 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "events"), 0o755); err != nil {
 		return nil, err
 	}
-	return &Store{dir: dir}, nil
+	return &Store{
+		dir:          dir,
+		eventPolicy:  EventLogPolicyFromEnv(),
+		eventLastSeq: map[string]int64{},
+	}, nil
 }
 
 func migrateLegacyDefaultDir(dir string) error {
@@ -164,6 +176,10 @@ func (s *Store) profilesFile() string { return filepath.Join(s.dir, "profiles.js
 
 func (s *Store) teamLinksFile() string { return filepath.Join(s.dir, "team-links.json") }
 
+func (s *Store) organizationLinksFile() string {
+	return filepath.Join(s.dir, "organization-links.json")
+}
+
 func (s *Store) integrationsFile() string { return filepath.Join(s.dir, "integrations.json") }
 
 func (s *Store) remoteFile() string { return filepath.Join(s.dir, "remote.json") }
@@ -175,6 +191,12 @@ func (s *Store) inboxFile() string { return filepath.Join(s.dir, "inbox.ndjson")
 func (s *Store) attemptsFile() string { return filepath.Join(s.dir, "attempts.ndjson") }
 
 func (s *Store) outboxFile() string { return filepath.Join(s.dir, "outbox.ndjson") }
+
+func (s *Store) providerOperationsFile() string {
+	return filepath.Join(s.dir, "provider-operations.ndjson")
+}
+
+func (s *Store) humanRequestsFile() string { return filepath.Join(s.dir, "human-requests.ndjson") }
 
 func (s *Store) eventsFile(agentID string) string {
 	return filepath.Join(s.dir, "events", agentID+".ndjson")
@@ -201,10 +223,13 @@ func (s *Store) LoadAgents(v any) error {
 
 // SaveAgents writes agents.json and a compatibility sessions.json mirror.
 func (s *Store) SaveAgents(v any) error {
-	if err := saveJSON(s.agentsFile(), v); err != nil {
+	// The compatibility mirror is written first. If its write fails, the
+	// canonical registry is untouched; if the canonical write fails, startup
+	// still reads the previous agents.json and the caller receives the error.
+	if err := saveJSON(s.sessionsFile(), v); err != nil {
 		return err
 	}
-	return saveJSON(s.sessionsFile(), v)
+	return saveJSON(s.agentsFile(), v)
 }
 
 // Deprecated compatibility names.
@@ -224,15 +249,7 @@ func (s *Store) LoadSchedules(v any) error {
 }
 
 func (s *Store) SaveSchedules(v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := s.schedulesFile() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.schedulesFile())
+	return saveJSON(s.schedulesFile(), v)
 }
 
 func (s *Store) LoadProfiles(v any) error { return loadJSON(s.profilesFile(), v) }
@@ -242,6 +259,10 @@ func (s *Store) SaveProfiles(v any) error { return saveJSON(s.profilesFile(), v)
 func (s *Store) LoadTeamLinks(v any) error { return loadJSON(s.teamLinksFile(), v) }
 
 func (s *Store) SaveTeamLinks(v any) error { return saveJSON(s.teamLinksFile(), v) }
+
+func (s *Store) LoadOrganizationLinks(v any) error { return loadJSON(s.organizationLinksFile(), v) }
+
+func (s *Store) SaveOrganizationLinks(v any) error { return saveJSON(s.organizationLinksFile(), v) }
 
 func (s *Store) LoadIntegrations(v any) error { return loadJSON(s.integrationsFile(), v) }
 
@@ -267,11 +288,45 @@ func saveJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	return replaceFile(path, data, 0o600)
+}
+
+func replaceFile(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		_ = tmp.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	committed = true
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func (s *Store) AppendComm(v any) error {
@@ -279,24 +334,7 @@ func (s *Store) AppendComm(v any) error {
 }
 
 func (s *Store) ReadComms(fn func(json.RawMessage)) error {
-	f, err := os.Open(s.commsFile())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		fn(json.RawMessage(append([]byte(nil), line...)))
-	}
-	return sc.Err()
+	return readNDJSON(s.commsFile(), fn)
 }
 
 func (s *Store) AppendMessage(v any) error { return appendNDJSON(s.messagesFile(), v) }
@@ -318,6 +356,20 @@ func (s *Store) ReadAttempts(fn func(json.RawMessage)) error {
 func (s *Store) AppendOutbox(v any) error { return appendNDJSON(s.outboxFile(), v) }
 
 func (s *Store) ReadOutbox(fn func(json.RawMessage)) error { return readNDJSON(s.outboxFile(), fn) }
+
+func (s *Store) AppendProviderOperation(v any) error {
+	return appendNDJSON(s.providerOperationsFile(), v)
+}
+
+func (s *Store) ReadProviderOperations(fn func(json.RawMessage)) error {
+	return readNDJSON(s.providerOperationsFile(), fn)
+}
+
+func (s *Store) AppendHumanRequest(v any) error { return appendNDJSON(s.humanRequestsFile(), v) }
+
+func (s *Store) ReadHumanRequests(fn func(json.RawMessage)) error {
+	return readNDJSON(s.humanRequestsFile(), fn)
+}
 
 func appendNDJSON(path string, v any) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -346,10 +398,15 @@ func readNDJSON(path string, fn func(json.RawMessage)) error {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
+	lineNumber := 0
 	for sc.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
+		}
+		if !json.Valid([]byte(line)) {
+			return fmt.Errorf("%s:%d: invalid JSON record", path, lineNumber)
 		}
 		fn(json.RawMessage(append([]byte(nil), line...)))
 	}
@@ -377,64 +434,5 @@ func (s *Store) ReplaceComms(records []json.RawMessage) error {
 		data = append(data, record...)
 		data = append(data, '\n')
 	}
-	tmp := s.commsFile() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.commsFile())
-}
-
-func (s *Store) AppendEvent(agentID string, ev Event) error {
-	f, err := os.OpenFile(s.eventsFile(agentID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	data, err := json.Marshal(ev)
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(append(data, '\n'))
-	return err
-}
-
-// ReadEvents returns events with seq > since; tail>0 keeps only the last N.
-func (s *Store) ReadEvents(agentID string, since int64, tail int) ([]Event, error) {
-	f, err := os.Open(s.eventsFile(agentID))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer f.Close()
-	var out []Event
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var ev Event
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
-		}
-		if ev.Seq > since {
-			out = append(out, ev)
-		}
-	}
-	if tail > 0 && len(out) > tail {
-		out = out[len(out)-tail:]
-	}
-	return out, nil
-}
-
-// LastSeq returns the highest seq in the Agent event log (0 if none).
-func (s *Store) LastSeq(agentID string) int64 {
-	events, err := s.ReadEvents(agentID, 0, 1)
-	if err != nil || len(events) == 0 {
-		return 0
-	}
-	return events[len(events)-1].Seq
+	return replaceFile(s.commsFile(), data, 0o600)
 }

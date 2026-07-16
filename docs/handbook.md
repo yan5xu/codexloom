@@ -376,8 +376,12 @@ Remote enrollment 以 app-server `clientInfo.name` 为持久 scope。共享 Host
    Inbox/Schedule/Agent Message 排队；Goal 中发出的 required 请求之回复和 Needs You 回答
    可以继续进入该 Thread。
 6. `paused`、`blocked`、`usageLimited`、`budgetLimited` 和 `complete` Goal 继续显示并保留历史，
-   但不占用 Agent：新消息可以正常投递，尤其可能为 blocked Goal 提供解除阻塞的信息。Restart Loom
-   只等待当前 active Turn；重启后的 active Goal 由 Codex 继续。
+   但不占用 Agent：新消息可以正常投递，尤其可能为 blocked Goal 提供解除阻塞的信息。
+7. Restart Loom 会把当时仍为 `active` 的 Goal 临时改成 `paused`，让当前 Turn 自然结束且不再立即
+   continuation。Loom 在数据目录的隐藏恢复意图中只记录本次暂停的 Agent ID；新进程启动后，仅把仍为
+   `paused` 的这些 Goal 恢复为 `active`。如果最后一轮已完成、清除或改变 Goal，恢复会跳过；备份或
+   reloader 启动失败则取消 drain 并恢复本次暂停的 Goal。该隐藏意图不进入备份，也不是 Goal 的第二份
+   持久化状态。
 
 ### Remote 启动 Turn
 
@@ -595,7 +599,9 @@ Capacity 与 Token Usage 使用同一套包含首尾日期的日历选择器：`
    新 Turn、新 root Agent Message 和新 Connector claim。Hub 进入 drain 后不再领取 queued Agent Message、
    Inbox、Needs You answer、Outbox 或 ProviderOperation，防止旧进程在收尾期间被队列持续续占；这些
    durable work 由新进程继续。当前 required 工作的因果 reply 仍可通过 `turn/steer` 进入原 Turn，
-   否则 restart waiting 会与当前 Turn 的回复义务形成死锁。备份或 reloader 启动失败时必须取消 drain。
+   否则 restart waiting 会与当前 Turn 的回复义务形成死锁。Active Goal 必须先在 Turn 边界暂停自动
+   continuation，并在新进程启动后条件恢复；否则持续 Goal 会让 restart 永远等不到 idle。备份或
+   reloader 启动失败时必须取消 drain 并恢复由本次重启暂停的 Goal。
 6. 独立 `codex-loom-reloader` 在 HTTP response 返回后 SIGTERM 旧服务。服务先停止 HTTP，再等待
    scheduler/inbox/delivery/remote/event loops 和所有已登记 worker，最后关闭共享 CodexHost。
 7. reloader 最多给旧进程 60 秒优雅退出，再启动同一 executable。

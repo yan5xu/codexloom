@@ -441,6 +441,11 @@ func (s *Server) adminRestart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.hub.BeginDrain()
+	if err := s.prepareGoalsForRestart(); err != nil {
+		s.failRestart("pause active Goals for restart: " + err.Error())
+		writeErr(w, &hub.HubError{Status: 500, Message: "pause active Goals for restart: " + err.Error()})
+		return
+	}
 	drain := s.hub.DrainStatus()
 	if state, started := s.markRestartWaiting(drain); !started {
 		writeJSON(w, 202, map[string]any{"restart": state})
@@ -558,6 +563,9 @@ func (s *Server) waitForIdleAndRestart() {
 
 func (s *Server) failRestart(message string) {
 	s.hub.CancelDrain()
+	if err := s.restoreGoalsAfterFailedRestart(); err != nil {
+		message += "; restore paused Goals: " + err.Error()
+	}
 	s.setRestartState(restartState{
 		State:     "failed",
 		Message:   message,

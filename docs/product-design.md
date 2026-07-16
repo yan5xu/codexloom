@@ -218,7 +218,7 @@ Settings is a low-frequency bottom entry with these sections:
 - System;
 - Developer.
 
-Restart exposes a truthful lifecycle: ready, draining with the list of active work, restarting/reconnecting, complete, or failed with a recovery command. Developer contains Design System, API diagnostics, canary tools, and raw events and stays out of normal navigation.
+Restart exposes a truthful lifecycle: ready, draining with the list of active work, restarting/reconnecting, complete, or failed with a recovery command. An active Goal stops automatic continuation at the current Turn boundary and is resumed after the new process starts; the current Turn is never interrupted. Developer contains Design System, API diagnostics, canary tools, and raw events and stays out of normal navigation.
 
 ## Agent Creation
 

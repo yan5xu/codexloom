@@ -77,6 +77,23 @@ func TestOnlyActiveGoalReservesThreadButCausalReplyRemainsEligible(t *testing.T)
 	}
 }
 
+func TestActiveGoalAgentIDsAreStableAndSorted(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	h.goals["agent-z"] = &ThreadGoal{ThreadID: "thread-z", Objective: "Z", Status: GoalStatusActive}
+	h.goals["agent-paused"] = &ThreadGoal{ThreadID: "thread-p", Objective: "P", Status: GoalStatusPaused}
+	h.goals["agent-a"] = &ThreadGoal{ThreadID: "thread-a", Objective: "A", Status: GoalStatusActive}
+
+	got := h.ActiveGoalAgentIDs()
+	want := []string{"agent-a", "agent-z"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("active Goal Agent IDs = %#v, want %#v", got, want)
+	}
+}
+
 func TestActiveGoalKeepsExternalInboxQueued(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {

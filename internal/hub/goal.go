@@ -2,8 +2,10 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 )
@@ -61,6 +63,104 @@ func validGoalStatus(status string) bool {
 func (h *Hub) activeGoalReservesThreadLocked(agentID string) bool {
 	goal := h.goals[agentID]
 	return goal != nil && goal.Status == GoalStatusActive
+}
+
+// ActiveGoalAgentIDs returns the stable identities whose native Codex Goals
+// currently own automatic continuation. It is used by graceful restart to
+// stop at a Turn boundary instead of waiting forever for an active Goal.
+func (h *Hub) ActiveGoalAgentIDs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ids := make([]string, 0)
+	for agentID, goal := range h.goals {
+		if goal != nil && goal.Status == GoalStatusActive {
+			ids = append(ids, agentID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// PauseGoalsForRestart pauses only Goals that are still active when each
+// update reaches Codex. The active Turn is not interrupted; changing the Goal
+// status only prevents Codex from immediately starting its next continuation.
+func (h *Hub) PauseGoalsForRestart(agentIDs []string) ([]string, error) {
+	paused := make([]string, 0, len(agentIDs))
+	for _, agentID := range uniqueSortedStrings(agentIDs) {
+		goal, err := h.GetGoal(agentID)
+		if err != nil {
+			return paused, fmt.Errorf("read Goal for %s: %w", agentID, err)
+		}
+		if goal == nil || goal.Status != GoalStatusActive {
+			continue
+		}
+		status := GoalStatusPaused
+		updated, err := h.UpdateGoal(agentID, GoalUpdateParams{Status: &status})
+		if err != nil {
+			return paused, fmt.Errorf("pause Goal for %s: %w", agentID, err)
+		}
+		if updated == nil || updated.Status != GoalStatusPaused {
+			return paused, fmt.Errorf("pause Goal for %s returned status %q", agentID, goalStatus(updated))
+		}
+		paused = append(paused, agentID)
+	}
+	return paused, nil
+}
+
+// ResumeGoalsAfterRestart resumes only Goals that remain paused. A Goal that
+// completed, was cleared, or was otherwise changed while its final Turn
+// drained is left untouched. Repeating this operation is therefore safe.
+func (h *Hub) ResumeGoalsAfterRestart(agentIDs []string) error {
+	var errs []error
+	for _, agentID := range uniqueSortedStrings(agentIDs) {
+		goal, err := h.GetGoal(agentID)
+		if err != nil {
+			var hubErr *HubError
+			if errors.As(err, &hubErr) && hubErr.Status == 404 {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("read Goal for %s: %w", agentID, err))
+			continue
+		}
+		if goal == nil || goal.Status != GoalStatusPaused {
+			continue
+		}
+		status := GoalStatusActive
+		updated, err := h.UpdateGoal(agentID, GoalUpdateParams{Status: &status})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("resume Goal for %s: %w", agentID, err))
+			continue
+		}
+		if updated == nil || updated.Status != GoalStatusActive {
+			errs = append(errs, fmt.Errorf("resume Goal for %s returned status %q", agentID, goalStatus(updated)))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func goalStatus(goal *ThreadGoal) string {
+	if goal == nil {
+		return ""
+	}
+	return goal.Status
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (h *Hub) applyGoalLocked(agentID string, goal *ThreadGoal, emit bool) {

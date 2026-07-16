@@ -55,7 +55,7 @@ func main() {
 	}
 	srv := httpapi.NewWithOptions(h, st, webui.FS(), httpapi.Options{StartedAt: startedAt, Mode: mode, ReadOnly: *canary})
 	if !*canary {
-		startup.Add(2)
+		startup.Add(3)
 		go func() {
 			defer startup.Done()
 			if err := h.SyncThreadNames(); err != nil {
@@ -65,6 +65,10 @@ func main() {
 		go func() {
 			defer startup.Done()
 			srv.RestartManagedGateways()
+		}()
+		go func() {
+			defer startup.Done()
+			srv.ResumeRestartPausedGoals()
 		}()
 	}
 

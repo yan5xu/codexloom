@@ -331,6 +331,22 @@ function externalMessageBlock(text: string, ts: string): Block | null {
   }
 }
 
+function humanInputResponseSummary(text: string): string {
+  const raw = (text || "").trim();
+  if (!raw.startsWith("<human_input_response")) return "";
+  try {
+    const doc = new DOMParser().parseFromString(raw, "application/xml");
+    const root = doc.documentElement;
+    if (!root || root.nodeName !== "human_input_response" || doc.getElementsByTagName("parsererror").length > 0) {
+      return "";
+    }
+    const answer = directChildText(root, "answer");
+    return answer ? `Owner answer · ${answer}` : "Owner answered a request";
+  } catch {
+    return "";
+  }
+}
+
 function normalizeAttachment(value: any): ExternalAttachment {
   return {
     id: typeof value?.id === "string" ? value.id : undefined,
@@ -388,6 +404,8 @@ function userBlock(ts: string, rawText: string, rawAttachments: any[] = []): Blo
 
 export function summarizeTask(text: string): string {
   text = extractLoomAttachments(text).text;
+  const humanInput = humanInputResponseSummary(text);
+  if (humanInput) return humanInput;
   const external = externalMessageBlock(text, "");
   if (external?.kind === "externalMessage") {
     const destination = external.membershipName || external.conversationId;

@@ -89,12 +89,20 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
     refetchInterval: 30_000,
   });
   const connections = connectionsQuery.data?.connections?.filter((connection) => !connection.archivedAt) || [];
+  const enabledConnections = connections.filter((connection) => connection.enabled);
   const executing = agents.filter(isAgentExecuting);
   const openRequests = requests.filter((request) => request.state === "open");
   const activeEntries = entries.filter((entry) => !["handled", "cancelled"].includes(entry.item.state));
   const failedAgents = agents.filter((agent) => Boolean(agent.lastError));
-  const connectorIssues = connections.filter((connection) => connection.enabled && connection.status !== "connected");
+  const connectorIssues = enabledConnections.filter((connection) => connection.status !== "connected");
   const oldest = oldestWaitingMs(activeEntries);
+  const externalStatus = connectionsQuery.isPending
+    ? { value: "–", detail: "Checking connections", tone: "text-muted-foreground" }
+    : connectionsQuery.isError
+      ? { value: "!", detail: "Connection status unavailable", tone: "text-destructive" }
+      : connectorIssues.length > 0
+        ? { value: String(connectorIssues.length), detail: `${connectorIssues.length} of ${enabledConnections.length} need attention`, tone: "text-destructive" }
+        : { value: "0", detail: enabledConnections.length ? `${enabledConnections.length} enabled connections connected` : "No enabled connections", tone: "text-muted-foreground" };
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -103,7 +111,7 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
           <StatusMetric icon={Users} label="Executing now" value={String(executing.length)} detail={`${agents.length - executing.length} ready or unavailable`} tone="text-success" />
           <StatusMetric icon={CircleHelp} label="Needs You" value={String(openRequests.length)} detail={openRequests.length ? "Owner decisions waiting" : "No Owner decision waiting"} tone={openRequests.length ? "text-warning" : "text-muted-foreground"} onClick={onOpenNeedsYou} />
           <StatusMetric icon={Inbox} label="Agent Inbox" value={String(activeEntries.length)} detail={oldest ? `Oldest ${formatDuration(oldest)}` : "No queued Agent work"} tone={activeEntries.length ? "text-warning" : "text-muted-foreground"} />
-          <StatusMetric icon={RadioTower} label="External" value={String(connectorIssues.length)} detail={connectorIssues.length ? "Connector issues" : `${connections.length} connections healthy`} tone={connectorIssues.length ? "text-destructive" : "text-muted-foreground"} onClick={onOpenExternal} />
+          <StatusMetric icon={RadioTower} label="External" value={externalStatus.value} detail={externalStatus.detail} tone={externalStatus.tone} onClick={onOpenExternal} />
         </section>
 
         <div className="mt-7 grid gap-7 lg:grid-cols-[minmax(0,1.25fr)_minmax(300px,.75fr)]">
@@ -130,7 +138,13 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
                   <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{agent.name}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{[attention.needsYou ? `${attention.needsYou} need you` : "", attention.inbox ? `${attention.inbox} inbox` : "", attention.failures ? `${attention.failures} issue` : ""].filter(Boolean).join(" · ")}</span></span>
                 </button>
               ))}
-              {failedAgents.length === 0 && openRequests.length === 0 && activeEntries.length === 0 && connectorIssues.length === 0 ? <div className="px-2 py-8 text-center text-[11px] text-muted-foreground">No current attention signals.</div> : null}
+              {connectionsQuery.isError || connectorIssues.length > 0 ? (
+                <button type="button" onClick={onOpenExternal} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
+                  <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
+                  <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">External connections</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{connectionsQuery.isError ? "Status unavailable" : `${connectorIssues.length} need attention`}</span></span>
+                </button>
+              ) : null}
+              {failedAgents.length === 0 && openRequests.length === 0 && activeEntries.length === 0 && connectorIssues.length === 0 && !connectionsQuery.isError ? <div className="px-2 py-8 text-center text-[11px] text-muted-foreground">No current attention signals.</div> : null}
             </div>
           </section>
         </div>

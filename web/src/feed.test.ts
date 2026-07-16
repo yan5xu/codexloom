@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { emptyFeed, reduceFeed } from "./feed";
+import { emptyFeed, reduceFeed, summarizeTask } from "./feed";
 
 describe("rollout history projection", () => {
+  it("summarizes a Human Input response without exposing its XML envelope", () => {
+    const text = `<human_input_response version="1" request_id="hrq_test" expectation="required">
+  <question><![CDATA[May I restart?]]></question>
+  <answer><![CDATA[Proceed at the safe boundary]]></answer>
+  <blocked_work><![CDATA[Production verification]]></blocked_work>
+</human_input_response>`;
+    expect(summarizeTask(text)).toBe("Owner answer · Proceed at the safe boundary");
+  });
+
   it("keeps the item timestamp and restores legacy Markdown newlines", () => {
     const text = `<agent_message version="1" id="msg_test" response="required" status="open">
   <from>alpha</from><to>beta</to><subject>Review</subject>

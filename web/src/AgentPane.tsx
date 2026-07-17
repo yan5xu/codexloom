@@ -892,7 +892,7 @@ export function AgentPane({
                 <button onClick={() => setConfigOpen(false)} className="flex size-7 items-center justify-center rounded-sm hover:bg-muted hover:text-foreground" title="Close agent config" aria-label="Close agent config"><X className="size-3.5" /></button>
               </div>
               <div className="mb-3 flex overflow-x-auto rounded-md bg-muted/60 p-1 text-[11px] font-medium [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                <button onClick={() => setConfigSection("profile")} className={`h-7 rounded ${configSection === "profile" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Profile</button>
+                <button onClick={() => setConfigSection("profile")} className={`h-7 rounded px-3 ${configSection === "profile" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Profile</button>
                 <button onClick={() => setConfigSection("team")} className={`h-7 rounded px-3 ${configSection === "team" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Team</button>
                 <button onClick={() => setConfigSection("external")} className={`h-7 rounded px-3 ${configSection === "external" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>External</button>
                 <button onClick={() => setConfigSection("schedules")} className={`h-7 rounded px-3 ${configSection === "schedules" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>Schedules</button>

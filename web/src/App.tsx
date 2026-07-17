@@ -6,7 +6,6 @@ import { summarizeTask } from "./feed";
 import { BrandLockup, BrandMark } from "./components/BrandMark";
 import { Button } from "./components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
-import { Separator } from "./components/ui/separator";
 import { Input } from "./components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { publishThreadEvent, threadEventSubscriberCount } from "./thread-events";
@@ -286,7 +285,7 @@ function AgentTabs({
 }) {
   const [openInfoId, setOpenInfoId] = useState<string | null>(null);
   return (
-    <div className="flex h-9 shrink-0 items-stretch overflow-hidden border-b border-border bg-sidebar/45 pl-12 md:pl-0" aria-label="Open agents">
+    <div className="flex h-9 shrink-0 items-stretch overflow-hidden border-b border-sidebar-border/80 bg-sidebar/45 pl-12 md:pl-0" aria-label="Open agents">
       <div className="flex min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist">
         {agents.map((agent, index) => {
           const active = agent.id === activeId;
@@ -1161,7 +1160,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen max-w-full overflow-hidden">
+    <div className="flex h-screen w-screen max-w-full overflow-hidden bg-background">
       {/* backdrop — only on mobile when the drawer is open */}
       {sidebarOpen && (
         <div
@@ -1171,11 +1170,12 @@ export default function App() {
       )}
       {/* Sidebar is a full drawer on mobile and fully retracts on desktop. */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col bg-sidebar shadow-xl transition-[transform,translate] duration-200 md:z-auto md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:hidden" : "md:static md:flex md:translate-x-0"} ${
+        aria-label="Agent workspace sidebar"
+        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col border-r border-sidebar-border/80 bg-sidebar shadow-xl transition-[transform,translate] duration-200 md:z-auto md:border-sidebar-border md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:hidden" : "md:static md:flex md:translate-x-0"} ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="relative flex h-14 shrink-0 items-center px-3">
+        <div className="relative flex h-12 shrink-0 items-center border-b border-sidebar-border/80 px-3 md:h-9">
           <div className="min-w-0"><BrandLockup compact /></div>
           <Button
             variant="ghost"
@@ -1188,8 +1188,6 @@ export default function App() {
             <X />
           </Button>
         </div>
-
-        <Separator className="mx-3 w-auto" />
 
         <AgentActivityPopover agents={agents} humanRequests={openHumanRequests} onSelect={selectAgent} onSelectRequest={selectNeedsYou} />
 
@@ -1259,7 +1257,7 @@ export default function App() {
           </div>
         </section>
 
-        <div className="grid shrink-0 grid-cols-[1fr_auto_auto] gap-1 border-t border-border/60 bg-sidebar/85 p-2">
+        <div className="grid shrink-0 grid-cols-[1fr_auto_auto] gap-1 border-t border-sidebar-border/80 bg-sidebar/90 p-2">
           <Button onClick={() => setNewAgentOpen(true)} title="Create agent">
             <Plus />
             <span>New agent</span>
@@ -1318,7 +1316,7 @@ export default function App() {
       </button>
 
       {/* Agent tabs stay mounted while global workspaces temporarily cover them. */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
         <AgentTabs
           agents={openAgents}
           allAgents={agents}

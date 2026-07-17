@@ -1218,28 +1218,31 @@ export default function App() {
               const activity = s.currentTask || "";
               const detailTitle = activity ? `${s.cwd}\n${summarizeTask(activity)}` : s.cwd;
               return (
-                <div key={s.id} className="group/agent relative">
+                <div
+                  key={s.id}
+                  className={`group/agent flex h-8 min-w-0 items-center rounded-md ${
+                    active ? "bg-selection text-selection-foreground" : "text-foreground/85 hover:bg-muted"
+                  }`}
+                >
                   <Button
                     type="button"
                     variant="ghost"
                     onClick={() => selectAgent(s.id)}
                     title={detailTitle}
-                    className={`relative h-8 w-full justify-start overflow-hidden px-2.5 pr-8 text-left ${
-                      active ? "bg-selection text-selection-foreground hover:bg-selection" : "text-foreground/85"
-                    }`}
+                    className="h-8 min-w-0 flex-1 justify-start overflow-hidden bg-transparent px-2.5 text-left hover:bg-transparent hover:text-inherit"
                   >
                     <span className={`size-2 shrink-0 rounded-full ${isAgentWorking(s) ? "pulse" : ""} ${executionDotClass(s)}`} />
                     <span className={`min-w-0 flex-1 truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}>{s.name}</span>
                     {unseenAgentIds.has(s.id) ? <span className="size-1.5 shrink-0 rounded-full bg-ring" title="New result from Owner-started work" /> : null}
                     {inboxCount > 0 ? <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground" title={`${inboxCount} Agent Inbox items`}>{inboxCount}</span> : null}
                   </Button>
-                  {needsYou > 0 ? <button type="button" onClick={() => selectNeedsYou(openHumanRequests.find((request) => request.agentId === s.id)?.id)} className="absolute right-8 top-1.5 flex min-w-5 items-center justify-center rounded-sm bg-warning/15 px-1 font-mono text-[8.5px] font-semibold text-warning" title={`${needsYou} request${needsYou === 1 ? "" : "s"} need your input`} aria-label={`Open ${needsYou} human request${needsYou === 1 ? "" : "s"} from ${s.name}`}>{needsYou}</button> : null}
+                  {needsYou > 0 ? <button type="button" onClick={() => selectNeedsYou(openHumanRequests.find((request) => request.agentId === s.id)?.id)} className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-sm bg-warning/15 px-1 font-mono text-[8.5px] font-semibold text-warning outline-none hover:bg-warning/25 focus-visible:ring-2 focus-visible:ring-warning/40" title={`${needsYou} request${needsYou === 1 ? "" : "s"} need your input`} aria-label={`Open ${needsYou} human request${needsYou === 1 ? "" : "s"} from ${s.name}`}>{needsYou}</button> : null}
                   <button
                     type="button"
                     onClick={() => archiveAgent(s)}
                     disabled={archiving}
                     tabIndex={active ? 0 : -1}
-                    className={`absolute right-1 top-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none transition hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-destructive/30 disabled:opacity-50 ${active ? "visible opacity-70" : "invisible opacity-0 group-hover/agent:visible group-hover/agent:opacity-70 group-focus-within/agent:visible group-focus-within/agent:opacity-70"}`}
+                    className={`mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-destructive/30 disabled:opacity-50 ${active ? "visible opacity-70" : "invisible opacity-0 group-hover/agent:visible group-hover/agent:opacity-70 group-focus-within/agent:visible group-focus-within/agent:opacity-70"}`}
                     title={`Archive ${s.name}`}
                     aria-label={`Archive ${s.name}`}
                   >

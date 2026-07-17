@@ -71,6 +71,26 @@ Use `--expect-reply required` for a question that requires a response, `optional
 
 If the Membership is missing, disabled, `reply_only`, or `none`, stop and ask the Integration owner for authorization. Do not change Membership policy from this runtime Skill; configuration belongs to `loom-integrations`.
 
+## Continue an existing external thread
+
+Adding a new message to an older provider thread is a proactive send, not a second reply to a historical Inbox item. Never reuse a handled Inbox ID: Inbox reply idempotency deliberately returns its original Outbox.
+
+1. Select and verify the enabled `outboundPolicy=proactive` Membership for the Conversation.
+2. Use the governed provider-read Skill when necessary to obtain the native thread root or target message ID.
+3. Send to the Membership with a new stable business idempotency key and the provider-native reply location:
+
+```sh
+# Feishu/Lark topic reply: both the root/target message and thread are required.
+loom integration send --from AGENT --to MEMBERSHIP_ID \
+  --message-id om_THREAD_ROOT_MESSAGE \
+  --thread-id omt_THREAD \
+  --body-file /absolute/path/to/follow-up.md \
+  --expect-reply none \
+  --idempotency-key stable-thread-followup-id
+```
+
+The target flags never select a Conversation or external identity; the Membership still owns that authorization. For Slack, `--thread-id` is the provider `thread_ts`. For Parall, `--thread-id` is the thread root message ID. Each follow-up creates a new auditable Outbox and must use a new idempotency key for that business action.
+
 ## Send artifacts safely
 
 - Send only artifacts intentionally prepared for the named recipient and Conversation purpose.

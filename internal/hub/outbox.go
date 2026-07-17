@@ -50,6 +50,9 @@ func (h *Hub) SendExternal(p ExternalSendParams) (OutboxItem, error) {
 		return OutboxItem{}, errf(400, "exactly one of inboxItemId or membershipId is required")
 	}
 	if inboxItemID != "" {
+		if p.ReplyTarget != nil && (strings.TrimSpace(p.ReplyTarget.MessageID) != "" || strings.TrimSpace(p.ReplyTarget.ThreadID) != "") {
+			return OutboxItem{}, errf(400, "replyTarget is only valid when sending to a conversation membership")
+		}
 		_, outbox, err := h.ReplyInboxItem(inboxItemID, InboxActionParams{
 			Agent: p.Agent, Content: p.Content, ResponseExpectation: p.ResponseExpectation,
 		})
@@ -83,6 +86,10 @@ func (h *Hub) SendExternal(p ExternalSendParams) (OutboxItem, error) {
 	if len(p.Content.Attachments) > 0 && !hasCapability(connection.Capabilities, "attachments") {
 		return OutboxItem{}, errf(409, "%s connection does not support attachments", connection.Provider)
 	}
+	replyTarget, err := normalizeExternalReplyTarget(connection.Provider, p.ReplyTarget)
+	if err != nil {
+		return OutboxItem{}, err
+	}
 	key := strings.TrimSpace(p.IdempotencyKey)
 	if key == "" {
 		return OutboxItem{}, errf(400, "idempotencyKey is required for proactive sends")
@@ -107,13 +114,18 @@ func (h *Hub) SendExternal(p ExternalSendParams) (OutboxItem, error) {
 		return OutboxItem{}, errf(400, "invalid responseExpectation %q", expectation)
 	}
 	ts := now()
+	conversation := ConversationRef{
+		Provider: connection.Provider, ConnectionID: connection.ID, ConversationID: membership.ConversationID,
+		ConversationType: membership.ConversationType,
+	}
+	if replyTarget != nil {
+		conversation.MessageID = replyTarget.MessageID
+		conversation.ThreadID = replyTarget.ThreadID
+	}
 	item := OutboxItem{
 		ID: newIntegrationID("out"), AgentID: agent.ID, AddressID: address.ID, MembershipID: membership.ID,
-		Conversation: ConversationRef{
-			Provider: connection.Provider, ConnectionID: connection.ID, ConversationID: membership.ConversationID,
-			ConversationType: membership.ConversationType,
-		},
-		Content: content, ResponseExpectation: expectation, IdempotencyKey: key,
+		Conversation: conversation,
+		Content:      content, ResponseExpectation: expectation, IdempotencyKey: key,
 		State: "pending", CreatedAt: ts, UpdatedAt: ts,
 	}
 	if err := h.st.AppendOutbox(item); err != nil {
@@ -123,6 +135,30 @@ func (h *Hub) SendExternal(p ExternalSendParams) (OutboxItem, error) {
 	h.outboxOrder = append(h.outboxOrder, item.ID)
 	h.emitGlobalLocked("loom/outbox-item", map[string]any{"item": item})
 	return item, nil
+}
+
+func normalizeExternalReplyTarget(provider string, value *ExternalReplyTarget) (*ExternalReplyTarget, error) {
+	if value == nil {
+		return nil, nil
+	}
+	target := &ExternalReplyTarget{
+		MessageID: strings.TrimSpace(value.MessageID),
+		ThreadID:  strings.TrimSpace(value.ThreadID),
+	}
+	if target.MessageID == "" && target.ThreadID == "" {
+		return nil, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "lark", "feishu":
+		if target.MessageID == "" {
+			return nil, errf(400, "%s thread replies require the provider root or target messageId", provider)
+		}
+	case "parall":
+		if target.ThreadID == "" {
+			return nil, errf(400, "parall thread replies require threadId")
+		}
+	}
+	return target, nil
 }
 
 func (h *Hub) CreateOutbox(p OutboxParams) (OutboxItem, error) {

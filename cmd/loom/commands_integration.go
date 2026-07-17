@@ -534,8 +534,13 @@ func cmdIntegrationSend(a args) {
 	agent := strings.TrimSpace(a.flags["from"])
 	replyTo := strings.TrimSpace(a.flags["reply-to"])
 	membershipID := strings.TrimSpace(a.flags["to"])
+	messageID := strings.TrimSpace(a.flags["message-id"])
+	threadID := strings.TrimSpace(a.flags["thread-id"])
 	if agent == "" || (replyTo == "") == (membershipID == "") {
-		usage("integration send --from AGENT (--reply-to INBOX_ID|--to MEMBERSHIP_ID) [--body TEXT|--body-file PATH] [--file PATH ...] [--expect-reply none|optional|required] [--idempotency-key KEY] [--async]")
+		usage("integration send --from AGENT (--reply-to INBOX_ID|--to MEMBERSHIP_ID) [--message-id PROVIDER_MESSAGE_ID] [--thread-id PROVIDER_THREAD_ID] [--body TEXT|--body-file PATH] [--file PATH ...] [--expect-reply none|optional|required] [--idempotency-key KEY] [--async]")
+	}
+	if replyTo != "" && (messageID != "" || threadID != "") {
+		fail(fmt.Errorf("--message-id and --thread-id are only valid with --to MEMBERSHIP_ID"))
 	}
 	if membershipID != "" && strings.TrimSpace(a.flags["idempotency-key"]) == "" {
 		fail(fmt.Errorf("--idempotency-key is required when sending proactively to a Membership"))
@@ -561,11 +566,15 @@ func cmdIntegrationSend(a args) {
 	if len(attachments) > 0 {
 		content["attachments"] = attachments
 	}
-	resp, err := api("POST", "/api/integrations/send", map[string]any{
+	request := map[string]any{
 		"agent": agent, "inboxItemId": replyTo, "membershipId": membershipID,
 		"content": content, "responseExpectation": a.flags["expect-reply"],
 		"idempotencyKey": a.flags["idempotency-key"],
-	})
+	}
+	if messageID != "" || threadID != "" {
+		request["replyTarget"] = map[string]any{"messageId": messageID, "threadId": threadID}
+	}
+	resp, err := api("POST", "/api/integrations/send", request)
 	if err != nil {
 		fail(err)
 	}

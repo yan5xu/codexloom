@@ -858,6 +858,15 @@ func (g *Gateway) clearDeliveryRecords(item hub.OutboxItem) error {
 
 func (g *Gateway) sendMessage(ctx context.Context, item hub.OutboxItem, msgType string, content []byte, idempotencyKey string) (string, error) {
 	if item.Conversation.MessageID != "" {
+		if item.InboxItemID == "" && item.MembershipID != "" {
+			target, err := g.getFeishuMessage(ctx, item.Conversation.MessageID, item.Conversation.ConversationID)
+			if err != nil {
+				return "", fmt.Errorf("validate governed Feishu reply target: %w", err)
+			}
+			if err := requireFeishuReplyThread(target, item.Conversation.ThreadID); err != nil {
+				return "", err
+			}
+		}
 		body := larkim.NewReplyMessageReqBodyBuilder().MsgType(msgType).Content(string(content)).Uuid(idempotencyKey)
 		if item.Conversation.ThreadID != "" {
 			body.ReplyInThread(true)
@@ -887,6 +896,21 @@ func (g *Gateway) sendMessage(ctx context.Context, item hub.OutboxItem, msgType 
 		return "", fmt.Errorf("Feishu send returned no message id")
 	}
 	return *response.Data.MessageId, nil
+}
+
+func requireFeishuReplyThread(message *larkim.Message, threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return nil
+	}
+	actual := pointerString(message.ThreadId)
+	if actual == "" {
+		return fmt.Errorf("Feishu reply target has no thread_id; expected %s", threadID)
+	}
+	if actual != threadID {
+		return fmt.Errorf("Feishu reply target belongs to thread %s, not requested thread %s", actual, threadID)
+	}
+	return nil
 }
 
 type outboundPart struct {

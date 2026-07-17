@@ -439,6 +439,11 @@ Orient -> Explore -> Clarify -> Deepen -> Converge
   --file /absolute/path/to/image.png \
   --expect-reply none \
   --idempotency-key stable-operation-id
+./bin/loom integration send --from ai-community --to mem_xxx \
+  --message-id om_thread_root --thread-id omt_topic \
+  --body-file /absolute/path/to/correction.md \
+  --expect-reply none \
+  --idempotency-key stable-thread-followup-id
 ./bin/loom outbox retry out_xxx
 ```
 
@@ -447,7 +452,10 @@ Orient -> Explore -> Clarify -> Deepen -> Converge
 外部消息的 reply/no-reply/defer 会更新 durable Inbox/Outbox；不要用 `loom msg --reply-to` 回复
 外部 item，也不要直接调用平台 CLI。`integration send` 是 Agent 对外发送的统一入口：`--reply-to`
 从 Inbox 继承 Connection、Address、Conversation 和 thread；`--to` 只接受已启用的 Membership，不能
-传原始平台 ID。CLI 会先把每个 `--file` 快照复制到 Loom 的受控附件区，再由当前 Connector 上传。
+传原始平台 Conversation ID。需要向这个 Membership 内已经存在的 provider thread 追加新消息时，
+可在 `--to` 后提供 `--message-id` / `--thread-id`；它们只指定 Conversation 内的回复位置，每次仍创建
+新的 Outbox 并要求新的稳定业务幂等键。飞书 thread 需要 root/target message ID 和 thread ID，Slack
+使用 thread ID/thread_ts，Parall 使用 thread root ID。CLI 会先把每个 `--file` 快照复制到 Loom 的受控附件区，再由当前 Connector 上传。
 一次最多 8 个附件、单个不超过 25 MB；飞书图片上限为 10 MB。默认等待平台确认，`--async` 可只入队。
 Connector 领取 Outbox 或 provider read 时会得到一个持久 attempt token 和 2 分钟 lease；结果必须回传
 当前 token。Connector 重连不会立即重放未过期操作，lease 过期后才回收，旧 attempt 的迟到结果会被拒绝。

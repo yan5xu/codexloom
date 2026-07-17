@@ -392,12 +392,21 @@ type OutboxParams struct {
 }
 
 type ExternalSendParams struct {
-	Agent               string         `json:"agent"`
-	InboxItemID         string         `json:"inboxItemId"`
-	MembershipID        string         `json:"membershipId"`
-	Content             MessageContent `json:"content"`
-	ResponseExpectation string         `json:"responseExpectation"`
-	IdempotencyKey      string         `json:"idempotencyKey"`
+	Agent               string               `json:"agent"`
+	InboxItemID         string               `json:"inboxItemId"`
+	MembershipID        string               `json:"membershipId"`
+	ReplyTarget         *ExternalReplyTarget `json:"replyTarget,omitempty"`
+	Content             MessageContent       `json:"content"`
+	ResponseExpectation string               `json:"responseExpectation"`
+	IdempotencyKey      string               `json:"idempotencyKey"`
+}
+
+// ExternalReplyTarget preserves a provider-native message or thread location
+// inside the Conversation authorized by a Membership. It never selects the
+// Conversation, Address, or external identity itself.
+type ExternalReplyTarget struct {
+	MessageID string `json:"messageId,omitempty"`
+	ThreadID  string `json:"threadId,omitempty"`
 }
 
 type ConnectorCommand struct {

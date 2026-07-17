@@ -859,6 +859,46 @@ func TestExternalSendUsesGovernedMembershipAndManagedAttachments(t *testing.T) {
 	}
 }
 
+func TestExternalSendTargetsExistingThreadWithinGovernedMembership(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", Capabilities: []string{"proactive_send"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(AddressParams{
+		Agent: "alpha", ConnectionID: connection.ID, ExternalIdentity: "ou_alpha", TrustDomain: "external",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proactive := "proactive"
+	membership, _, err := h.UpsertConversationMembership(ConversationMembershipParams{
+		AddressID: address.ID, ConversationID: "oc_team", OutboundPolicy: &proactive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := h.SendExternal(ExternalSendParams{
+		Agent: "alpha", MembershipID: membership.ID, IdempotencyKey: "thread-correction-1",
+		ReplyTarget: &ExternalReplyTarget{MessageID: "om_root", ThreadID: "omt_topic"},
+		Content:     MessageContent{Text: "Correction"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outbox.MembershipID != membership.ID || outbox.AddressID != address.ID ||
+		outbox.Conversation.ConversationID != "oc_team" || outbox.Conversation.MessageID != "om_root" ||
+		outbox.Conversation.ThreadID != "omt_topic" {
+		t.Fatalf("threaded governed route = %#v", outbox)
+	}
+	if _, err := h.SendExternal(ExternalSendParams{
+		Agent: "alpha", MembershipID: membership.ID, IdempotencyKey: "thread-correction-2",
+		ReplyTarget: &ExternalReplyTarget{ThreadID: "omt_topic"}, Content: MessageContent{Text: "Missing root"},
+	}); err == nil || !strings.Contains(err.Error(), "messageId") {
+		t.Fatalf("missing Lark message target error = %v", err)
+	}
+}
+
 func TestMembershipOutboundNoneBlocksInboxReplies(t *testing.T) {
 	h := stoppedInboxTestHub(t)
 	seedInboxHandlingState(h, "explicit")

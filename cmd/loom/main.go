@@ -371,7 +371,7 @@ Compatibility shortcuts:
   chub outbox send <agent> <address-id> <conversation-id> [body|--body TEXT] [--attachment PATH] [--thread ID] [--message-id ID] [--expectation none|optional|required] [--idempotency-key KEY]
   chub outbox retry <outbox-item-id>
   chub integration list
-  chub integration send --from AGENT (--reply-to INBOX_ID|--to MEMBERSHIP_ID) [--body TEXT|--body-file PATH] [--file PATH ...] [--expect-reply none|optional|required] [--idempotency-key KEY] [--async]
+  chub integration send --from AGENT (--reply-to INBOX_ID|--to MEMBERSHIP_ID) [--message-id PROVIDER_MESSAGE_ID] [--thread-id PROVIDER_THREAD_ID] [--body TEXT|--body-file PATH] [--file PATH ...] [--expect-reply none|optional|required] [--idempotency-key KEY] [--async]
   chub integration connect <provider> [--account REF] [--credential-ref env:NAME]
   chub integration import parall --agent AGENT --org-id ORG --external-agent-id USER [--agent-key-file PATH] [--api-url URL] [--trust-domain NAME]
   chub integration bind <agent> <connection-id> --identity EXTERNAL_ID [--display-name NAME] [--trigger mention] [--reply-policy final_answer] [--dm-policy managed] [--trust-domain NAME] [--enabled true|false] [allow/block flags]

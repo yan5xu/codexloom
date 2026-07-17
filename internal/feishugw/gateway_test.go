@@ -97,6 +97,21 @@ func TestManagedReadChecksChatAndThreadIdentity(t *testing.T) {
 	}
 }
 
+func TestGovernedReplyTargetChecksThreadIdentity(t *testing.T) {
+	threadID := "omt_topic"
+	otherThreadID := "omt_other"
+	message := &larkim.Message{ThreadId: &threadID}
+	if err := requireFeishuReplyThread(message, threadID); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireFeishuReplyThread(message, otherThreadID); err == nil {
+		t.Fatal("cross-thread reply target was accepted")
+	}
+	if err := requireFeishuReplyThread(&larkim.Message{}, threadID); err == nil {
+		t.Fatal("reply target without thread identity was accepted")
+	}
+}
+
 func TestManagedReadUsesNativeThreadContainer(t *testing.T) {
 	containerType, containerID := feishuMessageContainer(map[string]any{
 		"chatId": "oc_team", "threadId": "omt_topic",

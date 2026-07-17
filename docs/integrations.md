@@ -40,6 +40,14 @@ loom integration send --from AGENT --to MEMBERSHIP_ID \
   --file /absolute/path/to/report.pdf \
   --expect-reply none \
   --idempotency-key stable-business-operation-id
+
+# 向同一 Membership 中已经存在的飞书 thread 追加一条新回复。
+loom integration send --from AGENT --to MEMBERSHIP_ID \
+  --message-id om_THREAD_ROOT_MESSAGE \
+  --thread-id omt_THREAD \
+  --body-file /absolute/path/to/correction.md \
+  --expect-reply none \
+  --idempotency-key stable-thread-followup-id
 ```
 
 `--reply-to` 与 `--to` 必须二选一。主动发送只接受已启用且 `outboundPolicy=proactive` 的 Membership；
@@ -48,6 +56,11 @@ loom integration send --from AGENT --to MEMBERSHIP_ID \
 需要只排队时显式传 `--async`。消息正文先发送，附件按多个 `--file` 的顺序发送；Outbox 保存正文
 message ID，并为每个 Loom Artifact 保存 provider attachment ID 与对应 message ID。Connector 缺少任一
 附件回执时整条 Outbox 必须是 `failed`，不能只因正文成功就标记 `sent`。一次最多 8 个附件，单个不超过 25 MB。
+
+`--message-id` / `--thread-id` 只在 `--to MEMBERSHIP_ID` 时描述该受治理 Conversation 内的 provider
+原生回复位置，不选择 Conversation、Address 或外部身份，也不会复用或修改历史 Inbox/Outbox。每次追加
+都会用新的业务幂等键创建一个新 Outbox。飞书 thread 需要同时提供 root/target `message_id` 和
+`thread_id`；Slack 使用 `thread_id`（即 `thread_ts`）；Parall 使用 `thread_id`（即 thread root message ID）。
 
 Restart Loom 会同时重启已启用的 managed Feishu、Slack 和 Parall gateway，使 Hub、WebUI 与 Connector
 使用同一次构建。未由 Loom 托管的外部进程不会被自动接管。

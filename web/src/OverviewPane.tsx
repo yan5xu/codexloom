@@ -5,7 +5,7 @@ import type { Agent, HumanRequest, InboxEntry, PlatformConnection, RemoteSnapsho
 import { api } from "./types";
 import { CapacityPane, UsagePane } from "./UsagePane";
 import { summarizeTask } from "./feed";
-import { attentionForAgent, executionDotClass, executionLabel, isAgentExecuting, oldestWaitingMs } from "./product-state";
+import { executionDotClass, executionLabel, isAgentExecuting, oldestWaitingMs } from "./product-state";
 import { Button } from "./components/ui/button";
 import { readUsageLocation, type UsageDateRange } from "./usage";
 
@@ -29,7 +29,7 @@ export function OverviewPane({
   remote: RemoteSnapshot | null;
   onSectionChange: (section: OverviewSection) => void;
   onSelectAgent: (id: string) => void;
-  onOpenNeedsYou: () => void;
+  onOpenNeedsYou: (requestID?: string) => void;
   onOpenExternal: () => void;
 }) {
   const [range, setRange] = useState<UsageDateRange>(() => readUsageLocation(window.location.hash));
@@ -55,6 +55,7 @@ export function OverviewPane({
           remote={remote}
           onSelectAgent={onSelectAgent}
           onOpenNeedsYou={onOpenNeedsYou}
+          onOpenCapacity={() => onSectionChange("capacity")}
           onOpenExternal={onOpenExternal}
         />
       ) : section === "capacity" ? (
@@ -74,13 +75,14 @@ function OverviewTab({ active, icon: Icon, label, onClick }: { active: boolean; 
   );
 }
 
-function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOpenNeedsYou, onOpenExternal }: {
+function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOpenNeedsYou, onOpenCapacity, onOpenExternal }: {
   agents: Agent[];
   requests: HumanRequest[];
   entries: InboxEntry[];
   remote: RemoteSnapshot | null;
   onSelectAgent: (id: string) => void;
-  onOpenNeedsYou: () => void;
+  onOpenNeedsYou: (requestID?: string) => void;
+  onOpenCapacity: () => void;
   onOpenExternal: () => void;
 }) {
   const connectionsQuery = useQuery<{ connections: PlatformConnection[] }>({
@@ -93,7 +95,11 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
   const executing = agents.filter(isAgentExecuting);
   const openRequests = requests.filter((request) => request.state === "open");
   const activeEntries = entries.filter((entry) => !["handled", "cancelled"].includes(entry.item.state));
-  const failedAgents = agents.filter((agent) => Boolean(agent.lastError));
+  const failedEntries = activeEntries.filter((entry) => ["failed", "pending_access", "interrupted"].includes(entry.item.state));
+  const agentHealth = agents.map((agent) => ({
+    agent,
+    failedEntries: failedEntries.filter((entry) => entry.item.agentId === agent.id).length,
+  })).filter(({ agent, failedEntries: count }) => Boolean(agent.lastError) || count > 0);
   const connectorIssues = enabledConnections.filter((connection) => connection.status !== "connected");
   const oldest = oldestWaitingMs(activeEntries);
   const externalStatus = connectionsQuery.isPending
@@ -109,8 +115,8 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
       <div className="mx-auto w-full max-w-[1180px] px-4 py-5 md:px-8 md:py-7">
         <section className="grid border-y border-border sm:grid-cols-2 lg:grid-cols-4">
           <StatusMetric icon={Users} label="Executing now" value={String(executing.length)} detail={`${agents.length - executing.length} ready or unavailable`} tone="text-success" />
-          <StatusMetric icon={CircleHelp} label="Needs You" value={String(openRequests.length)} detail={openRequests.length ? "Owner decisions waiting" : "No Owner decision waiting"} tone={openRequests.length ? "text-warning" : "text-muted-foreground"} onClick={onOpenNeedsYou} />
-          <StatusMetric icon={Inbox} label="Agent Inbox" value={String(activeEntries.length)} detail={oldest ? `Oldest ${formatDuration(oldest)}` : "No queued Agent work"} tone={activeEntries.length ? "text-warning" : "text-muted-foreground"} />
+          <StatusMetric icon={CircleHelp} label="Needs You" value={String(openRequests.length)} detail={openRequests.length ? "Owner decisions waiting" : "No Owner decision waiting"} tone={openRequests.length ? "text-warning" : "text-muted-foreground"} onClick={() => onOpenNeedsYou()} />
+          <StatusMetric icon={Inbox} label="Agent Inbox" value={String(activeEntries.length)} detail={oldest ? `Oldest ${formatDuration(oldest)}` : "No queued Agent work"} tone={activeEntries.length ? "text-[var(--loom-teal)]" : "text-muted-foreground"} onClick={onOpenCapacity} />
           <StatusMetric icon={RadioTower} label="External" value={externalStatus.value} detail={externalStatus.detail} tone={externalStatus.tone} onClick={onOpenExternal} />
         </section>
 
@@ -129,24 +135,39 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
             </div>
           </section>
 
-          <section className="min-w-0">
-            <div className="mb-2 flex items-center justify-between"><h2 className="text-[12px] font-semibold uppercase text-muted-foreground">Attention signals</h2><span className="font-mono text-[9.5px] text-muted-foreground">not a task list</span></div>
-            <div className="divide-y divide-border border-y border-border">
-              {agents.map((agent) => ({ agent, attention: attentionForAgent(agent, openRequests, activeEntries) })).filter(({ attention }) => attention.total > 0).map(({ agent, attention }) => (
-                <button key={agent.id} type="button" onClick={() => onSelectAgent(agent.id)} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
-                  {attention.failures > 0 ? <AlertTriangle className="size-3.5 shrink-0 text-destructive" /> : <Inbox className="size-3.5 shrink-0 text-warning" />}
-                  <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{agent.name}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{[attention.needsYou ? `${attention.needsYou} need you` : "", attention.inbox ? `${attention.inbox} inbox` : "", attention.failures ? `${attention.failures} issue` : ""].filter(Boolean).join(" · ")}</span></span>
-                </button>
-              ))}
-              {connectionsQuery.isError || connectorIssues.length > 0 ? (
-                <button type="button" onClick={onOpenExternal} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
-                  <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
-                  <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">External connections</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{connectionsQuery.isError ? "Status unavailable" : `${connectorIssues.length} need attention`}</span></span>
-                </button>
-              ) : null}
-              {failedAgents.length === 0 && openRequests.length === 0 && activeEntries.length === 0 && connectorIssues.length === 0 && !connectionsQuery.isError ? <div className="px-2 py-8 text-center text-[11px] text-muted-foreground">No current attention signals.</div> : null}
-            </div>
-          </section>
+          <div className="min-w-0 space-y-6">
+            <section className="min-w-0">
+              <div className="mb-2 flex items-center justify-between"><h2 className="text-[12px] font-semibold uppercase text-muted-foreground">Owner Attention</h2><span className={`font-mono text-[9.5px] ${openRequests.length ? "text-warning" : "text-muted-foreground"}`}>{openRequests.length ? "action required" : "clear"}</span></div>
+              <div className="divide-y divide-border border-y border-border">
+                {openRequests.map((request) => (
+                  <button key={request.id} type="button" onClick={() => onOpenNeedsYou(request.id)} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
+                    <CircleHelp className="size-3.5 shrink-0 text-warning" />
+                    <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{request.agentName}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{request.question}</span></span>
+                  </button>
+                ))}
+                {openRequests.length === 0 ? <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">No Owner decision waiting.</div> : null}
+              </div>
+            </section>
+
+            <section className="min-w-0">
+              <div className="mb-2 flex items-center justify-between"><h2 className="text-[12px] font-semibold uppercase text-muted-foreground">Team Health</h2><span className={`font-mono text-[9.5px] ${agentHealth.length > 0 || connectorIssues.length > 0 || connectionsQuery.isError ? "text-destructive" : "text-muted-foreground"}`}>{agentHealth.length > 0 || connectorIssues.length > 0 || connectionsQuery.isError ? "capability issues" : "clear"}</span></div>
+              <div className="divide-y divide-border border-y border-border">
+                {agentHealth.map(({ agent, failedEntries: count }) => (
+                  <button key={agent.id} type="button" onClick={() => onSelectAgent(agent.id)} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
+                    <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
+                    <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{agent.name}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{[agent.lastError ? "Runtime issue" : "", count ? `${count} handling ${count === 1 ? "failure" : "failures"}` : ""].filter(Boolean).join(" · ")}</span></span>
+                  </button>
+                ))}
+                {connectionsQuery.isError || connectorIssues.length > 0 ? (
+                  <button type="button" onClick={onOpenExternal} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
+                    <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
+                    <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">External connections</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{connectionsQuery.isError ? "Status unavailable" : `${connectorIssues.length} ${connectorIssues.length === 1 ? "connection" : "connections"} impaired`}</span></span>
+                  </button>
+                ) : null}
+                {agentHealth.length === 0 && connectorIssues.length === 0 && !connectionsQuery.isError ? <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">No current capability issue.</div> : null}
+              </div>
+            </section>
+          </div>
         </div>
         {remote?.config.enabled ? <div className="mt-7 border-l-2 border-border bg-muted/25 px-3 py-2 text-[10.5px] text-muted-foreground">Codex Remote is <span className="font-medium text-foreground">{remote.status.state}</span>. Remote host state is operational context, not Agent execution.</div> : null}
       </div>

@@ -1357,7 +1357,7 @@ export default function App() {
                 remote={remote}
                 onSectionChange={selectOverview}
                 onSelectAgent={selectAgent}
-                onOpenNeedsYou={() => selectNeedsYou()}
+                onOpenNeedsYou={selectNeedsYou}
                 onOpenExternal={selectIntegrations}
               />
             ) : view === "settings" ? (

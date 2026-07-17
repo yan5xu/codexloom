@@ -1,13 +1,6 @@
-import type { Agent, HumanRequest, InboxEntry } from "./types";
+import type { Agent, InboxEntry } from "./types";
 
 export type ExecutionState = "starting" | "running" | "idle" | "draining" | "unavailable";
-
-export type AgentAttention = {
-  needsYou: number;
-  inbox: number;
-  failures: number;
-  total: number;
-};
 
 export function executionState(agent: Agent): ExecutionState {
   const status = String(agent.status || "").toLowerCase();
@@ -35,14 +28,6 @@ export function executionDotClass(agent: Agent) {
     case "idle": return "bg-muted-foreground/35";
     default: return "bg-destructive";
   }
-}
-
-export function attentionForAgent(agent: Agent, requests: HumanRequest[], entries: InboxEntry[]): AgentAttention {
-  const needsYou = requests.filter((request) => request.agentId === agent.id && request.state === "open").length;
-  const agentEntries = entries.filter((entry) => entry.item.agentId === agent.id && !["handled", "cancelled"].includes(entry.item.state));
-  const failures = agentEntries.filter((entry) => ["failed", "pending_access", "interrupted"].includes(entry.item.state)).length + (agent.lastError ? 1 : 0);
-  const inbox = agentEntries.length;
-  return { needsYou, inbox, failures, total: needsYou + inbox + (agent.lastError ? 1 : 0) };
 }
 
 export function isOwnerResultEvent(event: any) {

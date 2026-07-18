@@ -1002,5 +1002,8 @@ html, body, #root {
 }
 
 .loom-app-viewport {
+  position: absolute;
+  inset-inline: 0;
+  top: var(--loom-viewport-offset-top, 0px);
   height: var(--loom-viewport-height, 100dvh);
 }

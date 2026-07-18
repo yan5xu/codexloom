@@ -7,14 +7,18 @@ import App from "./App";
 
 function syncVisualViewportHeight() {
   const update = () => {
-    const height = Math.round(window.visualViewport?.height || window.innerHeight);
+    const viewport = window.visualViewport;
+    const height = Math.round(viewport?.height || window.innerHeight);
+    const offsetTop = Math.round(viewport?.offsetTop || 0);
     document.documentElement.style.setProperty("--loom-viewport-height", `${height}px`);
+    document.documentElement.style.setProperty("--loom-viewport-offset-top", `${offsetTop}px`);
   };
 
   update();
   window.addEventListener("resize", update);
   window.addEventListener("orientationchange", update);
   window.visualViewport?.addEventListener("resize", update);
+  window.visualViewport?.addEventListener("scroll", update);
 }
 
 syncVisualViewportHeight();

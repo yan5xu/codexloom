@@ -1160,7 +1160,7 @@ export default function App() {
   };
 
   return (
-    <div className="loom-app-viewport flex w-screen max-w-full overflow-hidden bg-background">
+    <div className="loom-app-viewport flex h-screen w-screen max-w-full overflow-hidden bg-background">
       {/* backdrop — only on mobile when the drawer is open */}
       {sidebarOpen && (
         <div

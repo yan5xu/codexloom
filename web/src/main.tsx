@@ -5,23 +5,23 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import App from "./App";
 
-function syncVisualViewportHeight() {
+function enableIPadComposerLayout() {
+  const isIPad = /iPad/i.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (!isIPad) return;
+
+  const root = document.documentElement;
+  root.classList.add("loom-ipad");
   const update = () => {
-    const viewport = window.visualViewport;
-    const height = Math.round(viewport?.height || window.innerHeight);
-    const offsetTop = Math.round(viewport?.offsetTop || 0);
-    document.documentElement.style.setProperty("--loom-viewport-height", `${height}px`);
-    document.documentElement.style.setProperty("--loom-viewport-offset-top", `${offsetTop}px`);
+    const composerFocused = document.activeElement?.matches('textarea[aria-label="task message"]') || false;
+    root.classList.toggle("loom-composer-focused", composerFocused);
   };
 
-  update();
-  window.addEventListener("resize", update);
-  window.addEventListener("orientationchange", update);
-  window.visualViewport?.addEventListener("resize", update);
-  window.visualViewport?.addEventListener("scroll", update);
+  document.addEventListener("focusin", update);
+  document.addEventListener("focusout", () => window.setTimeout(update, 0));
 }
 
-syncVisualViewportHeight();
+enableIPadComposerLayout();
 
 function reloadAfterStaleChunk() {
   const key = "codexloom-stale-chunk-reload";

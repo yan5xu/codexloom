@@ -996,14 +996,8 @@ details.card[open] > summary::before {
   color: var(--primary-foreground);
 }
 
-html, body, #root {
-  height: 100%;
-  overflow: hidden;
-}
+html, body, #root { height: 100%; }
 
-.loom-app-viewport {
-  position: absolute;
-  inset-inline: 0;
-  top: var(--loom-viewport-offset-top, 0px);
-  height: var(--loom-viewport-height, 100dvh);
+.loom-ipad.loom-composer-focused .loom-app-viewport {
+  height: 60dvh;
 }

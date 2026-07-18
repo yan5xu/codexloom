@@ -5,13 +5,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import App from "./App";
 
-function enableIPadComposerLayout() {
+function enableAppleComposerLayout() {
   const isIPad = /iPad/i.test(navigator.userAgent)
     || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  if (!isIPad) return;
+  const isIPhone = /iPhone|iPod/i.test(navigator.userAgent);
+  if (!isIPad && !isIPhone) return;
 
   const root = document.documentElement;
-  root.classList.add("loom-ipad");
+  root.classList.add(isIPad ? "loom-ipad" : "loom-iphone");
   const update = () => {
     const composerFocused = document.activeElement?.matches('textarea[aria-label="task message"]') || false;
     root.classList.toggle("loom-composer-focused", composerFocused);
@@ -21,7 +22,7 @@ function enableIPadComposerLayout() {
   document.addEventListener("focusout", () => window.setTimeout(update, 0));
 }
 
-enableIPadComposerLayout();
+enableAppleComposerLayout();
 
 function reloadAfterStaleChunk() {
   const key = "codexloom-stale-chunk-reload";

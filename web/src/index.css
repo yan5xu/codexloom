@@ -999,5 +999,11 @@ details.card[open] > summary::before {
 html, body, #root { height: 100%; }
 
 .loom-ipad.loom-composer-focused .loom-app-viewport {
-  height: 60dvh;
+  height: 72vh;
+  height: 72dvh;
+}
+
+.loom-iphone.loom-composer-focused .loom-app-viewport {
+  height: 52vh;
+  height: 52dvh;
 }

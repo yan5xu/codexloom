@@ -5,6 +5,20 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import App from "./App";
 
+function syncVisualViewportHeight() {
+  const update = () => {
+    const height = Math.round(window.visualViewport?.height || window.innerHeight);
+    document.documentElement.style.setProperty("--loom-viewport-height", `${height}px`);
+  };
+
+  update();
+  window.addEventListener("resize", update);
+  window.addEventListener("orientationchange", update);
+  window.visualViewport?.addEventListener("resize", update);
+}
+
+syncVisualViewportHeight();
+
 function reloadAfterStaleChunk() {
   const key = "codexloom-stale-chunk-reload";
   const lastReload = Number(sessionStorage.getItem(key) || "0");

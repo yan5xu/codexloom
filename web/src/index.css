@@ -996,4 +996,11 @@ details.card[open] > summary::before {
   color: var(--primary-foreground);
 }
 
-html, body, #root { height: 100%; }
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+.loom-app-viewport {
+  height: var(--loom-viewport-height, 100dvh);
+}

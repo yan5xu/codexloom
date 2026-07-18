@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && touch ../internal/webui/dist/.gitkeep",
+    "build": "tsc -b && node scripts/build.mjs && touch ../internal/webui/dist/.gitkeep",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"

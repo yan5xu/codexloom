@@ -29,7 +29,9 @@ function reloadAfterStaleChunk() {
   const lastReload = Number(sessionStorage.getItem(key) || "0");
   if (Date.now() - lastReload < 10_000) return;
   sessionStorage.setItem(key, String(Date.now()));
-  window.location.reload();
+  const url = new URL(window.location.href);
+  url.searchParams.set("_loom_reload", String(Date.now()));
+  window.location.replace(url);
 }
 
 window.addEventListener("vite:preloadError", (event) => {

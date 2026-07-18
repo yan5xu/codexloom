@@ -15,7 +15,8 @@ export default defineConfig({
   },
   build: {
     outDir: "../internal/webui/dist",
-    emptyOutDir: true,
+    emptyOutDir: false,
+    manifest: true,
   },
   server: {
     proxy: {

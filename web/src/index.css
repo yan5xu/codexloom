@@ -1003,7 +1003,6 @@ html, body, #root { height: 100%; }
   height: 72dvh;
 }
 
-.loom-iphone.loom-composer-focused .loom-app-viewport {
-  height: 52vh;
-  height: 52dvh;
+.loom-iphone textarea[aria-label="task message"] {
+  font-size: 16px;
 }

@@ -1,7 +1,14 @@
 # CodexLoom Owner Guide
 
-> Review draft for advanced individual Owners who use Codex agents as a
-> long-lived team.
+> Secondary English translation of the review draft for advanced individual
+> Owners who use Codex agents as a long-lived team.
+
+[**简体中文（权威版本）**](owner-guide.zh-CN.md) · **English translation**
+
+The Simplified Chinese [Owner Guide](owner-guide.zh-CN.md) is the canonical
+text and primary review surface. This file is its English translation. If the
+two diverge, the Chinese guide governs and this translation should be updated;
+this file must not introduce independent product meaning.
 
 Current-behavior statements in this draft were checked against `origin/main`
 at commit `81696e1`. Topics and Triggers are separately identified as

@@ -8,12 +8,17 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+> Owner-facing product language is reviewed in Simplified Chinese first. The
+> [Chinese Owner Guide](docs/owner-guide.zh-CN.md) is canonical; this English
+> README and Guide are translations and must not introduce independent product
+> meaning.
+
 CodexLoom helps one person turn continuing work into a team of domain agents
 that stay on the job.
 
 It uses Profiles to define long-term domains and responsibilities, preserves working context in Codex threads, and connects agents through communication, division of responsibility, and explicit external boundaries.
 
-[Owner guide](docs/owner-guide.md) · [Why long-lived agents](#why-long-lived-domain-agents) · [Get started](#quick-start) · [Documentation](#documentation)
+[Owner guide（简体中文，canonical）](docs/owner-guide.zh-CN.md) · [English translation](docs/owner-guide.md) · [Why long-lived agents](#why-long-lived-domain-agents) · [Get started](#quick-start) · [Documentation](#documentation)
 
 ## What Is CodexLoom
 
@@ -71,7 +76,8 @@ make release
 ### Owner Path in the WebUI
 
 Open <http://localhost:4870>. If you are still deciding what deserves a
-long-lived Agent, start with the [Owner Guide](docs/owner-guide.md).
+long-lived Agent, start with the [canonical Chinese Owner Guide](docs/owner-guide.zh-CN.md)
+or its [English translation](docs/owner-guide.md).
 
 For a simple first Agent:
 
@@ -214,8 +220,10 @@ CodexLoom is built on Codex. Codex continues to provide the agent runtime, threa
 
 ## Documentation
 
-- [Owner Guide: establish and use a long-lived Codex Agent Team](docs/owner-guide.md)
-- [Documentation map: Owner, reference, product, and developer material](docs/README.md)
+- [Owner Guide（简体中文，权威版本）](docs/owner-guide.zh-CN.md)
+- [Owner Guide (English translation)](docs/owner-guide.md)
+- [文档地图（简体中文，权威版本）](docs/README.zh-CN.md)
+- [Documentation map (English translation)](docs/README.md)
 - [Agent Profiles: defining a long-term identity, domain, and scope](docs/agent-profile.md)
 - [Agent communication and the `loom` CLI](docs/loom-cli.md)
 - [Built-in Skills and Codex discovery](docs/skills.md)

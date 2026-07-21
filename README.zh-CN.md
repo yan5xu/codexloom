@@ -8,11 +8,15 @@
 
 [English](README.md) · **简体中文**
 
+> 本 README 是中文产品入口；[中文 Owner Guide](docs/owner-guide.zh-CN.md) 是
+> Owner-facing 正文的权威版本与主要审阅文本。英文 README 与 Guide 是译本，
+> 不应独立引入新的产品含义。
+
 CodexLoom 帮助一个人把持续发生的工作交给一支持续在岗的领域 Agent 团队。
 
 它通过 Profile 明确 Agent 的长期领域与职责，以 Codex Thread 延续工作上下文，并让这些 Agent 通过通信、分工和清晰的对外边界形成一个持续协作的组织。
 
-[Owner Guide](docs/owner-guide.md) · [为什么是长期 Agent](#why-long-lived-domain-agents) · [开始使用](#quick-start) · [完整文档](#documentation)
+[Owner Guide（权威版本）](docs/owner-guide.zh-CN.md) · [为什么是长期 Agent](#why-long-lived-domain-agents) · [开始使用](#quick-start) · [完整文档](#documentation)
 
 ## What Is CodexLoom
 
@@ -61,7 +65,7 @@ make release
 ### Owner 的 WebUI 路径
 
 打开 <http://localhost:4870>。如果还在判断什么工作值得建立长期 Agent，
-先阅读 [Owner Guide](docs/owner-guide.md)。
+先阅读 [Owner Guide](docs/owner-guide.zh-CN.md)。
 
 建立第一个简单 Agent：
 
@@ -156,7 +160,7 @@ Product Lead
 高级用户会把长期协作的 Agent 作为伙伴带入原有工作环境。Agent 组织可以设置专门负责外部沟通的 Interface Agent：它持续维护外部关系和沟通上下文，需要领域判断时向 Lead 询问，取得结论后面向外部回应，并将重要反馈带回内部组织。
 
 ```text
-飞书 / Parall  <->  Interface Agent  <->  Lead  <->  Internal Agents
+飞书 / Slack / Parall  <->  Interface Agent  <->  Lead  <->  Internal Agents
 ```
 
 一个 Agent 可以拥有多个平台身份，也可以进入多个群聊。外部身份说明 Agent 在哪里可达；Conversation Membership 则定义它在具体会话中的角色，包括应该关注什么、什么时候发言、什么不能说，以及何时必须向内部负责人确认。同一个 Agent 因而可以在不同 Channel 中承担不同职责，而不必复制成多个彼此割裂的 Agent。
@@ -193,8 +197,10 @@ CodexLoom 建立在 Codex 之上。Codex 继续提供 Agent Runtime、Thread 历
 
 ## Documentation
 
-- [Owner Guide：建立并使用长期 Codex Agent Team](docs/owner-guide.md)
-- [文档地图：Owner、Reference、Product 与 Developer 文档](docs/README.md)
+- [Owner Guide：建立并使用长期 Codex Agent Team（权威版本）](docs/owner-guide.zh-CN.md)
+- [文档地图：Owner、Reference、Product 与 Developer 文档（权威版本）](docs/README.zh-CN.md)
+- [Owner Guide (English translation)](docs/owner-guide.md)
+- [Documentation map (English translation)](docs/README.md)
 - [Agent Profile：如何定义长期身份、Domain 与 Scope](docs/agent-profile.md)
 - [Agent 通信与 `loom` CLI](docs/loom-cli.md)
 - [外部平台集成设计](docs/agent-platform-integration.md)

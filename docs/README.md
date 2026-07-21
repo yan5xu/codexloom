@@ -1,15 +1,22 @@
 # CodexLoom Documentation
 
+> Secondary English translation of the documentation map.
+
+[**简体中文（权威版本）**](README.zh-CN.md) · **English translation**
+
 CodexLoom documentation serves different readers. Start with the guide that
 matches the decision you are making instead of reading the repository as one
 continuous manual.
 
 ## Owner Guide
 
-- [Repository README](../README.md) - product entry, installation, and project
-  status.
-- [CodexLoom Owner Guide](owner-guide.md) - establish, use, coordinate, observe,
-  and adjust a long-lived Codex Agent Team.
+- [CodexLoom Owner Guide（简体中文，权威版本）](owner-guide.zh-CN.md) - establish,
+  use, coordinate, observe, and adjust a long-lived Codex Agent Team.
+- [CodexLoom Owner Guide (English translation)](owner-guide.md) - English
+  translation of the canonical Chinese guide.
+- [Repository README（简体中文）](../README.zh-CN.md) - Chinese product entry,
+  installation, and project status.
+- [Repository README (English)](../README.md) - English project entry.
 
 The Owner Guide is the primary user journey. It explains when to use a Loom
 concept and how the concepts work together. The references below provide exact
@@ -66,11 +73,15 @@ should be verified against the current build before publication.
    boundary.
 6. Prefer links to repeated explanations. If two documents make the same
    current-behavior claim, one should be identified as the owning reference.
+7. Simplified Chinese is the canonical language for the Owner Guide and this
+   documentation map. The English files are translations; if they diverge, the
+   Chinese files govern and the translations should be corrected.
 
 ## Content Ownership
 
-- The repository README owns the concise product position, installation entry,
-  platform support table, and project status.
+- `README.zh-CN.md` owns the concise product position, installation entry,
+  platform support table, and project status; `README.md` is its English
+  translation.
 - The Owner Guide owns the end-to-end Owner journey and the choice between Loom
   coordination mechanisms.
 - `loom-cli.md`, `integrations.md`, `conversation-membership.md`, `skills.md`,
@@ -79,3 +90,5 @@ should be verified against the current build before publication.
 - Product design and walkthrough documents preserve decisions and evaluation
   evidence. They do not override a current-behavior reference.
 - The development handbook owns implementation architecture and operations.
+- In Chinese/English document pairs, the Chinese file owns the content. Its
+  English translation must not introduce independent product meaning.

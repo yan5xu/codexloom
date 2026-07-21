@@ -2,25 +2,25 @@
 
 # CodexLoom
 
-> **Turn Codex threads into an organization of long-lived domain agents.**
+> **Loom your Codex.**
 
-**Domain Agent Organization Platform for Codex**
+**面向高级个人用户的长期 Codex Agent Team 工作环境**
 
 [English](README.md) · **简体中文**
 
-CodexLoom 把 Codex Thread 组织成一支持续在岗的领域 Agent 团队。
+CodexLoom 帮助一个人把持续发生的工作交给一支持续在岗的领域 Agent 团队。
 
 它通过 Profile 明确 Agent 的长期领域与职责，以 Codex Thread 延续工作上下文，并让这些 Agent 通过通信、分工和清晰的对外边界形成一个持续协作的组织。
 
-[为什么是长期 Agent](#why-long-lived-domain-agents) · [开始使用](#quick-start) · [完整文档](#documentation)
+[Owner Guide](docs/owner-guide.md) · [为什么是长期 Agent](#why-long-lived-domain-agents) · [开始使用](#quick-start) · [完整文档](#documentation)
 
 ## What Is CodexLoom
 
 CodexLoom 建立在 Codex 之上。它不重新实现 Agent Runtime，也不复制 Thread 历史，而是在 Codex 提供的 Thread、Turn、工具和客户端之上增加稳定的 Agent 身份、Profile、组织关系、通信、外部平台集成和治理能力。
 
-在 CodexLoom 中，一个 Agent 拥有稳定 ID、名称、Profile 和主要 Thread。用户可以通过 Codex Desktop、Mobile 或 CodexLoom WebUI 继续同一个 Thread；其他 Agent 通过 `loom` CLI 找到它并发送消息；组织成员则可以在飞书、Parall 等原有工作环境中与它协作。
+在 CodexLoom 中，一个 Agent 拥有稳定 ID、名称、Profile 和主要 Thread。用户可以通过 Codex Desktop、Mobile 或 CodexLoom WebUI 继续同一个 Thread；其他 Agent 通过 `loom` CLI 找到它并发送消息；外部协作者则可以在飞书、Slack、Parall 等原有工作环境中与它协作。
 
-当一个领域扩大时，Lead 可以把稳定的子领域交给长期存在的 Internal Agents；需要进入外部组织时，也可以设置专门的 Interface Agent，并为它在不同 Channel 中定义不同角色。CodexLoom 由此管理的不是孤立对话，而是一套持续工作的 Agent 组织。
+先让一个长期 Agent 持续负责一项工作。当真实工作反复暴露稳定的负载、上下文或专业判断边界时，Owner 再把责任分给更多 Agent，并声明它们如何协作。需要进入外部组织时，Owner 可以为 Agent 建立受治理的外部身份，并在每个 Conversation 中定义不同角色。Lead、Internal Agent 和 Interface Agent 是可选的组织模式，不是系统硬编码的 Agent 类型。
 
 > **Codex 提供 Thread；CodexLoom 将这些 Thread 编织成一个 Agent 组织。**
 
@@ -39,19 +39,14 @@ Lead、Internal Agent 和 Interface Agent 目前通过 Profile、显式关系、
 
 ## Who Is It For
 
-### Advanced Individuals
+### Advanced Individuals 与 One Person Company Owners
 
 - 长期维护多个专业 Agent。
 - 使用 Codex App 进行日常交互。
 - 让不同领域的 Agent 相互协作。
 - 把 Agent 带入自己的工作群和社区。
 
-### Organizations
-
-- 建立并持续调整 Agent 组织架构。
-- 让普通成员通过 IM 使用 Agent。
-- 由平台维护者管理职责、权限和运行状态。
-- 根据工作轨迹持续辅导 Agent，并重组不再适合的职责与关系。
+CodexLoom 当前首先服务一个高级个人 Owner。外部协作者可以通过既有 Conversation 与受治理的 Agent 协作，但企业多租户管理与通用公司经营不是当前产品的主要方向。
 
 ## Quick Start
 
@@ -134,7 +129,7 @@ Product Lead
 └── Ops Internal Agent
 ```
 
-人类维护者可以直接与任何 Internal Agent 交互；其他 Agent 则通过 Lead 使用这组内部能力，无需了解每个子领域的组织细节。
+人类维护者可以直接与任何 Internal Agent 交互。Owner 明确选择这一边界时，其他 Agent 可以通过 Lead 协作；但 Organization Relationship 本身不会自动强制消息路由。
 
 这种结构接近公司的组织方式：每个成员拥有稳定职责，领域扩大后继续分工，内部通过沟通协作，对外由明确的角色承担整体责任。
 
@@ -152,8 +147,8 @@ Product Lead
 
 | 状态 | 平台 |
 |---|---|
-| 当前支持 | 飞书、Parall |
-| TODO | Slack、Microsoft Teams |
+| 当前支持 | 飞书、Slack、Parall |
+| TODO | Microsoft Teams |
 
 ## Work Where People Already Work
 
@@ -164,7 +159,7 @@ CodexLoom 不要求所有参与者迁移到一个新的聊天入口。同一个 
 | 日常使用者 | Codex Desktop / Mobile | 与 Agent 持续工作，在不同设备上继续同一个 Thread |
 | Agent 维护者 | CodexLoom WebUI | 使用 Agent，并维护 Profile、组织关系、外部入口和运行状态 |
 | 其他 Agent | `loom` CLI | 发现领域负责人，发送消息、回复并查询处理状态 |
-| 组织成员 | 外部 IM | 在原有工作环境中使用已经接入组织的 Agent |
+| 外部协作者 | 外部 IM | 在原有工作环境中使用已经接入的 Agent |
 
 ## Govern the Agent Organization
 
@@ -172,9 +167,9 @@ CodexLoom 的治理对象不是一组模型参数，而是一个持续工作的 
 
 长期 Agent 也使持续辅导成为可能。维护者可以直接与 Agent 对话，复盘一次判断，纠正它对领域的理解，并观察后续工作是否改善。需要长期生效的变化可以落实到 Profile、协作关系和 Conversation Membership，而不是停留在一次性的提示中。
 
-治理还包括组织本身的演进：职责过大时拆分新的 Internal Agents，协作路径过长时调整关系，对外沟通失焦时重新设计 Interface Agent 和 Channel 角色。CodexLoom 管理的不只是单个 Agent 的表现，也包括整个 Agent 组织是否合理。
+治理还包括组织本身的演进。反复出现的压力信号可以促使 Owner 进一步判断：一项责任是否需要分化、协作关系是否需要调整、对外角色是否需要更清晰的边界。运行和 Activity 证据用于形成问题，不会自动评价 Agent 表现或直接给出组织调整结论。
 
-对个人而言，这是一组可以长期协作并被带入工作环境的 Agent 伙伴；对企业而言，这些 Agent 是需要持续运营的组织资产。普通成员可以直接在 IM 中使用 Agent，维护者则通过 CodexLoom 观察、辅导和调整背后的 Agent 组织。
+对高级个人而言，这是一组可以长期协作并被带入工作环境的 Agent 伙伴。CodexLoom 帮助 Owner 组织这些 Agent，但不会变成 CRM、ERP、项目管理系统或用户公司的 Operating System。
 
 ## Product Boundary
 
@@ -182,6 +177,8 @@ CodexLoom 建立在 Codex 之上。Codex 继续提供 Agent Runtime、Thread 历
 
 ## Documentation
 
+- [Owner Guide：建立并使用长期 Codex Agent Team](docs/owner-guide.md)
+- [文档地图：Owner、Reference、Product 与 Developer 文档](docs/README.md)
 - [Agent Profile：如何定义长期身份、Domain 与 Scope](docs/agent-profile.md)
 - [Agent 通信与 `loom` CLI](docs/loom-cli.md)
 - [外部平台集成设计](docs/agent-platform-integration.md)

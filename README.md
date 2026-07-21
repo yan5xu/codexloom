@@ -39,7 +39,7 @@ The name `Loom` describes this organizing process: every thread keeps its own hi
 - **One thread, multiple surfaces:** Work on the same thread from Codex Desktop, Mobile, the WebUI, and the CLI, with live message and status synchronization.
 - **Agent-to-agent communication:** Send, queue, and reply to Messages while preserving delivery state, response relationships, and complete history.
 - **Team structure:** Separate draggable Organization, Collaboration, and Activity maps keep formal responsibility, declared cross-domain work, and Message evidence distinct; Directory remains the precise view of every Agent.
-- **External organization integration:** Manage external identities, Conversation Memberships, Inbox, and Outbox through Parall and Feishu (Lark).
+- **External organization integration:** Manage external identities, Conversation Memberships, Inbox, and Outbox through Feishu (Lark), Slack, and Parall.
 - **Continuous operations:** Run Schedules, inspect global runtime state, create backups on demand, and restart gracefully after active turns finish.
 
 Lead, Internal Agent, and Interface Agent are currently expressed through Profiles, declared relationships, Messages, and Conversation Memberships. Dedicated hierarchical messaging policies and organization templates are still being modeled.
@@ -60,14 +60,32 @@ the primary product direction.
 
 ## Quick Start
 
-Prerequisite: install the `codex` CLI and sign in with a ChatGPT account.
+CodexLoom is currently local-first and self-hosted. To start it from source,
+install the `codex` CLI, sign in with a ChatGPT account, and run:
 
 ```sh
 make release
 ./bin/codex-loom
 ```
 
-Open <http://localhost:4870>, then create your first agent:
+### Owner Path in the WebUI
+
+Open <http://localhost:4870>. If you are still deciding what deserves a
+long-lived Agent, start with the [Owner Guide](docs/owner-guide.md).
+
+For a simple first Agent:
+
+1. Select **New agent**.
+2. Give it a stable name and the working directory it needs.
+3. Open its workspace and send one real assignment from the responsibility it
+   will continue to own.
+4. Use **Profile** in the Agent Inspector to record the smallest useful
+   Identity, Domain, and Scope. Refine them after observing real work instead of
+   designing a complete organization up front.
+
+### CLI Equivalent
+
+The same initial setup can be performed from the local CLI:
 
 ```sh
 ./bin/loom agent create research --cwd /path/to/repo

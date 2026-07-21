@@ -49,6 +49,8 @@ Lead、Internal Agent 和 Interface Agent 目前通过 Profile、显式关系、
 - 使用 Codex App 进行日常交互。
 - 让不同领域的 Agent 相互协作。
 - 把 Agent 带入自己的工作群和社区。
+- 在公司中让同事通过飞书或 Slack 与受治理的 Agent 协作，复用自己已经积累的专业能力。
+- 通过 Agent 减少重复答疑和上下文转述，同时为身边的协作者提供直接支持。
 
 CodexLoom 当前首先服务一个高级个人 Owner。外部协作者可以通过既有 Conversation 与受治理的 Agent 协作，但企业多租户管理与通用公司经营不是当前产品的主要方向。
 

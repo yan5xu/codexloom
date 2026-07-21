@@ -35,6 +35,19 @@ The guide distinguishes five kinds of statements:
 Features that exist only in a development build are called out explicitly.
 They should not be treated as a promise of the current `main` branch.
 
+Choose a reading path based on the question you have now:
+
+- First use: read **The Core Idea**, **The Owner's Working Rhythm**, and
+  **Establish Your First Long-Lived Agent** in order.
+- You already have a long-lived Agent: focus on **Work With an Agent Day to
+  Day** and **Choose Process Management or Result Management**.
+- You are starting cross-Agent collaboration: read **Choose the Right
+  Coordination Mechanism** and **Grow From One Agent Into a Team**.
+- You want colleagues to reuse your Agent capabilities: read **Give Agents
+  Governed External Roles**.
+- You are adjusting the organization: read **Observe and Adjust the Team** and
+  **Product Boundary**.
+
 ## The Core Idea
 
 ### Start with continuing work, not an organization chart
@@ -77,6 +90,43 @@ organization become necessary. Loom then helps answer:
 **Current recommendation:** organization is more reliable when it records a real
 division of responsibility than when it predicts an ideal future structure.
 
+### Loom organizes Agents but does not own the Owner's goals
+
+The Owner may want to reduce forwarding, expand personal capacity, improve
+external collaboration, or operate a One Person Company. Those goals belong to
+the Owner. Loom can help achieve them, but it should not absorb the goals into
+its own product objects.
+
+**Product principle:** Loom owns only what it can reliably govern: Agent
+identity, continuing responsibility, relationships, communication, external
+roles, and operating evidence. Business projects, customer commitments,
+operating results, and the definition of success remain with the Owner and the
+authoritative business systems.
+
+The same boundary applies to organization methods. Long-lived Agents, Topics,
+Leads, and Practice Coaches may help the Owner work, but Loom does not decide
+the correct company goal or hard-code every working method as a product object.
+
+### An advanced individual does not have to work alone
+
+CodexLoom first serves one advanced individual Owner, but that person may work
+inside a company or team. The Owner can bring a long-developed Agent into a
+Feishu or Slack conversation through a governed external identity, then let
+colleagues collaborate with it under an explicit Conversation Role.
+
+This makes personal capability accumulated in the Agent's Profile, Thread, and
+working methods reusable by the team. The Owner spends less time answering the
+same questions, forwarding information, and reconstructing context, while
+colleagues gain direct access to a professional capability. The Agent still
+follows its existing domain, authorization, and escalation boundaries. Reusing
+the capability does not expose all of the Owner's context, permissions, or
+business judgment to external collaborators.
+
+**Product principle:** Loom may help an individual bring Agent capabilities to
+people around them without becoming an enterprise multi-tenant administration
+system or changing the starting point: one explicit Owner remains responsible
+for the Agent's identity and boundaries.
+
 ## The Owner's Working Rhythm
 
 CodexLoom has several work surfaces because the Owner uses them at different
@@ -86,6 +136,7 @@ frequencies.
 |---|---|---|
 | Most of the day | Agent workspace | Which long-lived Agent am I working with? |
 | When asked | Needs You | What fact, choice, or authorization requires me? |
+| Across days or Agents | Topics (development build) | Who owns this bounded matter now, and what is it waiting for? |
 | Periodically | Overview | Is the team operating normally, and what deserves investigation? |
 | When responsibilities change | Team | Who owns what, and do declared relationships still fit the work? |
 | When external roles change | External | Which Agent may act as which identity in which conversation? |
@@ -164,6 +215,39 @@ contains the items that require the Owner to act.
 requesting Agent for integration. Sending every intermediate reply to the Owner
 recreates the forwarding burden the team is intended to reduce.
 
+## Choose Process Management or Result Management
+
+Process management and result management are not two fixed Agent types. The
+same Agent and the same kind of work should be managed differently as capability
+matures and risk boundaries change.
+
+| Situation | Better management mode | What the Owner or Lead watches |
+|---|---|---|
+| New domain, ambiguous objective, unproven capability, or strong cross-domain dependency | Process management | Clarify the problem together, inspect critical steps, and shorten feedback distance |
+| Clear objective and acceptance, with an externalized process that is repeatedly followed | Result management | Objective, boundary, result, evidence, and exception escalation |
+| Production writes, external commitments, sensitive information, or irreversible state changes | Increase process visibility and add gates | Authorization, stop conditions, rollback, and independent review |
+| Ordinary work in a mature process | Result management with periodic process sampling | Whether results remain acceptable and the standard is still valid |
+
+As a working method becomes clear, write the stable process into a Skill, SOP,
+checklist, tool constraint, or automated gate. Once the Agent has shown across
+several real assignments that it follows those rules, and failures are
+detectable, reversible, or contained by permission boundaries, the Owner or
+Lead no longer needs to inspect every step. They can instead define the local
+result, acceptance, evidence, and exceptions that must be escalated.
+
+**Validated practice:** moving to result management does not mean that process
+observation stops. Watch results in ordinary work, descend into the process
+when something is abnormal, and sample the process periodically. Return
+temporarily to process management when the standard fails, risk rises, or the
+Agent begins to drift.
+
+A Lead should not become a larger all-purpose Agent. It owns the overall goal,
+priority, cross-domain tradeoffs, result integration, and final closure.
+Specialist Agents own their domain facts, methods, and local results. If the
+Lead repeatedly redoes every specialist's implementation and validation, the
+result interface, Skill, gate, or responsibility boundary is usually not mature
+enough.
+
 ## Choose the Right Coordination Mechanism
 
 Different Loom mechanisms solve different continuity problems.
@@ -191,6 +275,68 @@ An Agent sends a Message when it needs another long-lived Agent's judgment,
 work, or feedback. The reply returns to the requesting Agent. The Owner should
 not need to forward ordinary Agent-to-Agent communication.
 
+### Let information follow responsibility and decision authority
+
+Communication is not meant to make every Agent know everything. It should put
+the necessary information in the hands of the role that owns the matter and
+has authority to decide it:
+
+> **Information flows to responsibility. Decisions flow to authority. Results
+> return to the initiator. Exceptions escalate upward.**
+
+Different relationships need different information resolutions:
+
+- The Owner gives the Responsible Agent or Lead the reason for the work,
+  priority, success criteria, risk tradeoffs, and material authorization.
+- The Responsible Agent gives a Participant the domain-relevant objective,
+  confirmed facts, non-goals, stable objects or versions, acceptance criteria,
+  and escalation boundary.
+- Specialist Agents exchange high-resolution reproductions, Artifacts,
+  contracts, versions, and local problems directly.
+- A specialist returns the result, key evidence, limitations, and any fact that
+  changes overall scope, dependencies, risk, or completion conditions to the
+  Responsible Agent.
+- The Responsible Agent escalates only the human facts, choices,
+  authorizations, and irreversible boundaries that truly require the Owner,
+  rather than dumping the full specialist process.
+
+This is not merely “send less information.” It is **minimum sufficient
+resolution**: enough for the receiver to make its own decision without copying
+the sender's entire professional context. High-resolution evidence that was not
+actively sent upward stays with the domain owner and remains available for
+stepwise inspection when something fails or needs retrospective review.
+
+When a specialist Agent needs context that only the Owner knows from the
+business situation, it should usually send the gap and its impact to the
+Responsible Agent or domain owner that holds that business context. That owner
+then creates one self-contained human question. This path puts context in the
+hands of someone who must know it without requiring the upper layer to
+understand model choice, debugging steps, or other internal process details.
+
+### Use progressive communication for ambiguous questions
+
+**Current recommendation:** for ambiguous, novel, cross-domain, or organization
+questions, communicate from broad to narrow and shallow to deep, converging
+across several rounds:
+
+1. Open with a broad but real question and let the receiver explain the
+   situation from its own long-lived domain context.
+2. Align terminology, facts, boundaries, and unknowns.
+3. Ask focused follow-ups about important examples, counterexamples, evidence,
+   and responsibility conflicts.
+4. Converge on options, a decision, an escalation, or the next experiment.
+
+Each round should be understandable on its own and advance one clear layer of
+judgment. For stable interfaces, factual lookups, fixed-format delivery, and
+mature Skills, a one-shot structured request is usually more efficient.
+
+**Hypothesis:** this method may work partly because an LLM generates each next
+token from the current context. An overlong, over-specified one-shot prompt can
+reinforce the sender's incorrect framing. Letting the receiver first generate
+its own overall understanding creates a self-prompting scaffold for the next
+round and exposes false premises earlier. This explanation still needs evidence
+from quality, waiting, rework, and context loss; it is not a model guarantee.
+
 ### Needs You is for a human decision
 
 Use Needs You only when work cannot responsibly continue without an Owner fact,
@@ -208,12 +354,50 @@ A Topic is not a shared model Session or a project-management board. It is a
 thin coordination record for a bounded matter that spans Turns, days, or
 Agents. It has one Responsible Agent, scoped Participants, a versioned brief,
 waiting conditions, and links to evidence. Each Participant keeps detailed
-professional work in its own Agent Thread and returns a scoped result to the
-Responsible Agent.
+professional work in its own Agent Thread. The Topic context requires the
+Participant to return scoped results, limitations, context gaps, and evidence
+to the Responsible Agent. This is a working protocol: Loom requires both ends
+of a topic-linked Message to belong to the Topic, but it does not force every
+Participant Message to name the Responsible Agent as its recipient.
 
 **Current recommendation:** create a Topic only when that shared continuity is
-otherwise expensive to
-reconstruct. A small handoff or one meeting does not automatically require one.
+otherwise expensive to reconstruct. A small handoff or one meeting does not
+automatically require one.
+
+Ordinary Owner input in a Topic goes to the Responsible Agent. The Responsible
+Agent routes work to Participants from the purpose, completion boundary, and
+current brief. Participants work in their own Agent Threads and, under the
+Topic working protocol, return results, limitations, and key evidence to the
+Responsible Agent. Only a stage result integrated and published by the
+Responsible Agent enters the Owner's Results Ready view.
+
+If the current execution of a Participant Turn is clearly going wrong, the
+Owner can open the active Turn currently associated with that Participant from
+the Topic. Steer targets the captured explicit Turn. Interrupt begins from that
+active Turn and aligns to the Agent's current authoritative Turn if the actual
+active Turn has changed. The intervention leaves an audit event and notifies
+the Responsible Agent. It does not automatically change Topic state, scope,
+Participant responsibility, or any long-term organization relationship. If it
+changes the overall plan, the Responsible Agent must update the brief and route
+the work again.
+
+### Trial a division of work in a Topic before making it durable
+
+**Validated practice:** a new division of work or cross-domain collaboration
+can first run as a topic-scoped responsibility. The Topic supplies a clear
+purpose, completion boundary, Responsible Agent, Participants, and evidence
+history while Profile, Organization, and Collaboration remain unchanged. This
+makes the experiment reversible and avoids turning one project collaboration
+into permanent organization fact too early.
+
+Observe several rounds of real work. Does the division consistently reduce
+duplicated judgment, incorrect routing, and context reconstruction? Do the
+participants form a stable direct interface? Do exceptions and results return
+to the right place? Only after the evidence is stable and the Owner confirms it
+should a durable identity and responsibility enter a Profile, a hierarchical
+responsibility enter Organization, or a stable horizontal interface enter
+Collaboration. A repeated method should become a Skill or SOP rather than
+remaining a temporary Topic instruction.
 
 ### Triggers are reasons to re-check, not conclusions
 
@@ -267,6 +451,51 @@ A Topic can assemble a temporary set of Participants without declaring a
 permanent relationship. A Message can record one collaboration without turning
 it into an Organization or Collaboration relationship.
 
+Organization and Collaboration are both declared structures. They do not grant
+repository, deployment, credential, external-send, or production-write
+permission, and they do not force every Message route. Permissions, external
+roles, and concrete operations still require their own governance objects and
+current authorization.
+
+### Use matrix organization to separate result ownership from professional method
+
+**Current recommendation:** as the Agent Team grows, separate three kinds of
+relationships instead of drawing every adviser as a manager:
+
+- **Business Home:** an Agent's stable business home. It owns business objects,
+  context, priorities across Topics, and continuing responsibility after a
+  Topic ends.
+- **Topic Team:** a dynamic combination around one bounded matter. The
+  Responsible Agent owns the Topic brief, routing, waiting state, result
+  integration, and closure, but does not thereby become the Participants'
+  long-term manager.
+- **Practice Coach Network:** professional methods across Business Homes. A
+  Coach gathers real successes, failures, and exceptions, develops candidate
+  practices, calibrates them with the affected parties, and—after Owner
+  confirmation—turns them into Skills, SOPs, tools, templates, or quality
+  standards.
+
+One Agent may belong to one Business Home, participate in several Topics, and
+receive method support from several Practice Coaches. A communication Coach may
+serve most Agents, while a frontend Coach serves only Agents working with Web,
+UI, and browser automation. The Practice Coach owns “how we usually work.” The
+business Lead or Topic Responsible owns “what we are doing now, why, its
+priority, and acceptance.” The executing Agent retains local professional
+judgment.
+
+**Hypothesis:** whether a Practice Coach deserves to become a long-lived Agent
+must be tested through real cycles across several Business Homes. Potential
+applicability should not be predeclared as a large number of Collaboration
+relationships. Begin with Topics, Messages, and explicit authorization. Make
+relationships durable one by one only when method input, adoption feedback,
+and a stable handoff recur.
+
+Business Home, Topic Team, and Practice Coach Network are organization methods,
+not new hard-coded Agent types or domain objects in Loom. They are expressed by
+combining Profile and Organization, Topic, Collaboration, and shared Skills.
+Only if real use proves that existing objects cannot carry a necessary
+responsibility should a new product object be considered.
+
 ## Give Agents Governed External Roles
 
 Think from the Agent outward:
@@ -318,9 +547,11 @@ decision ownership.
 
 ## Product Boundary
 
-CodexLoom is for an advanced individual Owner, including a One Person Company
-operator, who wants to use a long-lived Codex Agent Team. It helps organize that
-team; it does not operate the Owner's entire company.
+CodexLoom is for an advanced individual Owner, whether independent, operating a
+One Person Company, or working inside a larger company, who wants to use a
+long-lived Codex Agent Team. It helps organize that team and lets governed Agent
+capabilities be reused by collaborators; it does not operate the Owner's entire
+company.
 
 CodexLoom is not intended to become:
 

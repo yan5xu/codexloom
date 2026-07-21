@@ -57,6 +57,10 @@ Lead, Internal Agent, and Interface Agent are currently expressed through Profil
 - Use the Codex app for daily work.
 - Let agents responsible for different domains collaborate directly.
 - Bring agents into work groups and communities they already use.
+- Let colleagues collaborate with a governed Agent through Feishu or Slack,
+  reusing professional capability the Owner has already developed.
+- Reduce repeated answers and context forwarding while giving nearby
+  collaborators direct support through the Agent.
 
 CodexLoom currently serves one advanced individual Owner first. External
 collaborators can work with governed Agents through existing conversations, but

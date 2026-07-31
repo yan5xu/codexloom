@@ -10,7 +10,7 @@ all: build
 
 # Build the React console into internal/webui/dist (embedded by Go).
 web:
-	cd web && npm install && npm run build
+	cd web && npm ci && npm run build
 
 # Build CodexLoom binaries only after refreshing the WebUI. The WebUI is
 # embedded by Go at compile time, so reversing this dependency publishes a

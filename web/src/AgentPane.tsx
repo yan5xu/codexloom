@@ -116,7 +116,7 @@ export function AgentPane({
   const [configSection, setConfigSection] = useState<"profile" | "team" | "external" | "triggers" | "runtime" | "usage">("profile");
   const [nameDraft, setNameDraft] = useState(agent.name);
   const [modelDraft, setModelDraft] = useState(agent.model || "");
-  const [modelCustomOpen, setModelCustomOpen] = useState(isCustomModel(agent.model || ""));
+  const [modelCustomOpen, setModelCustomOpen] = useState(isCustomModel(agent.model || "", agent.providerId));
   const [effortDraft, setEffortDraft] = useState(agent.effort || "");
   const [sandboxDraft, setSandboxDraft] = useState(agent.sandbox || "danger-full-access");
   const [approvalDraft, setApprovalDraft] = useState(agent.approvalPolicy || "never");
@@ -247,11 +247,11 @@ export function AgentPane({
   useEffect(() => {
     setNameDraft(agent.name);
     setModelDraft(agent.model || "");
-    setModelCustomOpen(isCustomModel(agent.model || ""));
+    setModelCustomOpen(isCustomModel(agent.model || "", agent.providerId));
     setEffortDraft(agent.effort || "");
     setSandboxDraft(agent.sandbox || "danger-full-access");
     setApprovalDraft(agent.approvalPolicy || "never");
-  }, [agent.id, agent.name, agent.model, agent.effort, agent.sandbox, agent.approvalPolicy]);
+  }, [agent.id, agent.name, agent.providerId, agent.model, agent.effort, agent.sandbox, agent.approvalPolicy]);
 
   useEffect(() => {
     if (!active || !configRequestNonce) return;
@@ -852,7 +852,10 @@ export function AgentPane({
 
   const running = agent.status === "running";
   const heldMessages = pendingWork.filter((entry) => entry.internalMessage?.handlingStatus === "interrupted" || entry.internalMessage?.handlingStatus === "failed");
-  const modelPresetValue = modelCustomOpen || isCustomModel(modelDraft) ? CUSTOM_MODEL_VALUE : modelDraft;
+  const providerModelPresets = agent.providerId === "deepseek"
+    ? [{ value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }]
+    : MODEL_PRESETS;
+  const modelPresetValue = modelCustomOpen || isCustomModel(modelDraft, agent.providerId) ? CUSTOM_MODEL_VALUE : modelDraft;
   const profileDirty = Boolean(
     profile &&
       (identityDraft.trim() !== (profile.identity || "") ||
@@ -955,11 +958,17 @@ export function AgentPane({
                     <input
                       value={nameDraft}
                       onChange={(e) => setNameDraft(e.target.value)}
-                      disabled={running}
+                      disabled={running || agent.providerId === "deepseek"}
                       placeholder="agent-name"
                       spellCheck={false}
                       className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
                     />
+                  </label>
+                  <label className="mb-2 block">
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Provider</span>
+                    <div className="flex h-8 w-full items-center rounded-md bg-muted/40 px-2.5 font-mono text-[12px] text-foreground ring-1 ring-border">
+                      {agent.providerId || "openai"}
+                    </div>
                   </label>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Model</span>
@@ -968,7 +977,7 @@ export function AgentPane({
                       onChange={(e) => {
                         if (e.target.value === CUSTOM_MODEL_VALUE) {
                           setModelCustomOpen(true);
-                          if (MODEL_PRESETS.some((option) => option.value === modelDraft)) setModelDraft("");
+                          if (providerModelPresets.some((option) => option.value === modelDraft)) setModelDraft("");
                           return;
                         }
                         setModelCustomOpen(false);
@@ -977,10 +986,10 @@ export function AgentPane({
                       disabled={running}
                       className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
                     >
-                      {MODEL_PRESETS.map((option) => (
+                      {providerModelPresets.map((option) => (
                         <option key={option.label} value={option.value}>{option.label}</option>
                       ))}
-                      <option value={CUSTOM_MODEL_VALUE}>Custom...</option>
+                      {agent.providerId !== "deepseek" ? <option value={CUSTOM_MODEL_VALUE}>Custom...</option> : null}
                     </select>
                     {modelCustomOpen && (
                       <input
@@ -1975,6 +1984,9 @@ function MembershipTextarea({ label, value, onChange, rows }: {
   );
 }
 
-function isCustomModel(model: string) {
-  return model !== "" && !MODEL_PRESETS.some((option) => option.value === model);
+function isCustomModel(model: string, providerId?: string) {
+  const presets = providerId === "deepseek"
+    ? [{ value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }]
+    : MODEL_PRESETS;
+  return model !== "" && !presets.some((option) => option.value === model);
 }

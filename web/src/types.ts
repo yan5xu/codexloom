@@ -19,6 +19,7 @@ export interface Agent {
   threadId: string;
   sandbox: string;
   approvalPolicy: string;
+  providerId?: string;
   model?: string;
   effort?: string;
   status: string;
@@ -37,6 +38,22 @@ export interface Agent {
   pendingApprovals: Approval[];
   goal?: ThreadGoal;
   lastSeq: number;
+}
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  baseUrl?: string;
+  wireApi?: string;
+  source: "builtin" | "custom" | "missing" | string;
+  configured: boolean;
+  credentialSource: "codex-auth" | "toml" | "environment" | "command" | "missing" | string;
+  credentialConfigured: boolean;
+  models: string[];
+  boundAgentCount: number;
+  publicBeta?: boolean;
+  textOnly?: boolean;
+  limitations?: string[];
 }
 
 export interface ThreadArtifact {

@@ -1,11 +1,32 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAPIRequestIncludesAdminToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Codex-Loom-Admin-Token"); got != "test-admin-token" {
+			t.Errorf("admin token header = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	previousBase := base
+	base = server.URL
+	defer func() { base = previousBase }()
+	t.Setenv("CODEX_LOOM_ADMIN_TOKEN", "test-admin-token")
+	if _, _, _, err := apiRequest(http.MethodGet, "/test", nil); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestFormatProfilePreservesReadableMultilineFields(t *testing.T) {
 	profile := map[string]any{

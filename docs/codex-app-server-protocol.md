@@ -35,9 +35,14 @@
 
 ## 共享 CodexHost
 
-CodexLoom 只 spawn 一个 app-server。Agent runtime 只保存 `agentId -> threadId`、active Turn 和
-审批 bookkeeping，不拥有独立进程。Remote 也通过同一个 app-server 的 `remoteControl/*` 能力
+CodexLoom 只 spawn 一个共享 app-server。Agent runtime 保存 `agentId -> threadId`、
+`providerId + model` 绑定、active Turn 和审批 bookkeeping，不拥有独立进程。Remote 也通过同一个 app-server 的 `remoteControl/*` 能力
 接入，不再启动第二个 app-server。
+
+共享 app-server 只有一份 OpenAI 主认证，但 Codex TOML 可以同时声明多个 custom model
+provider。Loom 在 Agent 第一次 `thread/start` 和每次冷 `thread/resume` 时显式传入同一
+`modelProvider` 与 `model`。Provider 是 primary Thread 绑定，不是 Turn 级路由；已有 primary
+Thread 的 Agent 不允许修改 Provider，也不会在认证或请求失败时回退到默认 OpenAI Provider。
 
 app-server 为每个初始化 transport connection 维护独立 connection state。Thread 被 start/load
 后会把 listener 附着到当前 initialized connections；Remote client 的 Turn 因此也会出现在 Loom
@@ -54,8 +59,8 @@ CodexLoom 用到的核心子集：
 | 方法 | 用途 | 关键参数 / 返回 |
 |---|---|---|
 | `initialize` | 握手 | 见上 |
-| `thread/start` | 新建线程 | `{cwd, sandbox}` → `{thread:{id}}` |
-| `thread/resume` | 恢复线程(跨进程续上下文) | `{threadId, sandbox, cwd}`;线程 rollout 不存在时报错含 `no rollout` / `not found` → 回退 `thread/start` |
+| `thread/start` | 新建线程 | `{cwd, sandbox, modelProvider?, model?}` → `{thread:{id}}` |
+| `thread/resume` | 恢复线程(跨进程续上下文) | `{threadId, sandbox, cwd, modelProvider?, model?}`;线程 rollout 不存在时报错含 `no rollout` / `not found` → 回退 `thread/start` |
 | `thread/read` | 读元数据或历史(**运行中也安全**) | `{threadId, includeTurns:false}` 回填 adoption 元数据；`true` 返回 turns/items |
 | `thread/goal/get` | 读取 Thread 当前原生 Goal | `{threadId}` → `{goal: ThreadGoal|null}` |
 | `thread/goal/set` | 创建或更新 Goal | `{threadId, objective?, status?, tokenBudget?}` → `{goal}`；省略字段表示保持，`tokenBudget:null` 表示清除预算 |
@@ -74,6 +79,22 @@ CodexLoom 用到的核心子集：
 `command/exec*`、`review/start`、`skills/list`、`mcpServer/*`、`config/*` 等。
 
 错误形状:`{"code":-32600,"message":"Invalid request: missing field `threadId`"}`。
+
+## Model Provider 配置
+
+Provider 定义与 credential 的唯一事实源是当前 `CODEX_HOME` 的 active user TOML。Loom 通过
+`config/read {includeLayers:true}` 取得有效定义、user layer path 与 version，再用带
+`expectedVersion` 的 `config/batchWrite` 做受控更新；不另建 credential 表或 Keychain 副本。
+
+`config/read` 可能原样返回 TOML 中的 literal bearer token 或静态 Authorization header。
+因此 Hub 只向 UI/CLI 返回白名单投影（配置状态、credential 来源、模型和绑定数量），不会把
+原始 config response 写入 Loom store、事件或 API。Provider 写入和在线验证只允许 localhost，
+除非显式配置 `CODEX_LOOM_ADMIN_TOKEN`。
+
+在线验证会启动一个临时 Codex app-server 和 read-only Thread，执行一次最小文本 Turn 后归档
+该 Thread。验证成功只证明配置可解析、credential 被 Provider 接受且该最小请求完成，不证明
+模型能力、工具行为或业务结果正确。`reloadUserConfig` 不会改变已加载 Thread 的 Provider，
+所以 Provider 变更只供新 Thread 或之后的 cold resume 使用。
 
 ## 原生 Thread Goal
 

@@ -1,7 +1,7 @@
 import { Activity, Archive, BookOpen, Bot, Cable, ChevronRight, CircleHelp, CirclePause, Inbox as InboxIcon, Info, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Agent, type BackupStatus, type HumanRequest, type InboxEntry, type RemoteSnapshot, type Topic } from "./types";
+import { api, type Agent, type BackupStatus, type HumanRequest, type InboxEntry, type ModelProvider, type RemoteSnapshot, type Topic } from "./types";
 import { summarizeTask } from "./feed";
 import { BrandLockup, BrandMark } from "./components/BrandMark";
 import { Button } from "./components/ui/button";
@@ -474,6 +474,7 @@ function AgentTabs({
                   <dl className="mt-3 grid grid-cols-[58px_minmax(0,1fr)] gap-x-2 gap-y-2 text-[10.5px]">
                     <dt className="text-muted-foreground">Workspace</dt><dd className="min-w-0 truncate font-mono" title={agent.cwd}>{agent.cwd}</dd>
                     <dt className="text-muted-foreground">Thread</dt><dd className="min-w-0 truncate font-mono" title={agent.threadId || undefined}>{agent.threadId || "Not started"}</dd>
+                    <dt className="text-muted-foreground">Provider</dt><dd className="font-mono">{agent.providerId || "openai"}</dd>
                     <dt className="text-muted-foreground">Model</dt><dd className="font-mono">{agent.model || "Default"}</dd>
                     <dt className="text-muted-foreground">Reasoning</dt><dd className="font-mono">{agent.effort === "xhigh" ? "Extra high" : agent.effort || "Default"}</dd>
                     <dt className="text-muted-foreground">Sandbox</dt><dd className="font-mono">{agent.sandbox || "danger-full-access"}</dd>
@@ -518,6 +519,11 @@ export default function App() {
     queryFn: async () => (await api("GET", "/api/remote")).remote,
     retry: false,
   });
+  const providersQuery = useQuery<{ providers: ModelProvider[] }>({
+    queryKey: ["model-providers"],
+    queryFn: () => api("GET", "/api/model-providers"),
+    retry: false,
+  });
   const backupQuery = useQuery<BackupStatus>({
     queryKey: ["backups"],
     queryFn: () => api("GET", "/api/admin/backups"),
@@ -540,6 +546,14 @@ export default function App() {
   });
   const agents = agentsQuery.data?.agents || [];
   const remote = remoteQuery.data || null;
+  const modelProviders = providersQuery.data?.providers || [];
+  const creatableProviders = providersQuery.data
+    ? modelProviders.filter((provider) => provider.configured && provider.credentialConfigured)
+    : [{
+        id: "openai", name: "OpenAI / ChatGPT login", source: "builtin", configured: true,
+        credentialSource: "codex-auth", credentialConfigured: true, models: [], boundAgentCount: 0,
+      } as ModelProvider];
+  const creatableProviderKey = creatableProviders.map((provider) => provider.id).join("\n");
   const backupStatus = backupQuery.data || { backups: [], dir: "", count: 0, totalBytes: 0, retention: { minCount: 2, maxCount: 5, maxBytes: 2 * 1024 ** 3, maxAgeDays: 30 } };
   const setAgents = (next: Agent[] | ((previous: Agent[]) => Agent[])) => {
     queryClient.setQueryData<{ agents: Agent[] }>(["agents"], (current) => {
@@ -565,9 +579,18 @@ export default function App() {
   const [newName, setNewName] = useState("");
   const [newCwd, setNewCwd] = useState("");
   const [newDomain, setNewDomain] = useState("");
+  const [newProviderId, setNewProviderId] = useState("openai");
+  const [newModel, setNewModel] = useState("");
   const [creatingAgent, setCreatingAgent] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+
+  useEffect(() => {
+    if (!newAgentOpen || creatableProviders.length === 0 || creatableProviders.some((provider) => provider.id === newProviderId)) return;
+    const provider = creatableProviders[0];
+    setNewProviderId(provider.id);
+    setNewModel(provider.models?.[0] || "");
+  }, [creatableProviderKey, newAgentOpen, newProviderId]);
   const [restartStatus, setRestartStatus] = useState<any>({ state: "idle" });
   const [backingUp, setBackingUp] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(null);
@@ -709,6 +732,7 @@ export default function App() {
                       lastError: d.lastError || "",
                       lastTurn: Object.prototype.hasOwnProperty.call(d, "lastTurn") ? d.lastTurn || undefined : s.lastTurn,
                       model: d.model ?? s.model,
+                      providerId: d.providerId ?? s.providerId,
                       effort: d.effort ?? s.effort,
                       sandbox: d.sandbox ?? s.sandbox,
                       approvalPolicy: d.approvalPolicy ?? s.approvalPolicy,
@@ -750,15 +774,25 @@ export default function App() {
       showToast("working directory must be an absolute path");
       return;
     }
+    if (!creatableProviders.some((provider) => provider.id === newProviderId)) {
+      showToast("configure and verify a model Provider first");
+      return;
+    }
     setCreatingAgent(true);
     try {
-      const data = await api("POST", "/api/agents", { name: newName.trim(), cwd: newCwd.trim() });
+      const data = await api("POST", "/api/agents", {
+        name: newName.trim(), cwd: newCwd.trim(),
+        providerId: newProviderId === "openai" ? "" : newProviderId,
+        model: newModel.trim(),
+      });
       if (newDomain.trim()) {
         await api("PUT", `/api/agents/${encodeURIComponent(data.agent.id)}/profile`, { identity: "", domain: newDomain.trim(), scope: "", expectedVersion: 0 });
       }
       setNewName("");
       setNewCwd("");
       setNewDomain("");
+      setNewProviderId("openai");
+      setNewModel("");
       setNewAgentOpen(false);
       await refresh();
       setOpenAgentIds((ids) => (ids.includes(data.agent.id) ? ids : [...ids, data.agent.id]));
@@ -892,7 +926,7 @@ export default function App() {
     if (route === "settings") {
       const params = new URLSearchParams(h.split("?")[1] || "");
       const section = params.get("section") as SettingsSection | null;
-      if (section && ["remote", "connectors", "recovery", "system", "developer"].includes(section)) setSettingsSection(section);
+      if (section && ["remote", "providers", "connectors", "recovery", "system", "developer"].includes(section)) setSettingsSection(section);
       setView("settings");
       hashApplied.current = true;
       return;
@@ -1253,7 +1287,7 @@ export default function App() {
       return window.codexLoom?.state?.();
     };
     root.openSettings = async (section: SettingsSection = "remote") => {
-      if (!["remote", "connectors", "recovery", "system", "developer"].includes(section)) throw new Error(`Unknown settings section: ${section}`);
+      if (!["remote", "providers", "connectors", "recovery", "system", "developer"].includes(section)) throw new Error(`Unknown settings section: ${section}`);
       selectSettings(section);
       await new Promise((resolve) => window.setTimeout(resolve, 50));
       return window.codexLoom?.state?.();
@@ -1482,13 +1516,35 @@ export default function App() {
               Working directory
               <Input value={newCwd} onChange={(event) => setNewCwd(event.target.value)} placeholder="/absolute/path/to/workspace" spellCheck={false} className="font-mono text-[12px]" />
             </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block space-y-1.5 text-[11px] font-medium text-muted-foreground">
+                Provider
+                <select
+                  value={newProviderId}
+                  onChange={(event) => {
+                    const providerId = event.target.value;
+                    const provider = modelProviders.find((item) => item.id === providerId);
+                    setNewProviderId(providerId);
+                    setNewModel(provider?.models?.[0] || "");
+                  }}
+                  disabled={creatableProviders.length === 0}
+                  className="h-9 w-full rounded-sm border border-input bg-background px-3 font-mono text-[12px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/15 disabled:opacity-60"
+                >
+                  {creatableProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                </select>
+              </label>
+              <label className="block space-y-1.5 text-[11px] font-medium text-muted-foreground">
+                Model
+                <Input value={newModel} onChange={(event) => setNewModel(event.target.value)} readOnly={newProviderId === "deepseek"} placeholder={newProviderId === "openai" ? "Codex default" : "model id"} spellCheck={false} className="font-mono text-[12px] read-only:bg-muted/40" />
+              </label>
+            </div>
             <label className="block space-y-1.5 text-[11px] font-medium text-muted-foreground">
               Domain <span className="font-normal text-muted-foreground/70">optional</span>
               <textarea value={newDomain} onChange={(event) => setNewDomain(event.target.value)} placeholder="The enduring subject this Agent will maintain" rows={3} className="w-full resize-y rounded-sm border border-input bg-background px-3 py-2 text-[12px] leading-5 outline-none focus:border-ring focus:ring-2 focus:ring-ring/15" />
             </label>
           </div>
           <DialogFooter showCloseButton>
-            <Button onClick={create} disabled={creatingAgent}>{creatingAgent ? <span className="spinner size-3" /> : <Plus />}{creatingAgent ? "Creating" : "Create agent"}</Button>
+            <Button onClick={create} disabled={creatingAgent || creatableProviders.length === 0}>{creatingAgent ? <span className="spinner size-3" /> : <Plus />}{creatingAgent ? "Creating" : "Create agent"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

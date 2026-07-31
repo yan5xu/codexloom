@@ -118,6 +118,41 @@ Agent 是稳定治理实体，Codex Thread 是它的主要上下文绑定。新�
 - `--sandbox`：沙箱策略，例如 `danger-full-access`。
 - `--approval`：审批策略，例如 `never` 或 `on-request`。
 
+## Model Provider
+
+Provider 定义和 credential 保存在当前 `CODEX_HOME` 的 Codex TOML；Loom 不维护第二份 Secret。
+先查看当前可用 Provider：
+
+```sh
+loom provider list
+loom provider get deepseek
+```
+
+DeepSeek Responses 预设可通过只在本机读取的 0600 临时文件写入 API key，或引用环境变量名：
+
+```sh
+loom provider set deepseek --api-key-file /path/to/key-file
+# 或
+loom provider set deepseek --env-key DEEPSEEK_API_KEY
+loom provider verify deepseek --model deepseek-v4-flash
+```
+
+CLI 不接受明文 `--api-key` 参数，也不回显 credential。Provider 写入和验证只允许 localhost，
+除非 Hub 显式配置了 Admin Token。验证只执行 read-only 最小文本请求，不证明工具或业务结果。
+
+创建绑定 DeepSeek 的新 Agent：
+
+```sh
+loom agent create deepseek-worker \
+  --cwd /path/to/project \
+  --provider deepseek \
+  --model deepseek-v4-flash
+```
+
+Provider 会绑定到新 Agent 的 primary Thread，并在 cold resume 时继续显式传入。已有 primary
+Thread 的 Agent 不允许切换 Provider；失败时不会自动回退到 ChatGPT。DeepSeek Responses 当前为
+public beta 且只接受文本输入，Loom 会在 `turn/start` 前拒绝图片或文件 Artifact。
+
 创建出来的 agent 立刻可以收普通任务：
 
 ```sh

@@ -187,6 +187,8 @@ func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 		threadID string
 		sandbox  string
 		cwd      string
+		provider string
+		model    string
 	}
 	h.mu.Lock()
 	targets := make([]target, 0, len(h.agents))
@@ -194,7 +196,7 @@ func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 		if strings.TrimSpace(agent.ThreadID) == "" {
 			continue
 		}
-		targets = append(targets, target{agentID: agent.ID, threadID: agent.ThreadID, sandbox: agent.Sandbox, cwd: agent.Cwd})
+		targets = append(targets, target{agentID: agent.ID, threadID: agent.ThreadID, sandbox: agent.Sandbox, cwd: agent.Cwd, provider: agent.ProviderID, model: agent.Model})
 	}
 	h.mu.Unlock()
 
@@ -226,7 +228,7 @@ func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 	// Resuming an active Goal hands continuation back to Codex. Paused,
 	// blocked, limited, and complete Goals remain visible without starting work.
 	for _, target := range active {
-		if err := resumeThread(host.client, target.threadID, target.sandbox, target.cwd); err != nil {
+		if err := resumeThread(host.client, target.threadID, target.sandbox, target.cwd, target.provider, target.model); err != nil {
 			log.Printf("[codex-loom] resume active Goal for %s: %v", target.threadID, err)
 		}
 	}
@@ -379,8 +381,9 @@ func (h *Hub) resumeGoalThread(agentID string, generation uint64) {
 		return
 	}
 	threadID, sandbox, cwd := agent.ThreadID, agent.Sandbox, agent.Cwd
+	providerID, model := agent.ProviderID, agent.Model
 	h.mu.Unlock()
-	if err := resumeThread(host.client, threadID, sandbox, cwd); err != nil {
+	if err := resumeThread(host.client, threadID, sandbox, cwd, providerID, model); err != nil {
 		log.Printf("[codex-loom] resume Goal for %s: %v", threadID, err)
 	}
 }

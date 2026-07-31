@@ -217,7 +217,9 @@ func TestTwoAgentsShareOneCodexHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := h.CreateAgent(CreateParams{Name: "two", Cwd: "/tmp/two"})
+	second, err := h.CreateAgent(CreateParams{
+		Name: "two", Cwd: "/tmp/two", ProviderID: "deepseek", Model: "deepseek-v4-flash",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,6 +268,17 @@ func TestTwoAgentsShareOneCodexHost(t *testing.T) {
 	if got := countRequestMethod(t, logPath, "thread/start"); got != 2 {
 		t.Fatalf("thread/start requests = %d, want two", got)
 	}
+	start := lastRequestParams(t, logPath, "thread/start")
+	if start["modelProvider"] != "deepseek" || start["model"] != "deepseek-v4-flash" {
+		t.Fatalf("second thread/start binding = %#v, want deepseek/deepseek-v4-flash", start)
+	}
+	var stored map[string]*Agent
+	if err := st.LoadAgents(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored[second.ID].ProviderID != "deepseek" || stored[second.ID].Model != "deepseek-v4-flash" {
+		t.Fatalf("persisted Provider binding = %#v", stored[second.ID])
+	}
 }
 
 func TestSendTaskResumesCachedThreadBeforeTurnStart(t *testing.T) {
@@ -279,6 +292,7 @@ func TestSendTaskResumesCachedThreadBeforeTurnStart(t *testing.T) {
 	h.agents["agent-stale"] = &Agent{
 		ID: "agent-stale", Name: "stale", Cwd: "/tmp/stale", ThreadID: "thr-stale",
 		Sandbox: "danger-full-access", ApprovalPolicy: "never", Status: "idle",
+		ProviderID: "deepseek", Model: "deepseek-v4-flash",
 		CreatedAt: now(), UpdatedAt: now(),
 	}
 	h.profiles["agent-stale"] = &AgentProfile{
@@ -313,6 +327,9 @@ func TestSendTaskResumesCachedThreadBeforeTurnStart(t *testing.T) {
 	resume := lastRequestParams(t, logPath, "thread/resume")
 	if resume["sandbox"] != "danger-full-access" {
 		t.Fatalf("thread/resume sandbox = %#v, want danger-full-access", resume["sandbox"])
+	}
+	if resume["modelProvider"] != "deepseek" || resume["model"] != "deepseek-v4-flash" {
+		t.Fatalf("thread/resume binding = %#v, want deepseek/deepseek-v4-flash", resume)
 	}
 	turn := lastRequestParams(t, logPath, "turn/start")
 	policy, ok := turn["sandboxPolicy"].(map[string]any)
@@ -350,6 +367,34 @@ func TestSendTaskResumesCachedThreadBeforeTurnStart(t *testing.T) {
 		strings.Contains(developer, "<loom_agent_relationships") ||
 		!strings.HasSuffix(developer, "</loom_developer_context>") {
 		t.Fatalf("atomic Developer context = %s", developer)
+	}
+}
+
+func TestDeepSeekAgentRejectsAttachmentsBeforeTurnStart(t *testing.T) {
+	logPath := installFakeSharedCodexHost(t)
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	defer h.Shutdown()
+	agent, err := h.CreateAgent(CreateParams{
+		Name: "two", Cwd: "/tmp/two", ProviderID: "deepseek", Model: "deepseek-v4-flash",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := h.StageThreadArtifact(agent.ID, "brief.txt", "text/plain", strings.NewReader("private input"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := countRequestMethod(t, logPath, "turn/start")
+	_, err = h.SendTaskWithArtifacts(agent.ID, "review", []string{artifact.ID}, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "text input only") {
+		t.Fatalf("DeepSeek attachment error = %v", err)
+	}
+	if after := countRequestMethod(t, logPath, "turn/start"); after != before {
+		t.Fatalf("turn/start requests changed from %d to %d after rejected attachment", before, after)
 	}
 }
 
@@ -521,6 +566,19 @@ while IFS= read -r line; do
 	  printf '{"id":%s,"result":{"data":[{"cwd":"/tmp/stale","skills":[{"name":"loom-needs-you","description":"Human requests","path":"/tmp/needs/SKILL.md","scope":"user","enabled":true}],"errors":[]}]}}\n' "$id" ;;
 	*'"method":"skills/list"'*)
 	  printf '{"id":%s,"result":{"data":[{"cwd":"/tmp/one","skills":[{"name":"loom-needs-you","description":"Human requests","path":"/tmp/needs/SKILL.md","scope":"user","enabled":true},{"name":"loom-external-messaging","description":"External messaging","path":"/tmp/skill/SKILL.md","scope":"user","enabled":true}],"errors":[]}]}}\n' "$id" ;;
+	*'"method":"config/read"'*)
+	  printf '{"id":%s,"result":{"config":{"model_providers":{"deepseek":{"name":"DeepSeek","base_url":"https://api.deepseek.com","wire_api":"responses","experimental_bearer_token":"fixture-secret-do-not-leak"}}},"layers":[{"name":{"type":"user","file":"/tmp/config.toml"},"version":"config-v1","config":{}}],"origins":{}}}\n' "$id" ;;
+	*'"method":"account/read"'*)
+	  printf '{"id":%s,"result":{"account":{"type":"chatgpt"},"requiresOpenaiAuth":true}}\n' "$id" ;;
+	*'"method":"config/batchWrite"'*)
+	  printf '{"id":%s,"result":{"filePath":"/tmp/config.toml","status":"ok","version":"config-v2"}}\n' "$id" ;;
+	*'"method":"thread/start"'*'codexloom-provider-verify-'*'"modelProvider":"deepseek"'*)
+	  printf '{"id":%s,"result":{"thread":{"id":"thr-provider-verify"}}}\n' "$id" ;;
+	*'"method":"turn/start"'*'"threadId":"thr-provider-verify"'*)
+	  printf '{"id":%s,"result":{"turn":{"id":"turn-provider-verify"}}}\n' "$id"
+	  printf '{"method":"turn/completed","params":{"threadId":"thr-provider-verify","turn":{"id":"turn-provider-verify","status":"completed"}}}\n' ;;
+	*'"method":"thread/archive"'*'"threadId":"thr-provider-verify"'*)
+	  printf '{"id":%s,"result":{}}\n' "$id" ;;
 	*'"method":"thread/start"'*'"cwd":"/tmp/one"'*)
 	  printf '{"method":"thread/started","params":{"thread":{"id":"thr-one","name":null,"cwd":"/tmp/one"}}}\n'
 	  printf '{"id":%s,"result":{"thread":{"id":"thr-one"}}}\n' "$id" ;;
@@ -560,4 +618,53 @@ done
 	t.Setenv("CODEX_HOST_LOG", logPath)
 	t.Setenv("CODEX_HOST_RESUMED", resumeMarker)
 	return logPath
+}
+
+func TestModelProviderProjectionRedactsSecretsAndUsesVersionedBatchWrite(t *testing.T) {
+	logPath := installFakeSharedCodexHost(t)
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	defer h.Shutdown()
+
+	providers, err := h.ListModelProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "fixture-secret-do-not-leak") {
+		t.Fatalf("secret leaked from Provider projection: %s", encoded)
+	}
+	if len(providers) != 2 || providers[1].ID != "deepseek" || providers[1].CredentialSource != "toml" || !providers[1].CredentialConfigured {
+		t.Fatalf("Provider projection = %#v", providers)
+	}
+
+	provider, err := h.UpsertModelProvider("deepseek", ModelProviderUpsertParams{APIKey: "replacement-fixture-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(provider)
+	if strings.Contains(string(encoded), "replacement-fixture-secret") {
+		t.Fatalf("write response leaked submitted secret: %s", encoded)
+	}
+	write := lastRequestParams(t, logPath, "config/batchWrite")
+	if write["expectedVersion"] != "config-v1" || write["filePath"] != "/tmp/config.toml" || write["reloadUserConfig"] != false {
+		t.Fatalf("config/batchWrite concurrency contract = %#v", write)
+	}
+	edits, ok := write["edits"].([]any)
+	if !ok || len(edits) < 4 {
+		t.Fatalf("config/batchWrite edits = %#v", write["edits"])
+	}
+	verification, err := h.VerifyModelProvider("deepseek", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.Config != "valid" || verification.Authentication != "accepted" || verification.MinimalRequest != "success" {
+		t.Fatalf("Provider verification = %#v", verification)
+	}
 }

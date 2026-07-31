@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -295,6 +296,27 @@ func TestUpdateAgentConfigRollsBackWhenRegistryCommitFails(t *testing.T) {
 	}
 	if view.Name != "before" {
 		t.Fatalf("in-memory Agent name = %q, want rollback to before", view.Name)
+	}
+}
+
+func TestUpdateAgentConfigRejectsProviderChangeForBoundThread(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(st)
+	h.agents["agent-1"] = &Agent{
+		ID: "agent-1", Name: "worker", Cwd: t.TempDir(), ThreadID: "thread-1",
+		ProviderID: "deepseek", Model: "deepseek-v4-flash", Status: "idle",
+	}
+
+	providerID := "openrouter"
+	_, err = h.UpdateAgentConfig("agent-1", ConfigParams{ProviderID: &providerID})
+	if err == nil || !strings.Contains(err.Error(), "create a new Agent") {
+		t.Fatalf("UpdateAgentConfig Provider change error = %v", err)
+	}
+	if h.agents["agent-1"].ProviderID != "deepseek" {
+		t.Fatalf("Provider binding changed after rejection: %#v", h.agents["agent-1"])
 	}
 }
 

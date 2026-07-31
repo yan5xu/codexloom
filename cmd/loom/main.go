@@ -116,6 +116,9 @@ func apiRequest(method, path string, body any) (map[string]any, int, bool, error
 	}
 	req, _ := http.NewRequest(method, base+path, reqBody)
 	req.Header.Set("Content-Type", "application/json")
+	if token := strings.TrimSpace(os.Getenv("CODEX_LOOM_ADMIN_TOKEN")); token != "" {
+		req.Header.Set("X-Codex-Loom-Admin-Token", token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return map[string]any{}, 0, false, fmt.Errorf("cannot reach CodexLoom at %s (%v); start it with: codex-loom", base, err)
@@ -283,6 +286,8 @@ func main() {
 		cmdSend(a)
 	case "artifact":
 		cmdArtifact(a)
+	case "provider":
+		cmdProvider(a)
 	case "msg":
 		cmdMsg(a)
 	case "ask-user":
@@ -362,12 +367,14 @@ func printHelp() {
   chub turn get <turn-id> [--json]
 
 Compatibility shortcuts:
-  chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--model gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|M] [--effort minimal|low|medium|high|xhigh]
+  chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--provider PROVIDER] [--model MODEL] [--effort minimal|low|medium|high|xhigh]
   chub list
   chub get <name|id>
   chub rename <name|id> <new-name>
   chub send <name|id> ["<task>"] [--attachment PATH ...] [--timeout SEC]
   chub artifact publish --from AGENT --file PATH [--file PATH ...]
+  loom provider list|get|set|disable|verify ...
+  loom provider set deepseek [--api-key-file PATH|--env-key NAME]
   chub msg <to> [body] --from <agent> --subject <text> [--response required|none] [--topic TOPIC_ID]
   chub msg --reply-to <message-id> --from <agent> [--subject <text>] [body]
   chub msg --no-reply <message-id> --from <agent>

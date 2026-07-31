@@ -202,6 +202,7 @@ func cmdCreate(a args) {
 		"cwd":            cwd,
 		"approvalPolicy": a.flags["approval"],
 		"sandbox":        a.flags["sandbox"],
+		"providerId":     a.flags["provider"],
 		"model":          a.flags["model"],
 		"effort":         a.flags["effort"],
 	})
@@ -209,8 +210,12 @@ func cmdCreate(a args) {
 		fail(err)
 	}
 	s, _ := resp["agent"].(map[string]any)
-	fmt.Printf("%s %s (%s)\n  cwd:    %s\n  thread: %s\n",
-		green("created"), bold(str(s, "name")), str(s, "id"), str(s, "cwd"), str(s, "threadId"))
+	providerID := str(s, "providerId")
+	if providerID == "" {
+		providerID = "openai"
+	}
+	fmt.Printf("%s %s (%s)\n  cwd:     %s\n  thread:  %s\n  provider: %s\n  model:    %s\n",
+		green("created"), bold(str(s, "name")), str(s, "id"), str(s, "cwd"), str(s, "threadId"), providerID, str(s, "model"))
 }
 
 func cmdList() {

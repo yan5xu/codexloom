@@ -77,3 +77,33 @@ func TestReadOnlyCanaryRejectsWritesAndExternalReads(t *testing.T) {
 		t.Fatalf("GET /api/agents = %d: %s", response.Code, response.Body.String())
 	}
 }
+
+func TestModelProviderMutationsRequireLocalOrAdminRequest(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	server := New(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}}).Handler()
+
+	for _, test := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPut, "/api/model-providers/deepseek"},
+		{http.MethodDelete, "/api/model-providers/deepseek"},
+		{http.MethodPost, "/api/model-providers/deepseek/verify"},
+	} {
+		request := httptest.NewRequest(test.method, test.path, bytes.NewReader([]byte(`{}`)))
+		request.RemoteAddr = "203.0.113.9:42000"
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("%s %s = %d, want 403", test.method, test.path, response.Code)
+		}
+	}
+}

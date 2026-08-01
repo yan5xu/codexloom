@@ -1,9 +1,10 @@
 import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight, CircleHelp, FileText, GitBranch, Inbox, Loader2, MessageSquare, Network, Paperclip, Pause, Pencil, Play, Plus, RadioTower, RefreshCw, RotateCcw, Send, SkipForward, Square, Target, Trash2, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "@/lib/utils";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type ModelProvider, type PlatformConnection, type Schedule, type TeamView, type ThreadGoal, type Trigger } from "./types";
 import { emptyFeed, reduceFeed } from "./feed";
+import { calibrateRenderedRows } from "./feed-virtual";
 import type { Block } from "./feed";
 import type { LoomEvent } from "./types";
 import { BlockView } from "./Blocks";
@@ -206,18 +207,26 @@ export function AgentPane({
       }, sync ? 180 : 0);
     },
   });
+  // When the pane becomes active (inactive→active, agent switch) the
+  // virtualizer has just reconnected to a scroll element that was hidden, so
+  // its rect/offset observers start from a stale viewport. Re-sync the scroll
+  // offset and calibrate the rendered rows from their actual DOM heights.
+  // This must never call feedVirtualizer.measure(): that clears every cached
+  // row height, and already-mounted rows emit no new ResizeObserver entry, so
+  // tall Markdown rows would fall back to the 96px estimate and the rows
+  // after them (usage, the next Turn) would overlap their real DOM box.
   useEffect(() => {
     if (!active) return;
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
-      feedVirtualizer.measure();
       secondFrame = window.requestAnimationFrame(() => {
-        feedVirtualizer.measure();
         const el = feedRef.current;
         if (!el) return;
+        calibrateRenderedRows(feedVirtualizer, el);
         el.dispatchEvent(new Event("scroll"));
-        if ((needsInitialBottomRef.current || stickRef.current) && feedRows.length > 0) {
-          feedVirtualizer.scrollToIndex(feedRows.length - 1, { align: "end" });
+        const lastIndex = feedVirtualizer.options.count - 1;
+        if ((needsInitialBottomRef.current || stickRef.current) && lastIndex >= 0) {
+          feedVirtualizer.scrollToIndex(lastIndex, { align: "end" });
         }
       });
     });
@@ -225,20 +234,11 @@ export function AgentPane({
       window.cancelAnimationFrame(firstFrame);
       if (secondFrame) window.cancelAnimationFrame(secondFrame);
     };
-  }, [active, agent.id, feedRows.length]);
-  const measureFeedRow = useCallback((node: HTMLDivElement | null) => {
-    feedVirtualizer.measureElement(node);
-    if (!node) return;
-    const index = Number(node.dataset.index);
-    if (!Number.isInteger(index)) return;
-
-    // Virtual rows first appear while the user is scrolling. TanStack Virtual
-    // deliberately skips its synchronous measurement in that state and waits
-    // for ResizeObserver, which can leave a tall Markdown block at the 96px
-    // estimate long enough for following rows to render on top of it. Measure
-    // once on mount; the virtualizer's observer still handles later resizes.
-    feedVirtualizer.resizeItem(index, node.getBoundingClientRect().height);
-  }, [feedVirtualizer]);
+  }, [active, agent.id, feedVirtualizer]);
+  // Single measurement entry point: measureElement attaches the virtualizer's
+  // ResizeObserver and applies the node's current height, and the observer
+  // keeps updating the row while streaming Markdown grows it.
+  const measureFeedRow = feedVirtualizer.measureElement;
 
   const PAGE = 25;
 

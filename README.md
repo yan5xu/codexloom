@@ -295,6 +295,7 @@ to their respective license terms and copyright notices.
 - [Set up Feishu, Slack, and Parall integrations](docs/integrations.md)
 - [Conversation Membership: an agent's role in a specific conversation](docs/conversation-membership.md)
 - [Codex app-server protocol and adapter notes](docs/codex-app-server-protocol.md)
+- [Native Windows status and build path (experimental)](docs/windows.md)
 - [Architecture, data flow, APIs, migration, and development handbook](docs/handbook.md)
 
 ## Project Status

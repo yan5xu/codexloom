@@ -52,6 +52,7 @@ should be verified against the current build before publication.
 | Document | Role |
 |---|---|
 | [Development handbook](handbook.md) | Architecture, storage, APIs, migration, build, and operations |
+| [Native Windows (experimental M0)](windows.md) | Windows build path, validation checklist, and current limitations |
 | [Codex app-server protocol](codex-app-server-protocol.md) | Adapter and protocol observations |
 | [Agent platform integration design](agent-platform-integration.md) | Connector architecture and design rationale |
 | [WebUI validation](webui-validation.md) | Browser and mobile verification practice |

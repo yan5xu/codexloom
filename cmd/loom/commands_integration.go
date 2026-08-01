@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -967,11 +966,8 @@ func readOwnerOnlySecretFile(path string) (string, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("secret file must be a regular file, not a symlink")
 	}
-	if info.Mode().Perm()&0o077 != 0 || info.Mode().Perm()&0o400 == 0 {
-		return "", fmt.Errorf("secret file permissions must be owner-only (0600 or 0400), got %04o", info.Mode().Perm())
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid != uint32(os.Geteuid()) {
-		return "", fmt.Errorf("secret file must be owned by the current user")
+	if err := verifyOwnerOnlySecretFile(info); err != nil {
+		return "", err
 	}
 	if info.Size() <= 0 || info.Size() > 64*1024 {
 		return "", fmt.Errorf("secret file must contain between 1 byte and 64 KiB")

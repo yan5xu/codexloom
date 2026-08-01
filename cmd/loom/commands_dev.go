@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,10 +11,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/yan5xu/codex-loom/internal/devcanary"
+	"github.com/yan5xu/codex-loom/internal/procutil"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
 
@@ -96,7 +95,7 @@ func cmdCanaryStart(a args) {
 	command.Env = append(os.Environ(), "PINIX_EDGE_NAMES="+filepath.Join(root, "disabled-edge-registry.json"))
 	command.Stdout = logFile
 	command.Stderr = logFile
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	command.SysProcAttr = procutil.DetachedSysProcAttr()
 	if err := command.Start(); err != nil {
 		_ = logFile.Close()
 		_ = os.RemoveAll(root)
@@ -111,12 +110,12 @@ func cmdCanaryStart(a args) {
 		StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Snapshot: summary,
 	}
 	if err := writeCanaryState(root, state); err != nil {
-		_ = syscall.Kill(state.PID, syscall.SIGTERM)
+		_ = procutil.Terminate(state.PID)
 		fail(err)
 	}
 	build, err := waitForCanary(state, 12*time.Second)
 	if err != nil {
-		_ = syscall.Kill(state.PID, syscall.SIGTERM)
+		_ = procutil.Terminate(state.PID)
 		fail(fmt.Errorf("canary failed to become ready: %w (log: %s)", err, logPath))
 	}
 	fmt.Printf("canary: %s\n", green("ready"))
@@ -170,7 +169,7 @@ func cmdCanaryStop(a args) {
 			fail(fmt.Errorf("refusing to stop pid %d: process identity is not the recorded CodexLoom canary", state.PID))
 		}
 	}
-	if err := syscall.Kill(state.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := procutil.Terminate(state.PID); err != nil {
 		fail(err)
 	}
 	deadline := time.Now().Add(8 * time.Second)
@@ -178,7 +177,7 @@ func cmdCanaryStop(a args) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if canaryProcessAlive(state.PID) {
-		fail(fmt.Errorf("canary pid %d did not stop after SIGTERM; inspect %s", state.PID, state.LogPath))
+		fail(fmt.Errorf("canary pid %d did not stop after a termination request; inspect %s", state.PID, state.LogPath))
 	}
 	if err := os.RemoveAll(root); err != nil {
 		fail(err)
@@ -208,9 +207,10 @@ func canaryPort(value string) (int, error) {
 
 func findCanaryBinary() (string, error) {
 	executable, _ := os.Executable()
+	binary := procutil.ExecutableName("codex-loom")
 	candidates := []string{
-		filepath.Join(filepath.Dir(executable), "codex-loom"),
-		filepath.Join("bin", "codex-loom"),
+		filepath.Join(filepath.Dir(executable), binary),
+		filepath.Join("bin", binary),
 	}
 	if found, err := exec.LookPath("codex-loom"); err == nil {
 		candidates = append(candidates, found)
@@ -220,7 +220,7 @@ func findCanaryBinary() (string, error) {
 		if err != nil {
 			continue
 		}
-		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		if info, err := os.Stat(path); err == nil && procutil.IsExecutableFile(path, info) {
 			return path, nil
 		}
 	}
@@ -275,16 +275,11 @@ func verifyCanary(state canaryState) (map[string]any, error) {
 }
 
 func canaryProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return procutil.Alive(pid)
 }
 
 func processCommand(pid int) (string, error) {
-	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
-	return strings.TrimSpace(string(output)), err
+	return procutil.CommandLine(pid)
 }
 
 func readCanaryState(root string) (canaryState, error) {

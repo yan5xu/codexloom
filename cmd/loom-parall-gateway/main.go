@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -15,6 +16,11 @@ import (
 )
 
 func main() {
+	if runtime.GOOS == "windows" {
+		// The adapter is replaced in-place with the Node process via exec,
+		// which Windows cannot do; a clear refusal beats a cryptic failure.
+		fatalf("loom-parall-gateway is not supported on native Windows yet; see docs/windows.md")
+	}
 	hubURL := flag.String("hub", envFirst("CODEX_LOOM_URL", "CHUB_URL", "http://127.0.0.1:4870"), "CodexLoom base URL")
 	connectionID := flag.String("connection", envFirst("CODEX_LOOM_CONNECTION_ID", "CHUB_CONNECTION_ID"), "integration connection ID")
 	addressID := flag.String("address", envFirst("CODEX_LOOM_ADDRESS_ID", "CHUB_ADDRESS_ID"), "Agent address ID")

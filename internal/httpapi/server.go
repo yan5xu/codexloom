@@ -18,12 +18,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/yan5xu/codex-loom/internal/backup"
 	"github.com/yan5xu/codex-loom/internal/buildinfo"
 	"github.com/yan5xu/codex-loom/internal/hub"
+	"github.com/yan5xu/codex-loom/internal/procutil"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
 
@@ -501,11 +501,11 @@ func (s *Server) adminRestart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startReloader() (restartState, error) {
 	logPath := strings.TrimSpace(envCompat("CODEX_LOOM_RESTART_LOG", "CODEX_HUB_RESTART_LOG"))
 	if logPath == "" {
-		logPath = "/tmp/codex-loom-reloader.log"
+		logPath = procutil.DefaultLogPath("codex-loom-reloader.log")
 	}
 	childLogPath := strings.TrimSpace(envCompat("CODEX_LOOM_LOG", "CODEX_HUB_LOG"))
 	if childLogPath == "" {
-		childLogPath = "/tmp/codex-loom.log"
+		childLogPath = procutil.DefaultLogPath("codex-loom.log")
 	}
 
 	exe, err := os.Executable()
@@ -518,9 +518,9 @@ func (s *Server) startReloader() (restartState, error) {
 	}
 	reloader := strings.TrimSpace(envCompat("CODEX_LOOM_RELOADER", "CODEX_HUB_RELOADER"))
 	if reloader == "" {
-		reloader = filepath.Join(filepath.Dir(exe), "codex-loom-reloader")
+		reloader = filepath.Join(filepath.Dir(exe), procutil.ExecutableName("codex-loom-reloader"))
 		if _, err := os.Stat(reloader); err != nil {
-			reloader = filepath.Join(filepath.Dir(exe), "codex-hub-reloader")
+			reloader = filepath.Join(filepath.Dir(exe), procutil.ExecutableName("codex-hub-reloader"))
 		}
 	}
 	if _, err := os.Stat(reloader); err != nil {
@@ -539,7 +539,7 @@ func (s *Server) startReloader() (restartState, error) {
 	cmd := exec.Command(reloader, args...)
 	cmd.Env = os.Environ()
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = procutil.DetachedSysProcAttr()
 
 	if err := cmd.Start(); err != nil {
 		return restartState{}, &hub.HubError{Status: 500, Message: "start reloader: " + err.Error()}

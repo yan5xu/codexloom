@@ -12,16 +12,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	"github.com/yan5xu/codex-loom/internal/procutil"
 )
 
 func main() {
 	oldPID := flag.Int("pid", 0, "CodexLoom PID to replace")
 	exe := flag.String("exe", "", "CodexLoom executable to start")
 	cwd := flag.String("cwd", "", "working directory for the new process")
-	logPath := flag.String("log", "/tmp/codex-loom-reloader.log", "reloader log path")
-	childLogPath := flag.String("child-log", "/tmp/codex-loom.log", "new CodexLoom stdout/stderr log path")
+	logPath := flag.String("log", procutil.DefaultLogPath("codex-loom-reloader.log"), "reloader log path")
+	childLogPath := flag.String("child-log", procutil.DefaultLogPath("codex-loom.log"), "new CodexLoom stdout/stderr log path")
 	delay := flag.Duration("delay", 300*time.Millisecond, "delay before stopping the old process")
 	timeout := flag.Duration("timeout", 60*time.Second, "time to wait for graceful shutdown")
 	flag.Parse()
@@ -45,9 +46,9 @@ func main() {
 	time.Sleep(*delay)
 
 	if processAlive(*oldPID) {
-		log.Printf("sending SIGTERM to oldPID=%d", *oldPID)
-		if err := syscall.Kill(*oldPID, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
-			log.Fatalf("send SIGTERM: %v", err)
+		log.Printf("requesting termination of oldPID=%d", *oldPID)
+		if err := procutil.Terminate(*oldPID); err != nil {
+			log.Fatalf("terminate old process: %v", err)
 		}
 	}
 
@@ -56,9 +57,9 @@ func main() {
 		time.Sleep(150 * time.Millisecond)
 	}
 	if processAlive(*oldPID) {
-		log.Printf("oldPID=%d still alive after %s; sending SIGKILL", *oldPID, *timeout)
-		if err := syscall.Kill(*oldPID, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-			log.Fatalf("send SIGKILL: %v", err)
+		log.Printf("oldPID=%d still alive after %s; killing", *oldPID, *timeout)
+		if err := procutil.Kill(*oldPID); err != nil {
+			log.Fatalf("kill old process: %v", err)
 		}
 		killDeadline := time.Now().Add(3 * time.Second)
 		for processAlive(*oldPID) && time.Now().Before(killDeadline) {
@@ -79,7 +80,7 @@ func main() {
 	if *cwd != "" {
 		cmd.Dir = *cwd
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = procutil.DetachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("start new CodexLoom: %v", err)
 	}
@@ -88,16 +89,15 @@ func main() {
 }
 
 func processAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	return procutil.Alive(pid)
 }
 
 func canonicalExecutable(exe string) string {
-	if filepath.Base(exe) != "codex-hub" {
+	if filepath.Base(exe) != procutil.ExecutableName("codex-hub") {
 		return exe
 	}
-	canonical := filepath.Join(filepath.Dir(exe), "codex-loom")
-	if info, err := os.Stat(canonical); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+	canonical := filepath.Join(filepath.Dir(exe), procutil.ExecutableName("codex-loom"))
+	if info, err := os.Stat(canonical); err == nil && procutil.IsExecutableFile(canonical, info) {
 		return canonical
 	}
 	return exe

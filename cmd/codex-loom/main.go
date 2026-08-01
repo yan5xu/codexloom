@@ -35,7 +35,12 @@ func main() {
 			defaultPort = v
 		}
 	}
+	defaultBind := os.Getenv("CODEX_LOOM_BIND")
+	if defaultBind == "" {
+		defaultBind = os.Getenv("CODEX_HUB_BIND")
+	}
 	port := flag.Int("port", defaultPort, "listen port")
+	bind := flag.String("bind", defaultBind, "listen address (empty = all interfaces; 127.0.0.1 = loopback only)")
 	dataDir := flag.String("data", store.DefaultDir(), "data directory")
 	canary := flag.Bool("canary", false, "run a passive, read-only development canary")
 	flag.Parse()
@@ -72,7 +77,7 @@ func main() {
 		}()
 	}
 
-	listenAddress := fmt.Sprintf(":%d", *port)
+	listenAddress := fmt.Sprintf("%s:%d", *bind, *port)
 	if *canary {
 		listenAddress = fmt.Sprintf("127.0.0.1:%d", *port)
 	}

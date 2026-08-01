@@ -50,6 +50,7 @@ Owner Guide 是主要的用户旅程文档。它说明何时使用某个 Loom �
 | 文档 | 角色 |
 |---|---|
 | [Development handbook](handbook.md) | 架构、存储、API、迁移、构建与运维 |
+| [Native Windows（实验性 M0）](windows.md) | Windows 原生构建路径、验证清单与当前限制 |
 | [Codex app-server protocol](codex-app-server-protocol.md) | 适配器与协议观察记录 |
 | [Agent platform integration design](agent-platform-integration.md) | Connector 架构与设计依据 |
 | [WebUI validation](webui-validation.md) | 浏览器与移动端验证实践 |

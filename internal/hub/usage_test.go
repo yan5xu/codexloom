@@ -32,6 +32,27 @@ func writeUsageRollout(t *testing.T, threadID string) {
 	t.Setenv("CODEX_SESSIONS_DIR", dir)
 }
 
+func writeSameModelProviderUsageRollout(t *testing.T, threadID string) {
+	t.Helper()
+	dir := t.TempDir()
+	day := filepath.Join(dir, "2026", "07", "13")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(day, "rollout-2026-07-13T09-00-00-"+threadID+".jsonl")
+	data := `{"timestamp":"2026-07-12T01:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"timestamp":"2026-07-12T01:00:01Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"shared-model"}}
+{"timestamp":"2026-07-12T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"reasoning_output_tokens":3,"total_tokens":110},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"reasoning_output_tokens":3,"total_tokens":110},"model_context_window":1000}}}
+{"timestamp":"2026-07-13T01:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
+{"timestamp":"2026-07-13T01:00:01Z","type":"turn_context","payload":{"turn_id":"turn-2","model":"shared-model"}}
+{"timestamp":"2026-07-13T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":180,"cached_input_tokens":100,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":200},"last_token_usage":{"input_tokens":80,"cached_input_tokens":60,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":90},"model_context_window":1000}}}
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_SESSIONS_DIR", dir)
+}
+
 func TestBuildAgentUsageSeparatesTodayPeriodAndLifetime(t *testing.T) {
 	const threadID = "usage-thread"
 	writeUsageRollout(t, threadID)
@@ -56,6 +77,61 @@ func TestBuildAgentUsageSeparatesTodayPeriodAndLifetime(t *testing.T) {
 	}
 	if len(usage.Models) != 2 || usage.Models[0].Model != "gpt-5.6" {
 		t.Fatalf("models = %#v", usage.Models)
+	}
+}
+
+func TestBuildAgentUsageSeparatesSameThreadByProviderTimeline(t *testing.T) {
+	const threadID = "usage-provider-thread"
+	writeUsageRollout(t, threadID)
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	agent := AgentView{Agent: Agent{
+		ID: "agent-1", Name: "research", ThreadID: threadID, Status: "idle",
+		ProviderID: "deepseek", Model: deepSeekModel,
+		ProviderHistory: []ProviderBindingChange{{
+			PreviousProviderID: "openai", PreviousModel: "gpt-5.6",
+			ProviderID: "deepseek", Model: deepSeekModel, SwitchedAt: "2026-07-13T00:00:00Z",
+		}},
+	}}
+
+	usage := buildAgentUsage(agent, 7, now)
+	if len(usage.Models) != 2 {
+		t.Fatalf("Provider/model groups = %#v", usage.Models)
+	}
+	groups := map[string]int64{}
+	for _, model := range usage.Models {
+		groups[model.ProviderID+"/"+model.Model] = model.Usage.TotalTokens
+	}
+	if groups["openai/gpt-5.6"] != 110 || groups["deepseek/gpt-5.6-sol"] != 90 {
+		t.Fatalf("Provider/model usage = %#v", groups)
+	}
+	if usage.Lifetime.TotalTokens != 200 || usage.LatestProviderID != "deepseek" {
+		t.Fatalf("total/latest Provider = %#v", usage)
+	}
+}
+
+func TestBuildAgentUsageDoesNotMergeSameModelAcrossProviders(t *testing.T) {
+	const threadID = "usage-same-model-provider-thread"
+	writeSameModelProviderUsageRollout(t, threadID)
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	agent := AgentView{Agent: Agent{
+		ID: "agent-1", Name: "research", ThreadID: threadID, Status: "idle",
+		ProviderID: "deepseek", Model: "shared-model",
+		ProviderHistory: []ProviderBindingChange{{
+			PreviousProviderID: "openai", PreviousModel: "shared-model",
+			ProviderID: "deepseek", Model: "shared-model", SwitchedAt: "2026-07-13T00:00:00Z",
+		}},
+	}}
+
+	usage := buildAgentUsage(agent, 7, now)
+	groups := map[string]int64{}
+	for _, model := range usage.Models {
+		groups[model.ProviderID+"/"+model.Model] = model.Usage.TotalTokens
+	}
+	if len(groups) != 2 || groups["openai/shared-model"] != 110 || groups["deepseek/shared-model"] != 90 {
+		t.Fatalf("same-model Provider groups = %#v", groups)
+	}
+	if usage.Period.TotalTokens != 200 || usage.Lifetime.TotalTokens != 200 {
+		t.Fatalf("Provider split changed totals: %#v", usage)
 	}
 }
 

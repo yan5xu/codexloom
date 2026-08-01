@@ -1638,6 +1638,7 @@ export default function App() {
                 <div key={agent.id} className={active ? "flex min-h-0 min-w-0 flex-1" : "hidden"} aria-hidden={!active}>
                   <AgentPane
                     agent={agent}
+                    modelProviders={creatableProviders}
                     active={active}
                     configRequestNonce={configRequest?.agentId === agent.id ? configRequest.nonce : 0}
                     pendingWork={(pendingWorkQuery.data?.entries || []).filter((entry) => entry.item.agentId === agent.id && !["handled", "cancelled"].includes(entry.item.state))}

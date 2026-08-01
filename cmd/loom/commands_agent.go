@@ -300,6 +300,27 @@ func cmdRename(a args) {
 	fmt.Printf("%s %s -> %s (%s)\n", green("renamed"), a.positional[0], bold(str(s, "name")), str(s, "id"))
 }
 
+func cmdAgentProvider(a args) {
+	if len(a.positional) < 1 || strings.TrimSpace(a.flags["provider"]) == "" {
+		usage("agent provider <name|id> --provider PROVIDER [--model MODEL]")
+	}
+	providerID := strings.TrimSpace(a.flags["provider"])
+	resp, err := api("POST", "/api/agents/"+url.PathEscape(a.positional[0])+"/provider", map[string]any{
+		"providerId": providerID,
+		"model":      strings.TrimSpace(a.flags["model"]),
+	})
+	if err != nil {
+		fail(err)
+	}
+	agent, _ := resp["agent"].(map[string]any)
+	actualProvider := str(agent, "providerId")
+	if actualProvider == "" {
+		actualProvider = "openai"
+	}
+	fmt.Printf("%s %s (%s)\n  thread:   %s\n  provider: %s\n  model:    %s\n",
+		green("switched"), bold(str(agent, "name")), str(agent, "id"), str(agent, "threadId"), actualProvider, str(agent, "model"))
+}
+
 func cmdSend(a args) {
 	attachments := append([]string(nil), a.flagValues["attachment"]...)
 	attachments = append(attachments, a.flagValues["file"]...)

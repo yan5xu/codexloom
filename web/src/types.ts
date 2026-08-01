@@ -542,6 +542,7 @@ export interface UsageDay {
 }
 
 export interface UsageModel {
+  providerId: string;
   model: string;
   usage: TokenUsage;
 }
@@ -557,6 +558,7 @@ export interface AgentTokenUsage {
   previous: TokenUsage;
   today: TokenUsage;
   latestCall: TokenUsage;
+  latestProviderId?: string;
   latestModel?: string;
   cacheHitPercent: number;
   context: {

@@ -329,7 +329,7 @@ func (h *Hub) UpdateAgentConfig(key string, p ConfigParams) (AgentView, error) {
 		nextProviderID = normalizeProviderID(*p.ProviderID)
 		if nextProviderID != meta.ProviderID && strings.TrimSpace(meta.ThreadID) != "" {
 			h.mu.Unlock()
-			return AgentView{}, errf(409, "agent %q already has a primary Thread; create a new Agent to use another Provider", meta.Name)
+			return AgentView{}, errf(409, "agent %q already has a primary Thread; use the Provider switch operation", meta.Name)
 		}
 	}
 	if nextProviderID != "" && !nameRe.MatchString(nextProviderID) {
@@ -529,6 +529,10 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 		h.mu.Unlock()
 		return SendResult{}, errf(409, "CodexLoom is draining for restart")
 	}
+	if h.providerSwitching {
+		h.mu.Unlock()
+		return SendResult{}, errf(409, "CodexLoom is switching an Agent Provider")
+	}
 	meta := h.resolveLocked(key)
 	if meta == nil {
 		h.mu.Unlock()
@@ -611,6 +615,11 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 		h.mu.Unlock()
 		rt.startMu.Unlock()
 		return SendResult{}, errf(409, "CodexLoom is draining for restart")
+	}
+	if h.providerSwitching {
+		h.mu.Unlock()
+		rt.startMu.Unlock()
+		return SendResult{}, errf(409, "CodexLoom is switching an Agent Provider")
 	}
 	meta = h.agents[agentID]
 	if meta == nil {
@@ -731,7 +740,10 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 			log.Printf("[codex-loom] save started message handling %s: %v", agentMessageID, err)
 		}
 	}
-	h.emitLocked(agentID, "loom/turn-started", map[string]any{"turnId": turn.turnID, "task": taskText, "source": turn.source, "topicId": topicID})
+	h.emitLocked(agentID, "loom/turn-started", map[string]any{
+		"turnId": turn.turnID, "task": taskText, "source": turn.source, "topicId": topicID,
+		"providerId": publicProviderID(meta.ProviderID), "model": meta.Model,
+	})
 	if topicID != "" {
 		h.recordTopicWorkEventLocked(topicID, TopicEvent{Type: "turn_started", Actor: meta.Name, AgentID: agentID, Agent: meta.Name, Summary: summarizeTopicText(taskText), Ref: &TopicRef{Type: "turn", ID: turn.turnID, Label: meta.Name}, CreatedAt: now()})
 	}

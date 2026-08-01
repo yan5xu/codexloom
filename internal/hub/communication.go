@@ -603,7 +603,7 @@ func (h *Hub) deliverNextQueuedForTarget(target string, timeout time.Duration) (
 	}
 
 	h.mu.Lock()
-	if h.isDrainingLocked() {
+	if h.isDrainingLocked() || h.providerSwitching {
 		h.mu.Unlock()
 		return nil, false
 	}

@@ -312,7 +312,7 @@ func TestUpdateAgentConfigRejectsProviderChangeForBoundThread(t *testing.T) {
 
 	providerID := "openrouter"
 	_, err = h.UpdateAgentConfig("agent-1", ConfigParams{ProviderID: &providerID})
-	if err == nil || !strings.Contains(err.Error(), "create a new Agent") {
+	if err == nil || !strings.Contains(err.Error(), "Provider switch operation") {
 		t.Fatalf("UpdateAgentConfig Provider change error = %v", err)
 	}
 	if h.agents["agent-1"].ProviderID != "deepseek" {

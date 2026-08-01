@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight,
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type PlatformConnection, type Schedule, type TeamView, type ThreadGoal, type Trigger } from "./types";
+import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type ModelProvider, type PlatformConnection, type Schedule, type TeamView, type ThreadGoal, type Trigger } from "./types";
 import { emptyFeed, reduceFeed } from "./feed";
 import type { Block } from "./feed";
 import type { LoomEvent } from "./types";
@@ -74,6 +74,7 @@ function feedBlockKey(block: Block) {
 
 export function AgentPane({
   agent,
+  modelProviders,
   active,
   configRequestNonce,
   pendingWork,
@@ -88,6 +89,7 @@ export function AgentPane({
   onAgentUpdated,
 }: {
   agent: Agent;
+  modelProviders: ModelProvider[];
   active: boolean;
   configRequestNonce: number;
   pendingWork: InboxEntry[];
@@ -115,8 +117,9 @@ export function AgentPane({
   const [configOpen, setConfigOpen] = useState(false);
   const [configSection, setConfigSection] = useState<"profile" | "team" | "external" | "triggers" | "runtime" | "usage">("profile");
   const [nameDraft, setNameDraft] = useState(agent.name);
+  const [providerDraft, setProviderDraft] = useState(agent.providerId || "openai");
   const [modelDraft, setModelDraft] = useState(agent.model || "");
-  const [modelCustomOpen, setModelCustomOpen] = useState(isCustomModel(agent.model || "", agent.providerId));
+  const [modelCustomOpen, setModelCustomOpen] = useState(isCustomModel(agent.model || "", agent.providerId, modelProviders));
   const [effortDraft, setEffortDraft] = useState(agent.effort || "");
   const [sandboxDraft, setSandboxDraft] = useState(agent.sandbox || "danger-full-access");
   const [approvalDraft, setApprovalDraft] = useState(agent.approvalPolicy || "never");
@@ -246,8 +249,9 @@ export function AgentPane({
 
   useEffect(() => {
     setNameDraft(agent.name);
+    setProviderDraft(agent.providerId || "openai");
     setModelDraft(agent.model || "");
-    setModelCustomOpen(isCustomModel(agent.model || "", agent.providerId));
+    setModelCustomOpen(isCustomModel(agent.model || "", agent.providerId, modelProviders));
     setEffortDraft(agent.effort || "");
     setSandboxDraft(agent.sandbox || "danger-full-access");
     setApprovalDraft(agent.approvalPolicy || "never");
@@ -730,6 +734,15 @@ export function AgentPane({
     }
     setSavingConfig(true);
     try {
+      let updated = agent;
+      if (providerDraft !== (agent.providerId || "openai")) {
+        const switched = await api("POST", `/api/agents/${agent.id}/provider`, {
+          providerId: providerDraft,
+          model: modelDraft.trim(),
+        });
+        updated = switched.agent as Agent;
+        onAgentUpdated(updated);
+      }
       const data = await api("PATCH", `/api/agents/${agent.id}/config`, {
         name: nextName,
         model: modelDraft.trim(),
@@ -737,7 +750,8 @@ export function AgentPane({
         sandbox: sandboxDraft,
         approvalPolicy: approvalDraft,
       });
-      onAgentUpdated(data.agent);
+      updated = data.agent as Agent;
+      onAgentUpdated(updated);
       setConfigOpen(false);
     } catch (err: any) {
       onError(err.message);
@@ -852,10 +866,19 @@ export function AgentPane({
 
   const running = agent.status === "running";
   const heldMessages = pendingWork.filter((entry) => entry.internalMessage?.handlingStatus === "interrupted" || entry.internalMessage?.handlingStatus === "failed");
-  const providerModelPresets = agent.providerId === "deepseek"
-    ? [{ value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }]
-    : MODEL_PRESETS;
-  const modelPresetValue = modelCustomOpen || isCustomModel(modelDraft, agent.providerId) ? CUSTOM_MODEL_VALUE : modelDraft;
+  const currentProviderId = agent.providerId || "openai";
+  const selectableProviders = modelProviders.some((provider) => provider.id === currentProviderId)
+    ? modelProviders
+    : [{
+        id: currentProviderId, name: currentProviderId, source: "missing", configured: false,
+        credentialSource: "missing", credentialConfigured: false, models: agent.model ? [agent.model] : [], boundAgentCount: 1,
+      } as ModelProvider, ...modelProviders];
+  const selectedProvider = selectableProviders.find((provider) => provider.id === providerDraft);
+  const providerModelPresets = providerDraft === "openai"
+    ? MODEL_PRESETS
+    : (selectedProvider?.models || []).map((model) => ({ value: model, label: model }));
+  const modelPresetValue = modelCustomOpen || isCustomModel(modelDraft, providerDraft, selectableProviders) ? CUSTOM_MODEL_VALUE : modelDraft;
+  const providerChanged = providerDraft !== (agent.providerId || "openai");
   const profileDirty = Boolean(
     profile &&
       (identityDraft.trim() !== (profile.identity || "") ||
@@ -958,7 +981,7 @@ export function AgentPane({
                     <input
                       value={nameDraft}
                       onChange={(e) => setNameDraft(e.target.value)}
-                      disabled={running || agent.providerId === "deepseek"}
+                      disabled={running}
                       placeholder="agent-name"
                       spellCheck={false}
                       className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
@@ -966,9 +989,21 @@ export function AgentPane({
                   </label>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Provider</span>
-                    <div className="flex h-8 w-full items-center rounded-md bg-muted/40 px-2.5 font-mono text-[12px] text-foreground ring-1 ring-border">
-                      {agent.providerId || "openai"}
-                    </div>
+                    <select
+                      value={providerDraft}
+                      onChange={(event) => {
+                        const nextProvider = event.target.value;
+                        const provider = selectableProviders.find((item) => item.id === nextProvider);
+                        const nextModel = provider?.models?.[0] || "";
+                        setProviderDraft(nextProvider);
+                        setModelDraft(nextModel);
+                        setModelCustomOpen(nextProvider !== "openai" && nextModel === "");
+                      }}
+                      disabled={running}
+                      className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition focus:ring-ring/25 disabled:opacity-60"
+                    >
+                      {selectableProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </select>
                   </label>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Model</span>
@@ -989,7 +1024,7 @@ export function AgentPane({
                       {providerModelPresets.map((option) => (
                         <option key={option.label} value={option.value}>{option.label}</option>
                       ))}
-                      {agent.providerId !== "deepseek" ? <option value={CUSTOM_MODEL_VALUE}>Custom...</option> : null}
+                      <option value={CUSTOM_MODEL_VALUE}>Custom...</option>
                     </select>
                     {modelCustomOpen && (
                       <input
@@ -1021,6 +1056,7 @@ export function AgentPane({
                     </select>
                   </label>
                   {running && <div className="mb-2 rounded-md bg-warning/10 px-2 py-1.5 text-[11px] text-warning">Config can be changed after this turn finishes.</div>}
+                  {providerChanged && !running && <div className="mb-2 rounded-md bg-warning/10 px-2 py-1.5 text-[11px] leading-4 text-warning">Switching Provider cold-resumes this primary Thread and briefly restarts the shared Codex runtime. Every Agent must be idle with no pending approval or active Goal.</div>}
                   <div className="flex justify-end gap-2">
                     <button onClick={() => setConfigOpen(false)} className="rounded-md px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted">Cancel</button>
                     <button onClick={saveConfig} disabled={running || savingConfig} className="rounded-md bg-primary px-2.5 py-1.5 text-[12px] font-medium text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">{savingConfig ? "Saving" : "Save"}</button>
@@ -1854,7 +1890,7 @@ function AgentUsagePanel({ usage, loading, onRefresh, onOpenOverview }: { usage:
       <div className="mb-3 flex items-center justify-between border-b border-border pb-2">
         <div>
           <div className="text-[12px] font-medium">Thread token usage</div>
-          <div className="mt-0.5 font-mono text-[9px] text-muted-foreground">7 days · {usage.latestModel || "model unknown"}</div>
+          <div className="mt-0.5 font-mono text-[9px] text-muted-foreground">7 days · {usage.latestProviderId || "provider unknown"} / {usage.latestModel || "model unknown"}</div>
         </div>
         <button onClick={onRefresh} disabled={loading} className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground" title="Refresh usage" aria-label="Refresh usage">
           <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
@@ -1901,8 +1937,8 @@ function AgentUsagePanel({ usage, loading, onRefresh, onOpenOverview }: { usage:
         <div className="mb-2 text-[10px] font-semibold uppercase text-muted-foreground">Models</div>
         <div className="divide-y divide-border border-y border-border">
           {usage.models.map((model) => (
-            <div key={model.model} className="flex items-center justify-between gap-3 py-2 font-mono text-[10px]">
-              <span className="truncate text-foreground">{model.model}</span>
+            <div key={`${model.providerId}:${model.model}`} className="flex items-center justify-between gap-3 py-2 font-mono text-[10px]">
+              <span className="truncate text-foreground">{model.providerId} / {model.model}</span>
               <span className="shrink-0 text-muted-foreground">{compactTokens(model.usage.totalTokens)}</span>
             </div>
           ))}
@@ -1984,9 +2020,10 @@ function MembershipTextarea({ label, value, onChange, rows }: {
   );
 }
 
-function isCustomModel(model: string, providerId?: string) {
-  const presets = providerId === "deepseek"
-    ? [{ value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }]
-    : MODEL_PRESETS;
-  return model !== "" && !presets.some((option) => option.value === model);
+function isCustomModel(model: string, providerId?: string, providers: ModelProvider[] = []) {
+  if (model === "") return false;
+  const models = providerId && providerId !== "openai"
+    ? providers.find((provider) => provider.id === providerId)?.models || []
+    : MODEL_PRESETS.map((option) => option.value);
+  return !models.includes(model);
 }

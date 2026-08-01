@@ -248,12 +248,14 @@ func main() {
 			switch subcommand {
 			case "create", "list", "ls", "get", "rename":
 				cmd = subcommand
+			case "provider":
+				cmd = "agent-provider"
 			case "archive", "delete":
 				cmd = "archive"
 			case "kill":
 				cmd = "kill"
 			default:
-				usage("agent create|list|get|rename|archive ...")
+				usage("agent create|list|get|rename|provider|archive ...")
 			}
 		} else if cmd == "thread" {
 			switch subcommand {
@@ -282,6 +284,8 @@ func main() {
 		cmdGet(a)
 	case "rename":
 		cmdRename(a)
+	case "agent-provider":
+		cmdAgentProvider(a)
 	case "send":
 		cmdSend(a)
 	case "artifact":
@@ -362,7 +366,7 @@ func main() {
 func printHelp() {
 	help := fmt.Sprintf(`chub — CodexLoom CLI (service: %s)
 
-  chub agent create|list|get|rename|archive ...
+  chub agent create|list|get|rename|provider|archive ...
   chub thread send|watch|history|interrupt ...
   chub turn get <turn-id> [--json]
 
@@ -371,6 +375,7 @@ Compatibility shortcuts:
   chub list
   chub get <name|id>
   chub rename <name|id> <new-name>
+  loom agent provider <name|id> --provider PROVIDER [--model MODEL]
   chub send <name|id> ["<task>"] [--attachment PATH ...] [--timeout SEC]
   chub artifact publish --from AGENT --file PATH [--file PATH ...]
   loom provider list|get|set|disable|verify ...

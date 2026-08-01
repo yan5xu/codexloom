@@ -17,8 +17,9 @@ type UsageDay struct {
 }
 
 type UsageModel struct {
-	Model string             `json:"model"`
-	Usage rollout.TokenUsage `json:"usage"`
+	ProviderID string             `json:"providerId"`
+	Model      string             `json:"model"`
+	Usage      rollout.TokenUsage `json:"usage"`
 }
 
 type ContextUsage struct {
@@ -28,22 +29,23 @@ type ContextUsage struct {
 }
 
 type AgentUsage struct {
-	AgentID         string             `json:"agentId"`
-	AgentName       string             `json:"agentName"`
-	ThreadID        string             `json:"threadId,omitempty"`
-	Status          string             `json:"status"`
-	Available       bool               `json:"available"`
-	Lifetime        rollout.TokenUsage `json:"lifetime"`
-	Period          rollout.TokenUsage `json:"period"`
-	Previous        rollout.TokenUsage `json:"previous"`
-	Today           rollout.TokenUsage `json:"today"`
-	LatestCall      rollout.TokenUsage `json:"latestCall"`
-	LatestModel     string             `json:"latestModel,omitempty"`
-	CacheHitPercent float64            `json:"cacheHitPercent"`
-	Context         ContextUsage       `json:"context"`
-	Daily           []UsageDay         `json:"daily"`
-	Models          []UsageModel       `json:"models"`
-	LastUpdatedAt   string             `json:"lastUpdatedAt,omitempty"`
+	AgentID          string             `json:"agentId"`
+	AgentName        string             `json:"agentName"`
+	ThreadID         string             `json:"threadId,omitempty"`
+	Status           string             `json:"status"`
+	Available        bool               `json:"available"`
+	Lifetime         rollout.TokenUsage `json:"lifetime"`
+	Period           rollout.TokenUsage `json:"period"`
+	Previous         rollout.TokenUsage `json:"previous"`
+	Today            rollout.TokenUsage `json:"today"`
+	LatestCall       rollout.TokenUsage `json:"latestCall"`
+	LatestProviderID string             `json:"latestProviderId,omitempty"`
+	LatestModel      string             `json:"latestModel,omitempty"`
+	CacheHitPercent  float64            `json:"cacheHitPercent"`
+	Context          ContextUsage       `json:"context"`
+	Daily            []UsageDay         `json:"daily"`
+	Models           []UsageModel       `json:"models"`
+	LastUpdatedAt    string             `json:"lastUpdatedAt,omitempty"`
 }
 
 type UsageOverview struct {
@@ -180,13 +182,15 @@ func (h *Hub) TokenUsageOverviewRange(start, endExclusive time.Time) UsageOvervi
 			}
 		}
 		for _, model := range usage.Models {
-			current := modelUsage[model.Model]
+			key := model.ProviderID + "\x00" + model.Model
+			current := modelUsage[key]
 			current.Add(model.Usage)
-			modelUsage[model.Model] = current
+			modelUsage[key] = current
 		}
 	}
-	for model, usage := range modelUsage {
-		overview.Models = append(overview.Models, UsageModel{Model: model, Usage: usage})
+	for key, usage := range modelUsage {
+		parts := strings.SplitN(key, "\x00", 2)
+		overview.Models = append(overview.Models, UsageModel{ProviderID: parts[0], Model: parts[1], Usage: usage})
 	}
 	sort.SliceStable(overview.Models, func(i, j int) bool {
 		return overview.Models[i].Usage.TotalTokens > overview.Models[j].Usage.TotalTokens
@@ -220,7 +224,7 @@ func buildAgentUsageRange(agent AgentView, start, endExclusive, now time.Time) A
 	todayStart, _ := usageRange(now, 1)
 	result := AgentUsage{
 		AgentID: agent.ID, AgentName: agent.Name, ThreadID: agent.ThreadID, Status: agent.Status,
-		Daily: emptyUsageDays(start, days), Models: []UsageModel{},
+		LatestProviderID: publicProviderID(agent.ProviderID), Daily: emptyUsageDays(start, days), Models: []UsageModel{},
 	}
 	if strings.TrimSpace(agent.ThreadID) == "" {
 		return result
@@ -229,7 +233,11 @@ func buildAgentUsageRange(agent AgentView, start, endExclusive, now time.Time) A
 	if err != nil {
 		return result
 	}
-	cacheKey := agent.ThreadID + "\x00" + strconv.Itoa(days) + "\x00" + start.Format("2006-01-02") + "\x00" + endExclusive.Format("2006-01-02") + "\x00" + now.Location().String()
+	historyVersion := strconv.Itoa(len(agent.ProviderHistory))
+	if len(agent.ProviderHistory) > 0 {
+		historyVersion += ":" + agent.ProviderHistory[len(agent.ProviderHistory)-1].SwitchedAt
+	}
+	cacheKey := agent.ThreadID + "\x00" + strconv.Itoa(days) + "\x00" + start.Format("2006-01-02") + "\x00" + endExclusive.Format("2006-01-02") + "\x00" + now.Location().String() + "\x00" + publicProviderID(agent.ProviderID) + "\x00" + historyVersion
 	if cached, ok := cachedAgentUsage(cacheKey, report); ok {
 		result = cached
 		result.AgentID = agent.ID
@@ -242,6 +250,10 @@ func buildAgentUsageRange(agent AgentView, start, endExclusive, now time.Time) A
 	result.LatestCall = report.LatestCall
 	result.LatestModel = report.LatestModel
 	result.LastUpdatedAt = report.LastUpdatedAt
+	result.LatestProviderID = publicProviderID(agent.ProviderID)
+	if latestAt, parseErr := time.Parse(time.RFC3339Nano, report.LastUpdatedAt); parseErr == nil {
+		result.LatestProviderID = providerAt(agent.Agent, latestAt)
+	}
 	result.Context = ContextUsage{
 		InputTokens:  report.ContextInputTokens,
 		WindowTokens: report.ModelContextWindow,
@@ -268,9 +280,11 @@ func buildAgentUsageRange(agent AgentView, start, endExclusive, now time.Time) A
 			if model == "" {
 				model = "unknown"
 			}
-			usage := models[model]
+			providerID := providerAt(agent.Agent, timestamp)
+			key := providerID + "\x00" + model
+			usage := models[key]
 			usage.Add(event.Usage)
-			models[model] = usage
+			models[key] = usage
 		}
 		if !local.Before(previousStart) && local.Before(previousEnd) {
 			result.Previous.Add(event.Usage)
@@ -280,14 +294,37 @@ func buildAgentUsageRange(agent AgentView, start, endExclusive, now time.Time) A
 		}
 	}
 	result.CacheHitPercent = percent(result.Period.CachedInputTokens, result.Period.InputTokens)
-	for model, usage := range models {
-		result.Models = append(result.Models, UsageModel{Model: model, Usage: usage})
+	for key, usage := range models {
+		parts := strings.SplitN(key, "\x00", 2)
+		result.Models = append(result.Models, UsageModel{ProviderID: parts[0], Model: parts[1], Usage: usage})
 	}
 	sort.SliceStable(result.Models, func(i, j int) bool {
 		return result.Models[i].Usage.TotalTokens > result.Models[j].Usage.TotalTokens
 	})
 	cacheAgentUsage(cacheKey, report, result)
 	return result
+}
+
+func providerAt(agent Agent, timestamp time.Time) string {
+	providerID := publicProviderID(agent.ProviderID)
+	if len(agent.ProviderHistory) == 0 {
+		return providerID
+	}
+	providerID = agent.ProviderHistory[0].PreviousProviderID
+	if providerID == "" {
+		providerID = "openai"
+	}
+	for _, change := range agent.ProviderHistory {
+		switchedAt, err := time.Parse(time.RFC3339Nano, change.SwitchedAt)
+		if err != nil || timestamp.Before(switchedAt) {
+			continue
+		}
+		providerID = change.ProviderID
+		if providerID == "" {
+			providerID = "openai"
+		}
+	}
+	return providerID
 }
 
 func usageCalendarDays(start, endExclusive time.Time) int {

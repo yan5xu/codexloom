@@ -58,6 +58,7 @@ func (c *Client) Pid() int {
 type Client struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
+	done  chan struct{}
 
 	writeMu sync.Mutex // serializes stdin writes
 	mu      sync.Mutex // guards pending, nextID, closed
@@ -138,7 +139,7 @@ func SpawnWithOptions(options SpawnOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{cmd: cmd, stdin: stdin, pending: make(map[int64]chan pendingResult)}
+	c := &Client{cmd: cmd, stdin: stdin, done: make(chan struct{}), pending: make(map[int64]chan pendingResult)}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn codex app-server: %w", err)
 	}
@@ -192,7 +193,10 @@ func (c *Client) readLoop(stdout io.Reader) {
 		ch <- pendingResult{err: ErrClosed}
 	}
 	c.mu.Unlock()
-	go c.cmd.Wait() // reap
+	go func() {
+		_ = c.cmd.Wait() // reap before allowing a replacement app-server
+		close(c.done)
+	}()
 	if c.OnClose != nil {
 		c.OnClose()
 	}
@@ -249,6 +253,17 @@ func (c *Client) Closed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closed
+}
+
+// WaitClosed waits until the app-server process has exited and been reaped.
+// Close remains non-blocking for existing callers.
+func (c *Client) WaitClosed(timeout time.Duration) bool {
+	select {
+	case <-c.done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // Request sends a JSON-RPC request and waits for its response.

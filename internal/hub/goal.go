@@ -196,7 +196,8 @@ func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 		if strings.TrimSpace(agent.ThreadID) == "" {
 			continue
 		}
-		targets = append(targets, target{agentID: agent.ID, threadID: agent.ThreadID, sandbox: agent.Sandbox, cwd: agent.Cwd, provider: agent.ProviderID, model: agent.Model})
+		providerID, model := effectiveProviderBinding(agent)
+		targets = append(targets, target{agentID: agent.ID, threadID: agent.ThreadID, sandbox: agent.Sandbox, cwd: agent.Cwd, provider: providerID, model: model})
 	}
 	h.mu.Unlock()
 
@@ -236,6 +237,10 @@ func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 
 func (h *Hub) GetGoal(key string) (*ThreadGoal, error) {
 	h.mu.Lock()
+	if h.providerSwitching {
+		h.mu.Unlock()
+		return nil, errf(409, "Codex Goal access is paused during an Agent Provider switch")
+	}
 	agent := h.resolveLocked(key)
 	if agent == nil {
 		h.mu.Unlock()
@@ -296,6 +301,10 @@ func (h *Hub) UpdateGoal(key string, update GoalUpdateParams) (*ThreadGoal, erro
 	}
 
 	h.mu.Lock()
+	if h.providerSwitching {
+		h.mu.Unlock()
+		return nil, errf(409, "Codex Goal changes are paused during an Agent Provider switch")
+	}
 	agent := h.resolveLocked(key)
 	if agent == nil {
 		h.mu.Unlock()
@@ -335,6 +344,10 @@ func (h *Hub) UpdateGoal(key string, update GoalUpdateParams) (*ThreadGoal, erro
 
 func (h *Hub) ClearGoal(key string) (bool, error) {
 	h.mu.Lock()
+	if h.providerSwitching {
+		h.mu.Unlock()
+		return false, errf(409, "Codex Goal changes are paused during an Agent Provider switch")
+	}
 	agent := h.resolveLocked(key)
 	if agent == nil {
 		h.mu.Unlock()
@@ -372,7 +385,7 @@ func (h *Hub) resumeGoalThread(agentID string, generation uint64) {
 	h.mu.Lock()
 	host := h.codexHost
 	agent := h.agents[agentID]
-	if host == nil || host.generation != generation || agent == nil || h.goals[agentID] == nil || h.goals[agentID].Status != GoalStatusActive {
+	if h.providerSwitching || host == nil || host.generation != generation || agent == nil || h.goals[agentID] == nil || h.goals[agentID].Status != GoalStatusActive {
 		h.mu.Unlock()
 		return
 	}
@@ -381,7 +394,7 @@ func (h *Hub) resumeGoalThread(agentID string, generation uint64) {
 		return
 	}
 	threadID, sandbox, cwd := agent.ThreadID, agent.Sandbox, agent.Cwd
-	providerID, model := agent.ProviderID, agent.Model
+	providerID, model := effectiveProviderBinding(agent)
 	h.mu.Unlock()
 	if err := resumeThread(host.client, threadID, sandbox, cwd, providerID, model); err != nil {
 		log.Printf("[codex-loom] resume Goal for %s: %v", threadID, err)

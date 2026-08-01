@@ -1260,8 +1260,8 @@ function ModelBreakdown({ models, total }: { models: TokenUsageOverview["models"
       {models.map((model) => {
         const share = total > 0 ? (model.usage.totalTokens / total) * 100 : 0;
         return (
-          <div key={model.model} className="grid items-center gap-3 py-3 sm:grid-cols-[180px_1fr_100px_80px]">
-            <span className="truncate font-mono text-[11px] font-medium">{model.model}</span>
+          <div key={`${model.providerId}:${model.model}`} className="grid items-center gap-3 py-3 sm:grid-cols-[180px_1fr_100px_80px]">
+            <span className="truncate font-mono text-[11px] font-medium">{model.providerId} / {model.model}</span>
             <div className="h-1.5 bg-muted"><div className="h-full bg-[var(--loom-blue)]/70" style={{ width: `${share}%` }} /></div>
             <span className="text-right font-mono text-[10px] text-muted-foreground">{formatTokens(model.usage.totalTokens)}</span>
             <span className="text-right font-mono text-[9px] text-muted-foreground">{formatPercent(share)}</span>

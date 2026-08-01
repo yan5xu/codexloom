@@ -182,6 +182,10 @@ func (h *Hub) ensureRemoteRuntime() error {
 		h.mu.Unlock()
 		return errf(409, "Remote is disabled")
 	}
+	if h.providerSwitching {
+		h.mu.Unlock()
+		return errf(409, "Codex Remote is reconnecting after an Agent Provider switch")
+	}
 	h.mu.Unlock()
 
 	host, err := h.ensureCodexHost()

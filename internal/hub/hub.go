@@ -64,22 +64,24 @@ type TurnSummary struct {
 // execution binding; Profile, links and external addresses remain attached to
 // the Agent even if that binding is migrated later.
 type Agent struct {
-	ID             string       `json:"id"`
-	Name           string       `json:"name"`
-	Cwd            string       `json:"cwd"`
-	ThreadID       string       `json:"threadId"`
-	Sandbox        string       `json:"sandbox"`
-	ApprovalPolicy string       `json:"approvalPolicy"`
-	ProviderID     string       `json:"providerId,omitempty"`
-	Model          string       `json:"model,omitempty"`
-	Effort         string       `json:"effort,omitempty"`
-	Status         string       `json:"status"`
-	CurrentTask    string       `json:"currentTask"`
-	CurrentTurnID  string       `json:"currentTurnId"`
-	LastError      string       `json:"lastError"`
-	LastTurn       *TurnSummary `json:"lastTurn"`
-	CreatedAt      string       `json:"createdAt"`
-	UpdatedAt      string       `json:"updatedAt"`
+	ID                    string                  `json:"id"`
+	Name                  string                  `json:"name"`
+	Cwd                   string                  `json:"cwd"`
+	ThreadID              string                  `json:"threadId"`
+	Sandbox               string                  `json:"sandbox"`
+	ApprovalPolicy        string                  `json:"approvalPolicy"`
+	ProviderID            string                  `json:"providerId,omitempty"`
+	Model                 string                  `json:"model,omitempty"`
+	Effort                string                  `json:"effort,omitempty"`
+	Status                string                  `json:"status"`
+	CurrentTask           string                  `json:"currentTask"`
+	CurrentTurnID         string                  `json:"currentTurnId"`
+	LastError             string                  `json:"lastError"`
+	LastTurn              *TurnSummary            `json:"lastTurn"`
+	CreatedAt             string                  `json:"createdAt"`
+	UpdatedAt             string                  `json:"updatedAt"`
+	PendingProviderSwitch *ProviderSwitchBinding  `json:"pendingProviderSwitch,omitempty"`
+	ProviderHistory       []ProviderBindingChange `json:"providerHistory,omitempty"`
 	// Source is "edge" for Agents mirrored read-only from pinix-edge's
 	// registry (they are re-imported each startup and never persisted here);
 	// empty for Agents CodexLoom owns. Starting a Turn promotes an edge mirror
@@ -320,6 +322,7 @@ type Hub struct {
 	stopOnce                sync.Once
 	stopping                bool
 	draining                bool
+	providerSwitching       bool
 	triggerObservations     map[string]struct{}
 	background              sync.WaitGroup
 	workers                 sync.WaitGroup
@@ -390,6 +393,21 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	}
 	if h.agents == nil {
 		h.agents = map[string]*Agent{}
+	}
+	providerSwitchRecovered := false
+	for _, meta := range h.agents {
+		if meta.PendingProviderSwitch == nil {
+			continue
+		}
+		meta.PendingProviderSwitch = nil
+		meta.LastError = "an interrupted Provider switch was rolled back to the previous binding"
+		meta.UpdatedAt = now()
+		providerSwitchRecovered = true
+	}
+	if providerSwitchRecovered && !options.Passive {
+		if err := h.persistAgentsLocked(); err != nil {
+			return nil, fmt.Errorf("recover interrupted Provider switch: %w", err)
+		}
 	}
 	if err := h.st.LoadProfiles(&h.profiles); err != nil {
 		return nil, fmt.Errorf("load profiles: %w", err)
@@ -909,7 +927,7 @@ func (h *Hub) initRuntime(agentID string, rt *runtime) {
 		return
 	}
 	threadID, threadName, sandbox, cwd := meta.ThreadID, meta.Name, meta.Sandbox, meta.Cwd
-	providerID, model := meta.ProviderID, meta.Model
+	providerID, model := effectiveProviderBinding(meta)
 	h.mu.Unlock()
 
 	h.mu.Lock()
@@ -1017,7 +1035,7 @@ func (h *Hub) resumeAgentThread(agentID string, rt *runtime) error {
 		return errf(404, "agent vanished")
 	}
 	threadID, sandbox, cwd := meta.ThreadID, meta.Sandbox, meta.Cwd
-	providerID, model := meta.ProviderID, meta.Model
+	providerID, model := effectiveProviderBinding(meta)
 	h.mu.Unlock()
 	if strings.TrimSpace(threadID) == "" {
 		return errf(409, "agent has no Codex Thread binding")

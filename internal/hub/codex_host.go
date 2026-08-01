@@ -55,6 +55,16 @@ func (h *Hub) ensureCodexHostLocked() (*codexHostRuntime, error) {
 	if host := h.codexHost; host != nil && !host.client.Closed() {
 		return host, nil
 	}
+	if h.providerSwitching {
+		return nil, errf(409, "CodexHost is restarting for an Agent Provider switch")
+	}
+	return h.startCodexHostLocked()
+}
+
+func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
+	if host := h.codexHost; host != nil && !host.client.Closed() {
+		return host, nil
+	}
 	client, err := codex.SpawnWithOptions(codex.SpawnOptions{
 		Bin: codexHostBin(),
 		Env: codexHostEnv(),
@@ -161,7 +171,12 @@ func (h *Hub) initCodexHost(host *codexHostRuntime) {
 		host.client.Close()
 		return
 	}
-	h.hydrateGoals(host)
+	h.mu.Lock()
+	switchingProvider := h.providerSwitching
+	h.mu.Unlock()
+	if !switchingProvider {
+		h.hydrateGoals(host)
+	}
 }
 
 // ReloadSkills forces the shared CodexHost to rebuild its per-Agent skill

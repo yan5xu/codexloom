@@ -593,6 +593,8 @@ while IFS= read -r line; do
       printf '{"method":"turn/completed","params":{"threadId":"thr-shared","turn":{"id":"turn-remote","status":"completed"}}}\n' ;;
 	*'"method":"thread/read"'*)
 	  printf '{"id":%s,"result":{"thread":{"id":"thr-resumed","name":"mobile-research","cwd":"/tmp/remote-project"}}}\n' "$id" ;;
+	*'"method":"thread/resume"'*'"model":"fail-model"'*)
+	  printf '{"id":%s,"error":{"code":-32602,"message":"provider resume rejected"}}\n' "$id" ;;
 	*'"method":"thread/resume"'*)
 	  : > "$CODEX_HOST_RESUMED"
 	  printf '{"id":%s,"result":{"thread":{"id":"thr-stale"}}}\n' "$id" ;;

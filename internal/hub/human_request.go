@@ -336,7 +336,7 @@ func (h *Hub) drainHumanAnswers() {
 
 func (h *Hub) deliverAnsweredHumanRequest(agentID string) (HumanRequest, bool) {
 	h.mu.Lock()
-	if h.isDrainingLocked() {
+	if h.isDrainingLocked() || h.providerSwitching {
 		h.mu.Unlock()
 		return HumanRequest{}, false
 	}

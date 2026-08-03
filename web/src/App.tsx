@@ -38,6 +38,21 @@ function WorkbenchFallback() {
   );
 }
 
+export function GlobalErrorToast({ message }: { message: string | null }) {
+  return (
+    <div
+      role="alert"
+      aria-live="assertive"
+      aria-atomic="true"
+      className={message
+        ? "fixed bottom-6 right-6 z-10 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive shadow-card backdrop-blur"
+        : "sr-only"}
+    >
+      {message}
+    </div>
+  );
+}
+
 type SidebarNavItemProps = {
   label: string;
   icon: typeof InboxIcon;
@@ -1687,12 +1702,7 @@ export default function App() {
         </WorkspaceErrorBoundary>
       </div>
 
-      {/* toast */}
-      {toast && (
-        <div className="fixed bottom-6 right-6 z-10 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive shadow-card backdrop-blur">
-          {toast}
-        </div>
-      )}
+      <GlobalErrorToast message={toast} />
     </div>
   );
 }

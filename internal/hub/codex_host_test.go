@@ -530,6 +530,38 @@ func TestCodexHostEnvAddsConfiguredLoomDirectory(t *testing.T) {
 	}
 }
 
+func TestCodexHostEnvAddsConfiguredProviderHostsToProxyBypass(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `[model_providers.internal]
+base_url = "https://provider.example.test/v1"
+
+[model_providers.other]
+base_url = "http://10.20.30.40:8080/v1"
+`
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NO_PROXY", "localhost,provider.example.test")
+	t.Setenv("no_proxy", "localhost,provider.example.test")
+	t.Setenv("CODEX_LOOM_NO_PROXY", "extra.example.test")
+	env := codexHostEnv()
+	want := "localhost,provider.example.test,extra.example.test,10.20.30.40"
+	if env["NO_PROXY"] != want || env["no_proxy"] != want {
+		t.Fatalf("CodexHost proxy bypass = %#v, want both spellings %q", env, want)
+	}
+}
+
+func TestAppendNoProxyHostsDeduplicatesCaseInsensitively(t *testing.T) {
+	if got := appendNoProxyHosts("localhost,EXAMPLE.test", "example.test,extra.test", "LOCALHOST", "10.0.0.1"); got != "localhost,EXAMPLE.test,extra.test,10.0.0.1" {
+		t.Fatalf("appendNoProxyHosts = %q", got)
+	}
+}
+
 func TestMissingUserSkillsLetsUserSkillWin(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

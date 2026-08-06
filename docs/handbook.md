@@ -307,6 +307,7 @@ CODEX_LOOM_PORT             HTTP 端口，默认 4870
 CODEX_LOOM_DATA             数据目录，默认 ~/.codex-loom
 CODEX_LOOM_URL              CLI 和 gateway 连接的服务地址
 CODEX_LOOM_CODEX_BIN        共享 CodexHost 使用的 codex 可执行文件
+CODEX_LOOM_NO_PROXY         追加到 CodexHost 的代理绕过主机列表（逗号分隔，可选）
 CODEX_LOOM_ADMIN_TOKEN      非 localhost 管理操作令牌
 CODEX_LOOM_CONNECTOR_TOKEN  gateway 连接令牌
 CODEX_LOOM_BACKUP_MIN_KEEP  恢复底线，始终保留的最新快照数，默认 2

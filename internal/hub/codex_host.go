@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -113,6 +114,7 @@ func (h *Hub) materializeModelCatalog() (modelcatalog.Snapshot, error) {
 }
 
 func codexHostEnv() map[string]string {
+	env := map[string]string{}
 	loomBin := strings.TrimSpace(os.Getenv("CODEX_LOOM_CLI_BIN"))
 	if loomBin == "" {
 		if executable, err := os.Executable(); err == nil {
@@ -122,20 +124,92 @@ func codexHostEnv() map[string]string {
 			}
 		}
 	}
-	if loomBin == "" {
-		return nil
-	}
-	dir := filepath.Dir(loomBin)
-	path := os.Getenv("PATH")
-	for _, existing := range filepath.SplitList(path) {
-		if filepath.Clean(existing) == filepath.Clean(dir) {
-			return nil
+	if loomBin != "" {
+		dir := filepath.Dir(loomBin)
+		path := os.Getenv("PATH")
+		found := false
+		for _, existing := range filepath.SplitList(path) {
+			if filepath.Clean(existing) == filepath.Clean(dir) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			if path == "" {
+				env["PATH"] = dir
+			} else {
+				env["PATH"] = dir + string(os.PathListSeparator) + path
+			}
 		}
 	}
-	if path == "" {
-		return map[string]string{"PATH": dir}
+
+	// launchd does not inherit the interactive shell's proxy bypass list. Add
+	// configured Provider hosts to both spellings without copying credentials
+	// or hard-coding organization-specific domains into the process environment.
+	noProxyValues := []string{os.Getenv("NO_PROXY"), os.Getenv("no_proxy"), os.Getenv("CODEX_LOOM_NO_PROXY")}
+	noProxyValues = append(noProxyValues, codexProviderHosts()...)
+	noProxy := appendNoProxyHosts(noProxyValues...)
+	if noProxy != "" {
+		env["NO_PROXY"] = noProxy
+		env["no_proxy"] = noProxy
 	}
-	return map[string]string{"PATH": dir + string(os.PathListSeparator) + path}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
+}
+
+func codexProviderHosts() []string {
+	configHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		configHome = filepath.Join(home, ".codex")
+	}
+	data, err := os.ReadFile(filepath.Join(configHome, "config.toml"))
+	if err != nil {
+		return nil
+	}
+	var hosts []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "base_url") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		value := strings.TrimSpace(strings.SplitN(parts[1], "#", 2)[0])
+		value = strings.Trim(value, "\"'")
+		u, err := url.Parse(value)
+		if err != nil || u.Hostname() == "" {
+			continue
+		}
+		hosts = append(hosts, u.Hostname())
+	}
+	return hosts
+}
+
+func appendNoProxyHosts(values ...string) string {
+	seen := map[string]bool{}
+	var result []string
+	add := func(value string) {
+		for _, item := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
+			item = strings.TrimSpace(item)
+			key := strings.ToLower(item)
+			if item != "" && !seen[key] {
+				seen[key] = true
+				result = append(result, item)
+			}
+		}
+	}
+	for _, value := range values {
+		add(value)
+	}
+	return strings.Join(result, ",")
 }
 
 func (h *Hub) ensureCodexHost() (*codexHostRuntime, error) {

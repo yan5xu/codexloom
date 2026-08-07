@@ -655,7 +655,7 @@ ID 可以写成裸 ID 或 `prll://` reference；输出为 Parall 原生 JSON。�
 
 ./bin/loom integration connect parall --account <account-ref> --credential-ref env:PRLL_API_KEY
 ./bin/loom integration connect lark --account cli_xxx \
-  --credential-ref keychain:com.codexloom.feishu.cli_xxx
+  --credential-ref managed:<hub-issued-id>
 ./bin/loom integration connect slack --account T_WORKSPACE --credential-ref env:SLACK_BOT_TOKEN
 # GitHub Trigger source：OAuth Device Flow，或按 Resource Owner 导入独立 PAT。
 ./bin/loom integration connect github
@@ -675,6 +675,22 @@ ID 可以写成裸 ID 或 `prll://` reference；输出为 Parall 原生 JSON。�
 ./bin/loom integration disable <connection-id-or-address-id>
 ./bin/loom integration enable <connection-id-or-address-id>
 ```
+
+`managed:` ID 由 Hub 签发，只能绑定当前 Owner-only store 中已存在且通过校验的 entry；不能把路径编码为
+ID，也不能解析 suffix。`env:` 与 `keychain:` 保留兼容读取。现有 Keychain-backed Connection 使用受管
+preflight/migration，不创建新业务对象：
+
+```sh
+loom integration credential preflight [CONNECTION_ID] [--json]
+loom integration credential migrate CONNECTION_ID --dry-run [--json]
+loom integration credential migrate CONNECTION_ID --confirm CONNECTION_ID [--json]
+loom integration credential rollback RECEIPT_ID --dry-run [--json]
+loom integration credential rollback RECEIPT_ID --confirm RECEIPT_ID [--json]
+```
+
+无 ID preflight 只枚举 enabled、non-archived 的 Lark/Slack/Parall/GitHub Keychain Connection，排除
+`env:`。每个 Connection 重用同一 durable receipt；自动回滚不完整时返回
+`manual_recovery_required`。普通 backup/support bundle 排除 `credentials/**`，不是完整可运行恢复。
 
 单个 Address 的生命周期和跨 Agent 迁移必须使用受管命令。所有写操作都会先执行同一份
 preflight；`--dry-run` 只显示结果，实际执行必须提供刚读取到的 version 和精确确认值。CLI 在未显式
@@ -711,14 +727,14 @@ integrations.json 的单次原子提交：提交前 ingress
 但 disabled 期间 Provider 是否重放消息仍取决于 Connector，本操作不声称主动补拉。
 
 `integration import parall` 会先验证 Agent key 与 `--external-agent-id` 是否匹配，并确认 WebSocket ticket
-可用；随后把 key 写入系统 Keychain、创建或复用 Connection/Address，并安装 managed Gateway。它不要求
+可用；随后把 key 写入 Owner-only managed store、创建或复用 Connection/Address，并安装 managed Gateway。它不要求
 Owner key，也不会创建或改名 Parall Agent。重复执行会复用同一稳定身份；失败时会恢复原 credential，
 并删除本次新建的 Connection/Address。源 key 文件不会被 Loom 自动删除，确认 Gateway connected 后应由
 操作者安全移除。为避免明文传输，CLI 只允许向本机 loopback HTTP 或 HTTPS Loom 地址发送 credential。
 不要把 Agent key 放进参数、环境变量、普通 JSON 或消息正文。
 
-第一次成功导入后，后续修复或幂等重跑可以省略 `--agent-key-file`，Loom 会复用 Keychain 中的凭据并再次
-验证外部身份。导入器按 provider、外部稳定身份和 Loom Agent 查找已有记录：只有一套 legacy
+第一次成功导入后，后续修复或幂等重跑可以省略 `--agent-key-file`，Loom 会复用 managed credential 并再次
+验证外部身份；legacy Keychain reference 在显式迁移前仍可兼容读取。导入器按 provider、外部稳定身份和 Loom Agent 查找已有记录：只有一套 legacy
 `org-agent:<external-id>` 记录时原地升级并保留 Connection/Address ID；已经出现新旧重复时，选择 managed
 记录作为 canonical，把旧 Connection、Address 和 Membership 标为 `archived` 并写入 `supersededBy`。
 历史 Inbox/Outbox 仍可解析旧 ID，但归档记录不能重新启用；旧 Membership 中更完整的角色和策略会投影到

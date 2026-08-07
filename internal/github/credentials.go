@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/zalando/go-keyring"
 )
 
@@ -32,6 +33,60 @@ func ScopedCredentialService(login, resourceOwner string) string {
 		return CredentialService(login)
 	}
 	return CredentialService(login) + "." + normalized.String()
+}
+
+func ManagedCredentialBinding(login, resourceOwner string) string {
+	return "github/access-token/" + strings.ToLower(strings.TrimSpace(login)) + "/" + strings.ToLower(strings.TrimSpace(resourceOwner))
+}
+
+func SaveManagedScopedToken(store *credentialstore.Store, login, resourceOwner, token string) (string, error) {
+	login = strings.TrimSpace(login)
+	resourceOwner = strings.ToLower(strings.TrimSpace(resourceOwner))
+	token = strings.TrimSpace(token)
+	if store == nil || login == "" || resourceOwner == "" || token == "" {
+		return "", fmt.Errorf("GitHub login, resource owner, and token are required")
+	}
+	reference, _, err := store.PutBound(ManagedCredentialBinding(login, resourceOwner), credentialstore.Payload{
+		Provider: "github", Kind: "access-token",
+		Values: map[string]string{"login": login, "resourceOwner": resourceOwner, "token": token},
+	})
+	return reference, err
+}
+
+func ManagedCredentialReference(store *credentialstore.Store, login, resourceOwner string) (string, error) {
+	if store == nil || strings.TrimSpace(login) == "" || strings.TrimSpace(resourceOwner) == "" {
+		return "", fmt.Errorf("GitHub login and resource owner are required")
+	}
+	return store.BoundReference(ManagedCredentialBinding(login, resourceOwner))
+}
+
+func LoadCredentialFor(store *credentialstore.Store, ref, login, resourceOwner string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if !strings.HasPrefix(ref, credentialstore.ManagedReferencePrefix) {
+		return LoadCredential(ref)
+	}
+	if store == nil {
+		return "", fmt.Errorf("managed GitHub credential store is unavailable")
+	}
+	if err := store.ValidateBinding(ref, ManagedCredentialBinding(login, resourceOwner)); err != nil {
+		return "", err
+	}
+	return LoadManagedCredential(store, ref)
+}
+
+func LoadManagedCredential(store *credentialstore.Store, ref string) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("managed GitHub credential store is unavailable")
+	}
+	payload, err := store.Resolve(ref)
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(payload.Values["token"])
+	if payload.Provider != "github" || payload.Kind != "access-token" || strings.TrimSpace(payload.Values["login"]) == "" || strings.TrimSpace(payload.Values["resourceOwner"]) == "" || token == "" {
+		return "", fmt.Errorf("managed GitHub credential has the wrong provider, kind, or fields")
+	}
+	return token, nil
 }
 
 func SaveToken(login, token string) (string, error) {

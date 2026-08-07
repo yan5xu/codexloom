@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/hub"
 )
@@ -45,17 +47,24 @@ type larkSetupParams struct {
 }
 
 var (
-	loadFeishuSecret = feishu.LoadAppSecret
-	saveFeishuSecret = feishu.SaveAppSecret
-	discoverFeishu   = feishu.Discover
+	discoverFeishu = feishu.Discover
 )
 
 func (s *Server) discoverLark(ctx context.Context, requestedAppID string) larkDiscovery {
 	appID := strings.TrimSpace(requestedAppID)
+	credentialRef := ""
 	if appID == "" {
 		for _, connection := range s.hub.ListConnections() {
 			if connection.Provider == "lark" {
 				appID = connection.AccountRef
+				credentialRef = connection.CredentialRef
+				break
+			}
+		}
+	} else {
+		for _, connection := range s.hub.ListConnections() {
+			if connection.Provider == "lark" && connection.AccountRef == appID && connection.ArchivedAt == "" {
+				credentialRef = connection.CredentialRef
 				break
 			}
 		}
@@ -64,7 +73,25 @@ func (s *Server) discoverLark(ctx context.Context, requestedAppID string) larkDi
 	if appID == "" {
 		return result
 	}
-	secret, err := loadFeishuSecret(appID)
+	var credentials *credentialstore.Store
+	var err error
+	if credentialRef == "" || strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+		credentials, err = s.hub.CredentialStore()
+		if err != nil {
+			result.Error = "Read Feishu credential: " + err.Error()
+			return result
+		}
+	}
+	if credentialRef == "" {
+		credentialRef, err = feishu.ManagedAppSecretReference(credentials, appID)
+		if errors.Is(err, credentialstore.ErrNotFound) {
+			credentialRef = "keychain:" + feishu.CredentialService(appID)
+		} else if err != nil {
+			result.Error = "Read Feishu credential: " + err.Error()
+			return result
+		}
+	}
+	secret, err := feishu.LoadAppSecretReference(credentials, credentialRef, appID)
 	if err != nil {
 		result.Error = "Read Feishu credential: " + err.Error()
 		return result
@@ -109,7 +136,11 @@ func (s *Server) saveLarkCredentials(ctx context.Context, p larkCredentialParams
 	if _, err := discoverFeishu(ctx, appID, appSecret); err != nil {
 		return larkDiscovery{}, &hub.HubError{Status: 400, Message: "Feishu verification failed: " + err.Error()}
 	}
-	if err := saveFeishuSecret(appID, appSecret); err != nil {
+	credentials, err := s.hub.CredentialStore()
+	if err != nil {
+		return larkDiscovery{}, &hub.HubError{Status: 500, Message: "Open managed credential store: " + err.Error()}
+	}
+	if _, err := feishu.SaveManagedAppSecret(credentials, appID, appSecret); err != nil {
 		return larkDiscovery{}, &hub.HubError{Status: 500, Message: "Save Feishu credential: " + err.Error()}
 	}
 	return s.discoverLark(ctx, appID), nil
@@ -149,7 +180,17 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 		}
 	}
 	var err error
-	credentialRef := "keychain:" + feishu.CredentialService(discovery.AppID)
+	credentials, credentialErr := s.hub.CredentialStore()
+	if credentialErr != nil {
+		return nil, &hub.HubError{Status: 500, Message: "Open managed credential store: " + credentialErr.Error()}
+	}
+	credentialRef, credentialErr := feishu.ManagedAppSecretReference(credentials, discovery.AppID)
+	if credentialErr != nil {
+		if connection.ID == "" || connection.CredentialRef == "" {
+			return nil, &hub.HubError{Status: 409, Message: "Managed Feishu credential is not configured"}
+		}
+		credentialRef = connection.CredentialRef
+	}
 	if connection.ID == "" {
 		connection, err = s.hub.CreateConnection(hub.ConnectionParams{
 			Provider: "lark", AccountRef: discovery.AppID, CredentialRef: credentialRef,

@@ -46,7 +46,7 @@ export CODEX_LOOM_GITHUB_CLIENT_ID=Iv1_your_client_id
 loom integration connect github
 ```
 
-CLI 或 WebUI 会显示 GitHub verification URL 和一次性 code。该流程不需要公网 callback、Loom 域名或客户端 secret。授权成功后，Loom 验证 `/user`，把 token 存入系统 Keychain，并只在 `integrations.json` 保存 `keychain:` 引用。OAuth 授权被记录为可覆盖所有获准 Resource Owner 的 broad source；当存在更精确的 Owner source 时，Trigger 优先使用精确匹配。
+CLI 或 WebUI 会显示 GitHub verification URL 和一次性 code。该流程不需要公网 callback、Loom 域名或客户端 secret。授权成功后，Loom 验证 `/user`，把 token 存入 Owner-only managed store，并只在 `integrations.json` 保存 Hub 签发的 `managed:` opaque reference。OAuth 授权被记录为可覆盖所有获准 Resource Owner 的 broad source；当存在更精确的 Owner source 时，Trigger 优先使用精确匹配。
 
 ### 用户自己的 token 文件
 
@@ -57,7 +57,7 @@ chmod 600 /absolute/path/github.token
 loom integration connect github --token-file /absolute/path/github.token --resource-owner parall-hq
 ```
 
-CLI 只接受当前用户所有的普通文件，不接受 symlink，权限必须是 `0600` 或 `0400`；token 不进入参数、日志或命令输出。Loom 验证账号后将 token 写入按“登录账号 + Resource Owner”隔离的 Keychain item，源文件保持不变。WebUI 使用 Resource Owner 输入框和密码输入框接收一次性粘贴的 token；验证成功并写入 Keychain 后立即清空输入框，Loom 数据文件仍只保存 `keychain:` 引用。再次添加相同 Owner 会原地更新对应 Connection；添加不同 Owner 会保留现有 Connection 并创建新的 Source。
+CLI 只接受当前用户所有的普通文件，不接受 symlink，权限必须是 `0600` 或 `0400`；token 不进入参数、日志或命令输出。Loom 验证账号后将 token 写入按“登录账号 + Resource Owner”绑定的 managed entry，源文件保持不变。WebUI 使用 Resource Owner 输入框和密码输入框接收一次性粘贴的 token；验证成功并写入 managed store 后立即清空输入框，Loom 业务数据文件仍只保存 `managed:` 引用。再次添加相同 Owner 会原地更新对应 Connection；添加不同 Owner 会保留现有 Connection 并创建新的 Source。
 
 fine-grained PAT 至少需要目标仓库的 Metadata read；观察 PR 需要 Pull requests read，观察 workflow run 需要 Actions read。Classic PAT 访问私有仓库通常使用 `repo`，只访问公开仓库可使用 `public_repo`。
 
@@ -66,7 +66,6 @@ fine-grained PAT 至少需要目标仓库的 Metadata read；观察 PR 需要 Pu
 无人值守环境可以让 Loom 进程持有环境变量，再保存引用：
 
 ```sh
-export GITHUB_TOKEN=github_pat_xxx
 loom integration connect github --credential-ref env:GITHUB_TOKEN --resource-owner parall-hq
 ```
 

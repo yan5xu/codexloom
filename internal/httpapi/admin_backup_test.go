@@ -37,6 +37,13 @@ func TestBackupRetentionPolicyReadsEnvironmentAndNormalizes(t *testing.T) {
 	}
 }
 
+func TestBackupStatusReportsCredentialExclusion(t *testing.T) {
+	status := backupStatus(nil, backup.DefaultRetentionPolicy(), t.TempDir())
+	if status["credentialsIncluded"] != false || status["runnableRestore"] != false || status["backupStatus"] != "credentials_excluded" {
+		t.Fatalf("ordinary backup status = %#v", status)
+	}
+}
+
 func clearBackupPolicyEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{

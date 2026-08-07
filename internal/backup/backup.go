@@ -43,15 +43,18 @@ type Options struct {
 }
 
 type Snapshot struct {
-	Name         string       `json:"name"`
-	Path         string       `json:"path"`
-	CreatedAt    time.Time    `json:"createdAt"`
-	Reason       string       `json:"reason"`
-	SizeBytes    int64        `json:"sizeBytes"`
-	FileCount    int          `json:"fileCount"`
-	RolloutCount int          `json:"rolloutCount"`
-	Warnings     []string     `json:"warnings,omitempty"`
-	Prune        *PruneReport `json:"prune,omitempty"`
+	Name                string       `json:"name"`
+	Path                string       `json:"path"`
+	CreatedAt           time.Time    `json:"createdAt"`
+	Reason              string       `json:"reason"`
+	SizeBytes           int64        `json:"sizeBytes"`
+	FileCount           int          `json:"fileCount"`
+	RolloutCount        int          `json:"rolloutCount"`
+	CredentialsIncluded bool         `json:"credentialsIncluded"`
+	RunnableRestore     bool         `json:"runnableRestore"`
+	BackupStatus        string       `json:"backupStatus"`
+	Warnings            []string     `json:"warnings,omitempty"`
+	Prune               *PruneReport `json:"prune,omitempty"`
 }
 
 type manifest struct {
@@ -132,7 +135,10 @@ func Create(opts Options) (*Snapshot, error) {
 		EdgeNamesFile:    opts.EdgeNamesFile,
 		Agents:           opts.Agents,
 		Sessions:         opts.Agents,
-		Excluded:         []string{"codex-loom/events/** (derived SSE replay cache)"},
+		Excluded: []string{
+			"codex-loom/events/** (derived SSE replay cache)",
+			"codex-loom/credentials/** (secret-bearing managed credentials; ordinary backup is not a complete runnable restore)",
+		},
 	}
 
 	var requiredErrors []error
@@ -232,14 +238,10 @@ func Create(opts Options) (*Snapshot, error) {
 		return nil, err
 	}
 	s := &Snapshot{
-		Name:         name,
-		Path:         path,
-		CreatedAt:    created,
-		Reason:       opts.Reason,
-		SizeBytes:    info.Size(),
-		FileCount:    len(m.Files),
-		RolloutCount: rolloutCount,
-		Warnings:     m.Warnings,
+		Name: name, Path: path, CreatedAt: created, Reason: opts.Reason,
+		SizeBytes: info.Size(), FileCount: len(m.Files), RolloutCount: rolloutCount,
+		CredentialsIncluded: false, RunnableRestore: false, BackupStatus: "credentials_excluded",
+		Warnings: m.Warnings,
 	}
 	postPrune, pruneErr := ApplyRetention(opts.DataDir, policy)
 	pruneReport.merge(postPrune)
@@ -272,10 +274,8 @@ func listSnapshots(backupDir string) ([]Snapshot, error) {
 			continue
 		}
 		out = append(out, Snapshot{
-			Name:      e.Name(),
-			Path:      filepath.Join(backupDir, e.Name()),
-			CreatedAt: info.ModTime().UTC(),
-			SizeBytes: info.Size(),
+			Name: e.Name(), Path: filepath.Join(backupDir, e.Name()), CreatedAt: info.ModTime().UTC(), SizeBytes: info.Size(),
+			CredentialsIncluded: false, RunnableRestore: false, BackupStatus: "credentials_excluded",
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -307,7 +307,15 @@ func walkDataDir(dataDir, backupDir string, fn func(src, rel string)) error {
 	}
 	backupAbs, _ := filepath.Abs(backupDir)
 	eventsAbs, _ := filepath.Abs(filepath.Join(dataAbs, "events"))
+	credentialsAbs, _ := filepath.Abs(filepath.Join(dataAbs, "credentials"))
 	return filepath.WalkDir(dataAbs, func(path string, d os.DirEntry, err error) error {
+		pathAbs, _ := filepath.Abs(path)
+		if pathAbs == credentialsAbs || strings.HasPrefix(pathAbs, credentialsAbs+string(os.PathSeparator)) {
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if err != nil {
 			return nil
 		}

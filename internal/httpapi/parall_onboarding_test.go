@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	"github.com/yan5xu/codex-loom/internal/parall"
 	"github.com/yan5xu/codex-loom/internal/store"
@@ -48,7 +49,7 @@ func TestSetupParallCreatesStableIdentityAndMembershipIdempotently(t *testing.T)
 	if firstConnection.ID != secondConnection.ID || firstAddress.ID != secondAddress.ID {
 		t.Fatalf("setup was not idempotent: first=%#v/%#v second=%#v/%#v", firstConnection, firstAddress, secondConnection, secondAddress)
 	}
-	if firstAddress.ExternalIdentity != "prll://usr_external" || firstConnection.CredentialRef != "keychain:"+parall.AgentCredentialService("org_test", "usr_external") {
+	if firstAddress.ExternalIdentity != "prll://usr_external" || !strings.HasPrefix(firstConnection.CredentialRef, credentialstore.ManagedReferencePrefix) {
 		t.Fatalf("connection/address = %#v / %#v", firstConnection, firstAddress)
 	}
 	memberships, err := h.ListConversationMemberships("parall-agent", firstAddress.ID)
@@ -97,22 +98,15 @@ func TestDiscoverParallUsesAgentCredentialsWithoutOwnerAccess(t *testing.T) {
 	oldNew := newParallClient
 	oldLoadOwner := loadParallOwnerCredentials
 	oldLoadAgent := loadParallAgentCredentials
-	oldSaveAgent := saveParallAgentCredentials
 	defer func() {
 		newParallClient = oldNew
 		loadParallOwnerCredentials = oldLoadOwner
 		loadParallAgentCredentials = oldLoadAgent
-		saveParallAgentCredentials = oldSaveAgent
 	}()
 	newParallClient = func(string, string) parallAPI { return fake }
 	loadParallOwnerCredentials = func(string) (parall.Credentials, error) { return parall.Credentials{}, nil }
-	stored := parall.Credentials{}
 	loadParallAgentCredentials = func(string, string) (parall.Credentials, error) {
-		return stored, nil
-	}
-	saveParallAgentCredentials = func(_, _, apiURL, apiKey string) error {
-		stored = parall.Credentials{APIURL: apiURL, APIKey: apiKey}
-		return nil
+		return parall.Credentials{}, nil
 	}
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -121,7 +115,7 @@ func TestDiscoverParallUsesAgentCredentialsWithoutOwnerAccess(t *testing.T) {
 	h := hub.New(st)
 	defer h.Shutdown()
 	result, err := New(h, st, nil).saveParallAgentCredential(context.Background(), parallAgentCredentialParams{
-		APIURL: "https://api.example.test", OrgID: "org_test", AgentID: "usr_external", AgentAPIKey: "agent-key",
+		APIURL: "https://api.example.test", OrgID: "org_test", AgentID: "usr_external", AgentAPIKey: randomTestCredential(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +130,7 @@ func TestDiscoverParallUsesAgentCredentialsWithoutOwnerAccess(t *testing.T) {
 
 func TestImportParallAgentWithoutOwnerIsIdempotent(t *testing.T) {
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
-	stored, restore := stubParallImport(t, fake, nil)
+	_, restore := stubParallImport(t, fake, nil)
 	defer restore()
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -148,7 +142,7 @@ func TestImportParallAgentWithoutOwnerIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New(h, st, nil)
-	params := parallImportParams{Agent: "ai-community", APIURL: "https://api.example.test", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: "agent-key"}
+	params := parallImportParams{Agent: "ai-community", APIURL: "https://api.example.test", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: randomTestCredential(t)}
 	first, err := s.importParallAgent(context.Background(), params, "http://127.0.0.1:4870")
 	if err != nil {
 		t.Fatal(err)
@@ -164,8 +158,8 @@ func TestImportParallAgentWithoutOwnerIsIdempotent(t *testing.T) {
 	if firstConnection.ID != secondConnection.ID || firstAddress.ID != secondAddress.ID {
 		t.Fatalf("import duplicated resources: %#v/%#v then %#v/%#v", firstConnection, firstAddress, secondConnection, secondAddress)
 	}
-	if len(h.ListConnections()) != 1 || stored.APIKey != "agent-key" || firstConnection.CredentialRef != "keychain:"+parall.AgentCredentialService("org_test", "usr_external") {
-		t.Fatalf("import state: connections=%#v credentials=%#v", h.ListConnections(), *stored)
+	if len(h.ListConnections()) != 1 || !strings.HasPrefix(firstConnection.CredentialRef, credentialstore.ManagedReferencePrefix) {
+		t.Fatalf("import state: connections=%#v", h.ListConnections())
 	}
 }
 
@@ -173,7 +167,8 @@ func TestImportParallAgentReusesStoredCredentialWithoutKeyFile(t *testing.T) {
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	stored, restore := stubParallImport(t, fake, nil)
 	defer restore()
-	*stored = parall.Credentials{APIURL: "https://api.example.test", APIKey: "stored-agent-key"}
+	storedValue := randomTestCredential(t)
+	*stored = parall.Credentials{APIURL: "https://api.example.test", APIKey: storedValue}
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -189,8 +184,8 @@ func TestImportParallAgentReusesStoredCredentialWithoutKeyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reused, _ := result["credentialReused"].(bool); !reused || stored.APIKey != "stored-agent-key" {
-		t.Fatalf("credential was not reused: result=%#v stored=%#v", result, *stored)
+	if reused, _ := result["credentialReused"].(bool); !reused || stored.APIKey != storedValue {
+		t.Fatalf("credential was not reused")
 	}
 }
 
@@ -198,7 +193,7 @@ func TestImportParallAgentDoesNotSendStoredCredentialToAnotherAPI(t *testing.T) 
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	stored, restore := stubParallImport(t, fake, nil)
 	defer restore()
-	*stored = parall.Credentials{APIURL: "https://api.example.test", APIKey: "stored-agent-key"}
+	*stored = parall.Credentials{APIURL: "https://api.example.test", APIKey: randomTestCredential(t)}
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -238,14 +233,14 @@ func TestImportParallAgentMigratesSingleLegacyIdentityInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := New(h, st, nil).importParallAgent(context.Background(), parallImportParams{
-		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: "agent-key",
+		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: randomTestCredential(t),
 	}, "http://127.0.0.1:4870")
 	if err != nil {
 		t.Fatal(err)
 	}
 	connection := result["connection"].(hub.PlatformConnection)
 	address := result["address"].(hub.AgentAddress)
-	if connection.ID != legacy.ID || address.ID != legacyAddress.ID || connection.AccountRef != "org_test" || !strings.HasPrefix(connection.CredentialRef, "keychain:") {
+	if connection.ID != legacy.ID || address.ID != legacyAddress.ID || connection.AccountRef != "org_test" || !strings.HasPrefix(connection.CredentialRef, credentialstore.ManagedReferencePrefix) {
 		t.Fatalf("legacy identity was not migrated in place: connection=%#v address=%#v", connection, address)
 	}
 	if len(h.ListConnections()) != 1 {
@@ -294,7 +289,7 @@ func TestImportParallAgentArchivesDuplicateIdentityAndConvergesMembership(t *tes
 		t.Fatal(err)
 	}
 	result, err := New(h, st, nil).importParallAgent(context.Background(), parallImportParams{
-		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: "agent-key",
+		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: randomTestCredential(t),
 	}, "http://127.0.0.1:4870")
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +358,7 @@ func TestImportParallAgentRollsBackCredentialAndResourcesOnGatewayFailure(t *tes
 		t.Fatal(err)
 	}
 	_, err = New(h, st, nil).importParallAgent(context.Background(), parallImportParams{
-		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: "agent-key",
+		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: randomTestCredential(t),
 	}, "http://127.0.0.1:4870")
 	if err == nil {
 		t.Fatal("expected gateway failure")
@@ -398,7 +393,7 @@ func TestImportParallAgentRestoresLegacyConnectionOnGatewayFailure(t *testing.T)
 		t.Fatal(err)
 	}
 	_, err = New(h, st, nil).importParallAgent(context.Background(), parallImportParams{
-		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: "agent-key",
+		Agent: "ai-community", OrgID: "org_test", ExternalAgentID: "usr_external", AgentAPIKey: randomTestCredential(t),
 	}, "http://127.0.0.1:4870")
 	if err == nil {
 		t.Fatal("expected gateway failure")
@@ -423,6 +418,7 @@ type fakeParallAPI struct {
 	memberChats      []parall.Chat
 	createAgentCalls int
 	addMemberCalls   int
+	credential       string
 }
 
 func (f *fakeParallAPI) GetMe(context.Context) (parall.User, error) {
@@ -449,7 +445,7 @@ func (f *fakeParallAPI) CreateAgent(_ context.Context, _ string, name string) (p
 	f.createAgentCalls++
 	user := parall.User{ID: "usr_external", DisplayName: name, Status: "active", Presence: &parall.Presence{Online: true, Status: "online"}}
 	f.agents = append(f.agents, user)
-	return parall.CreateAgentResponse{User: user, APIKey: "agent-key"}, nil
+	return parall.CreateAgentResponse{User: user, APIKey: f.credential}, nil
 }
 
 func (f *fakeParallAPI) UpdateAgent(_ context.Context, _, agentID, name string) (parall.User, error) {
@@ -463,7 +459,7 @@ func (f *fakeParallAPI) UpdateAgent(_ context.Context, _, agentID, name string) 
 }
 
 func (f *fakeParallAPI) CreateAgentAPIKey(context.Context, string, string) (parall.APIKey, error) {
-	return parall.APIKey{ID: "key_1", APIKey: "agent-key"}, nil
+	return parall.APIKey{ID: "key_1", APIKey: f.credential}, nil
 }
 
 func (f *fakeParallAPI) AddChatMember(_ context.Context, _, chatID, _ string) error {
@@ -486,26 +482,22 @@ func (f *fakeParallAPI) GetAgentMe(context.Context, string) (parall.User, error)
 }
 
 func (f *fakeParallAPI) GetWSTicket(context.Context) (parall.Ticket, error) {
-	return parall.Ticket{Ticket: "ticket", WSURL: "wss://example.test/ws"}, nil
+	return parall.Ticket{Ticket: f.credential, WSURL: "wss://example.test/ws"}, nil
 }
 
 func stubParall(t *testing.T, fake *fakeParallAPI) func() {
 	t.Helper()
 	oldNew := newParallClient
-	oldLoadOwner, oldSaveOwner := loadParallOwnerCredentials, saveParallOwnerCredentials
-	oldLoadAgent, oldSaveAgent := loadParallAgentCredentials, saveParallAgentCredentials
+	oldLoadOwner := loadParallOwnerCredentials
+	oldLoadAgent := loadParallAgentCredentials
 	oldInstall, oldRetire := installManagedParallGateway, retireManagedParallGateways
-	agentCredentials := parall.Credentials{}
+	fake.credential = randomTestCredential(t)
+	ownerCredential := randomTestCredential(t)
 	newParallClient = func(apiURL, apiKey string) parallAPI { return fake }
 	loadParallOwnerCredentials = func(string) (parall.Credentials, error) {
-		return parall.Credentials{APIURL: "https://api.example.test", APIKey: "owner-key"}, nil
+		return parall.Credentials{APIURL: "https://api.example.test", APIKey: ownerCredential}, nil
 	}
-	saveParallOwnerCredentials = func(string, string, string) error { return nil }
-	loadParallAgentCredentials = func(string, string) (parall.Credentials, error) { return agentCredentials, nil }
-	saveParallAgentCredentials = func(_, _, apiURL, apiKey string) error {
-		agentCredentials = parall.Credentials{APIURL: apiURL, APIKey: apiKey}
-		return nil
-	}
+	loadParallAgentCredentials = func(string, string) (parall.Credentials, error) { return parall.Credentials{}, nil }
 	installManagedParallGateway = func(_ *Server, connection hub.PlatformConnection, _ hub.AgentAddress, orgID, agentID, _ string) (managedParallGateway, error) {
 		if orgID != "org_test" || agentID != "usr_external" {
 			t.Fatalf("gateway identity = %s/%s", orgID, agentID)
@@ -515,8 +507,8 @@ func stubParall(t *testing.T, fake *fakeParallAPI) func() {
 	retireManagedParallGateways = func(_ *Server, _ []string) error { return nil }
 	return func() {
 		newParallClient = oldNew
-		loadParallOwnerCredentials, saveParallOwnerCredentials = oldLoadOwner, oldSaveOwner
-		loadParallAgentCredentials, saveParallAgentCredentials = oldLoadAgent, oldSaveAgent
+		loadParallOwnerCredentials = oldLoadOwner
+		loadParallAgentCredentials = oldLoadAgent
 		installManagedParallGateway, retireManagedParallGateways = oldInstall, oldRetire
 	}
 }
@@ -525,20 +517,13 @@ func stubParallImport(t *testing.T, fake *fakeParallAPI, installErr error) (*par
 	t.Helper()
 	oldNew := newParallClient
 	oldLoadOwner := loadParallOwnerCredentials
-	oldLoadAgent, oldSaveAgent, oldDeleteAgent := loadParallAgentCredentials, saveParallAgentCredentials, deleteParallAgentCredentials
+	oldLoadAgent := loadParallAgentCredentials
 	oldInstall, oldRetire := installManagedParallGateway, retireManagedParallGateways
 	stored := &parall.Credentials{}
+	fake.credential = randomTestCredential(t)
 	newParallClient = func(string, string) parallAPI { return fake }
 	loadParallOwnerCredentials = func(string) (parall.Credentials, error) { return parall.Credentials{}, nil }
 	loadParallAgentCredentials = func(string, string) (parall.Credentials, error) { return *stored, nil }
-	saveParallAgentCredentials = func(_, _, apiURL, apiKey string) error {
-		*stored = parall.Credentials{APIURL: apiURL, APIKey: apiKey}
-		return nil
-	}
-	deleteParallAgentCredentials = func(string, string) error {
-		*stored = parall.Credentials{}
-		return nil
-	}
 	installManagedParallGateway = func(_ *Server, connection hub.PlatformConnection, _ hub.AgentAddress, _, _, _ string) (managedParallGateway, error) {
 		if installErr != nil {
 			return managedParallGateway{}, installErr
@@ -549,7 +534,7 @@ func stubParallImport(t *testing.T, fake *fakeParallAPI, installErr error) (*par
 	return stored, func() {
 		newParallClient = oldNew
 		loadParallOwnerCredentials = oldLoadOwner
-		loadParallAgentCredentials, saveParallAgentCredentials, deleteParallAgentCredentials = oldLoadAgent, oldSaveAgent, oldDeleteAgent
+		loadParallAgentCredentials = oldLoadAgent
 		installManagedParallGateway, retireManagedParallGateways = oldInstall, oldRetire
 	}
 }

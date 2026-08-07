@@ -819,6 +819,7 @@ func cmdBackup(a args) {
 	b, _ := resp["backup"].(map[string]any)
 	fmt.Printf("%s %s\n", green("backup created"), str(b, "name"))
 	fmt.Printf("  path:    %s\n", str(b, "path"))
+	fmt.Println(dim("  credentials: excluded; this is not a complete runnable restore"))
 	if n, ok := b["rolloutCount"].(float64); ok {
 		fmt.Printf("  rollouts: %.0f\n", n)
 	}
@@ -851,6 +852,9 @@ func cmdBackups(a args) {
 	}
 	if dir := str(resp, "dir"); dir != "" {
 		fmt.Println(dim(dir))
+	}
+	if str(resp, "backupStatus") == "credentials_excluded" {
+		fmt.Println(dim("credentials excluded; ordinary backups are not complete runnable restores"))
 	}
 	backups, _ := resp["backups"].([]any)
 	if len(backups) == 0 {

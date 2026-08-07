@@ -141,10 +141,8 @@ func backupStatus(items []backup.Snapshot, policy backup.RetentionPolicy, dataDi
 		totalBytes += item.SizeBytes
 	}
 	return map[string]any{
-		"backups":    items,
-		"dir":        backup.DefaultDir(dataDir),
-		"count":      len(items),
-		"totalBytes": totalBytes,
+		"backups": items, "dir": backup.DefaultDir(dataDir), "count": len(items), "totalBytes": totalBytes,
+		"credentialsIncluded": false, "runnableRestore": false, "backupStatus": "credentials_excluded",
 		"retention": map[string]any{
 			"minCount":   policy.MinCount,
 			"maxCount":   policy.MaxCount,

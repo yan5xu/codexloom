@@ -7,6 +7,7 @@ import path from 'node:path';
 import { slackDeliveryReceipts, slackEventToIngress, slackOutboxRequest, slackReactionAction } from './slack-protocol.mjs';
 
 const args = parseArgs(process.argv.slice(2));
+const credential = readCredentialPayload(args);
 const socketEnabled = args.socket !== 'false';
 const config = {
   hub: trimSlash(
@@ -22,13 +23,15 @@ const config = {
   ),
   connectorToken: process.env.CODEX_LOOM_CONNECTOR_TOKEN || process.env.CODEX_HUB_CONNECTOR_TOKEN || '',
   apiUrl: trimSlash(process.env.SLACK_API_URL || 'https://slack.com/api'),
-  appToken: socketEnabled ? required(process.env.SLACK_APP_TOKEN, 'SLACK_APP_TOKEN') : '',
-  botToken: required(process.env.SLACK_BOT_TOKEN, 'SLACK_BOT_TOKEN'),
+  appToken: socketEnabled ? required(credential.appToken || process.env.SLACK_APP_TOKEN, 'Slack App credential') : '',
+  botToken: required(credential.botToken || process.env.SLACK_BOT_TOKEN, 'Slack Bot credential'),
   botUserId: args['bot-user-id'] || process.env.SLACK_BOT_USER_ID || '',
   teamId: args['team-id'] || process.env.SLACK_TEAM_ID || '',
   stateFile: args['state-file'] || path.join(defaultDataDir(), 'gateway', `slack-${args.connection}.json`),
   socketEnabled,
 };
+credential.appToken = '';
+credential.botToken = '';
 
 const controller = new AbortController();
 process.on('SIGINT', () => controller.abort());
@@ -98,10 +101,10 @@ async function connectSocket(url) {
       console.error(`[slack] Socket Mode connected for ${config.teamId || 'workspace'}`);
     };
     ws.onerror = (event) => {
-      socketError = new Error(`WebSocket error${event?.message ? `: ${event.message}` : ''}`);
+      socketError = new Error('WebSocket error');
     };
     ws.onclose = (event) => {
-      const detail = `close=${event.code} ${event.reason || ''}`.trim();
+      const detail = `close=${event.code}`;
       finish(socketError || (controller.signal.aborted ? undefined : new Error(`Socket Mode disconnected ${detail}`)));
     };
     ws.onmessage = ({ data }) => {
@@ -395,9 +398,9 @@ async function slack(method, options = {}) {
     signal: controller.signal,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`Slack HTTP ${response.status}: ${data.error || response.statusText}`);
+  if (!response.ok) throw new Error(`Slack HTTP ${response.status}: ${redactCredentialText(data.error || response.statusText)}`);
   if (data.ok === false && !(options.allowErrors || []).includes(data.error)) {
-    throw new Error(`Slack API ${method}: ${data.error || 'unknown_error'}`);
+    throw new Error(`Slack API ${method}: ${redactCredentialText(data.error || 'unknown_error')}`);
   }
   return data;
 }
@@ -471,6 +474,20 @@ function trimRecord(record, limit) {
   for (const key of keys.slice(0, Math.max(0, keys.length - limit))) delete record[key];
 }
 
+function readCredentialPayload(arguments_) {
+  const rawFD = arguments_['credential-fd'];
+  if (rawFD === undefined) return {};
+  const fd = Number(rawFD);
+  if (!Number.isInteger(fd) || fd < 3) throw new Error('invalid credential file descriptor');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid payload');
+    return parsed;
+  } catch {
+    throw new Error('read Slack credential pipe failed');
+  }
+}
+
 function parseArgs(values) {
   const result = {};
   for (let i = 0; i < values.length; i++) {
@@ -491,7 +508,15 @@ function trimSlash(value) {
 }
 
 function errorText(error) {
-  return error instanceof Error ? error.message : String(error);
+  return redactCredentialText(error instanceof Error ? error.message : String(error));
+}
+
+function redactCredentialText(value) {
+  let result = String(value);
+  for (const secret of [config.botToken, config.appToken]) {
+    if (secret) result = result.split(secret).join('[credential]');
+  }
+  return result;
 }
 
 function delay(ms) {

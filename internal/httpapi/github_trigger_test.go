@@ -3,13 +3,16 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	githubapi "github.com/yan5xu/codex-loom/internal/github"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	"github.com/yan5xu/codex-loom/internal/store"
@@ -18,6 +21,7 @@ import (
 
 func TestGitHubDeviceFlowRetriesConnectionWithGrantedToken(t *testing.T) {
 	keyring.MockInit()
+	grantedCredential := randomTestCredential(t)
 	var tokenRequests atomic.Int32
 	var userRequests atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,10 +31,10 @@ func TestGitHubDeviceFlowRetriesConnectionWithGrantedToken(t *testing.T) {
 			if count := tokenRequests.Add(1); count > 1 {
 				t.Fatalf("device code was exchanged %d times", count)
 			}
-			_, _ = w.Write([]byte(`{"access_token":"device-token","token_type":"bearer","scope":"repo"}`))
+			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": grantedCredential, "token_type": "bearer", "scope": "repo"})
 		case "/user":
-			if r.Header.Get("Authorization") != "Bearer device-token" {
-				t.Fatalf("authorization header = %q", r.Header.Get("Authorization"))
+			if r.Header.Get("Authorization") != "Bearer "+grantedCredential {
+				t.Fatal("provider received an unexpected authorization credential")
 			}
 			if userRequests.Add(1) == 1 {
 				http.Error(w, "temporary failure", http.StatusInternalServerError)
@@ -64,8 +68,8 @@ func TestGitHubDeviceFlowRetriesConnectionWithGrantedToken(t *testing.T) {
 		t.Fatal("first connection attempt unexpectedly succeeded")
 	}
 	flow := server.githubDevices["flow-1"]
-	if flow == nil || flow.AccessToken != "device-token" || flow.Polling {
-		t.Fatalf("retryable flow = %#v", flow)
+	if flow == nil || flow.AccessToken != grantedCredential || flow.Polling {
+		t.Fatal("retryable flow did not retain the granted credential safely")
 	}
 	result, err := server.pollGitHubDevice(t.Context(), "flow-1")
 	if err != nil {
@@ -105,9 +109,10 @@ func TestGitHubDeviceFlowExpiresWithoutAnotherPoll(t *testing.T) {
 
 func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
 	keyring.MockInit()
+	ownerCredential := randomTestCredential(t)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer owner-token" {
-			t.Fatalf("authorization header = %q", r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer "+ownerCredential {
+			t.Fatal("provider received an unexpected authorization credential")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -121,7 +126,7 @@ func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
 	}))
 	defer provider.Close()
 	t.Setenv("CODEX_LOOM_GITHUB_API_URL", provider.URL)
-	t.Setenv("LOOM_TEST_GITHUB_TOKEN", "owner-token")
+	t.Setenv("LOOM_TEST_GITHUB_TOKEN", ownerCredential)
 	t.Setenv("PINIX_EDGE_NAMES", t.TempDir()+"/missing.json")
 
 	st, err := store.Open(t.TempDir())
@@ -175,18 +180,22 @@ func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
 	}
 
 	credentialValue, err := githubapi.LoadCredential("env:LOOM_TEST_GITHUB_TOKEN")
-	if err != nil || credentialValue != "owner-token" {
-		t.Fatalf("managed environment credential = %q, %v", credentialValue, err)
+	if err != nil || credentialValue != ownerCredential {
+		t.Fatal("managed environment credential did not round-trip")
 	}
 }
 
 func TestGitHubTokenConnectionsMigrateLegacyAndSeparateResourceOwners(t *testing.T) {
 	keyring.MockInit()
+	parallCredential := randomTestCredential(t)
+	personalCredential := randomTestCredential(t)
+	updatedCredential := randomTestCredential(t)
+	accepted := map[string]bool{
+		"Bearer " + parallCredential: true, "Bearer " + personalCredential: true, "Bearer " + updatedCredential: true,
+	}
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Header.Get("Authorization") {
-		case "Bearer parall-token", "Bearer personal-token", "Bearer personal-token-updated":
-		default:
-			t.Fatalf("authorization header = %q", r.Header.Get("Authorization"))
+		if !accepted[r.Header.Get("Authorization")] {
+			t.Fatal("provider received an unexpected authorization credential")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/user" {
@@ -217,17 +226,17 @@ func TestGitHubTokenConnectionsMigrateLegacyAndSeparateResourceOwners(t *testing
 	}
 	handler := New(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}}).Handler()
 
-	first := serveJSON(t, handler, http.MethodPost, "/api/integrations/providers/github/token", `{"token":"parall-token","resourceOwner":"parall-hq"}`, http.StatusOK)
+	first := serveJSON(t, handler, http.MethodPost, "/api/integrations/providers/github/token", fmt.Sprintf(`{"token":%q,"resourceOwner":"parall-hq"}`, parallCredential), http.StatusOK)
 	parall := first["connection"].(map[string]any)
 	if parall["id"] == legacy.ID || parall["scopeRef"] != "parall-hq" {
 		t.Fatalf("organization source replaced legacy connection: %#v, legacy ID = %s", parall, legacy.ID)
 	}
-	second := serveJSON(t, handler, http.MethodPost, "/api/integrations/providers/github/token", `{"token":"personal-token","resourceOwner":"yan5xu"}`, http.StatusOK)
+	second := serveJSON(t, handler, http.MethodPost, "/api/integrations/providers/github/token", fmt.Sprintf(`{"token":%q,"resourceOwner":"yan5xu"}`, personalCredential), http.StatusOK)
 	personal := second["connection"].(map[string]any)
 	if personal["id"] != legacy.ID || personal["scopeRef"] != "yan5xu" {
 		t.Fatalf("second resource owner = %#v", personal)
 	}
-	third := serveJSON(t, handler, http.MethodPost, "/api/integrations/providers/github/token", `{"token":"personal-token-updated","resourceOwner":"yan5xu"}`, http.StatusOK)
+	third := serveJSON(t, handler, http.MethodPost, "/api/integrations/providers/github/token", fmt.Sprintf(`{"token":%q,"resourceOwner":"yan5xu"}`, updatedCredential), http.StatusOK)
 	if third["connection"].(map[string]any)["id"] != personal["id"] {
 		t.Fatalf("same owner did not update in place: second=%#v third=%#v", second, third)
 	}
@@ -235,13 +244,29 @@ func TestGitHubTokenConnectionsMigrateLegacyAndSeparateResourceOwners(t *testing
 	if len(connections) != 2 {
 		t.Fatalf("connections = %#v", connections)
 	}
-	parallToken, err := githubapi.LoadCredential("keychain:" + githubapi.ScopedCredentialService("yan5xu", "parall-hq"))
-	if err != nil || parallToken != "parall-token" {
-		t.Fatalf("parall token = %q, %v", parallToken, err)
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
 	}
-	personalToken, err := githubapi.LoadCredential("keychain:" + githubapi.ScopedCredentialService("yan5xu", "yan5xu"))
-	if err != nil || personalToken != "personal-token-updated" {
-		t.Fatalf("personal token = %q, %v", personalToken, err)
+	var parallConnection, personalConnection hub.PlatformConnection
+	for _, connection := range connections {
+		switch connection.ScopeRef {
+		case "parall-hq":
+			parallConnection = connection
+		case "yan5xu":
+			personalConnection = connection
+		}
+	}
+	if !strings.HasPrefix(parallConnection.CredentialRef, credentialstore.ManagedReferencePrefix) || !strings.HasPrefix(personalConnection.CredentialRef, credentialstore.ManagedReferencePrefix) {
+		t.Fatal("GitHub onboarding did not persist managed references")
+	}
+	parallToken, err := githubapi.LoadCredentialFor(credentials, parallConnection.CredentialRef, "yan5xu", "parall-hq")
+	if err != nil || parallToken != parallCredential {
+		t.Fatal("managed organization credential did not round-trip")
+	}
+	personalToken, err := githubapi.LoadCredentialFor(credentials, personalConnection.CredentialRef, "yan5xu", "yan5xu")
+	if err != nil || personalToken != updatedCredential {
+		t.Fatal("managed personal credential did not update in place")
 	}
 }
 

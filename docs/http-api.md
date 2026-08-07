@@ -237,6 +237,21 @@ Origin 嵌入，其他类型保持 `same-origin`。
 Transfer rollback 使用原 transfer receipt ID：dry-run 时只传 `dryRun=true`；实际写入必须传当前 Address
 version，并让 `confirm` 精确等于 `aop_*` ID。成功结果包含变更后的 Address 和持久 operation receipt。
 
+### Credential Migration Routes
+
+| Method | Route | Meaning |
+|---|---|---|
+| GET | `/api/integrations/credentials/preflight?connectionId=...` | Inspect one Connection, or enumerate all eligible Keychain Connections when omitted |
+| POST | `/api/integrations/connections/{id}/credential-migration` | Dry-run or migrate one Connection |
+| GET | `/api/integrations/credential-migrations/{id}` | Read the non-secret durable receipt |
+| POST | `/api/integrations/credential-migrations/{id}/rollback` | Dry-run or restore the receipt's previous reference/gateway anchor |
+
+Migration and rollback bodies use `{"dryRun":true}` for preflight. Actual migration requires `confirm` equal to the
+Connection ID; actual rollback requires `confirm` equal to the receipt ID. Responses never read/list/export secret
+values and keep the existing Connection/Address/Membership wire shape. They always report
+`credentialsIncluded=false`, `runnableRestore=false`, and `backupStatus=credentials_excluded`, because ordinary
+backup excludes `credentials/**`. `manual_recovery_required` is a terminal fail-closed state, not a successful restore.
+
 ### Provider Setup Routes
 
 | Provider | Exact route |

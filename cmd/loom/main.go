@@ -414,6 +414,9 @@ Compatibility shortcuts:
   loom integration rollback-transfer <operation-id> [--dry-run] [--expected-version N] [--confirm OPERATION_ID]
   loom integration operations [address-id]
   loom integration operation <operation-id>
+  loom integration credential preflight [CONNECTION_ID] [--json]
+  loom integration credential migrate CONNECTION_ID [--dry-run] [--confirm CONNECTION_ID] [--json]
+  loom integration credential rollback RECEIPT_ID [--dry-run] [--confirm RECEIPT_ID] [--json]
   chub integration status [connection-id]
   loom prll chats list --address ADDRESS_ID [--limit N] [--cursor CURSOR]
   loom prll chats get CHAT_ID --address ADDRESS_ID

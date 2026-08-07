@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/yan5xu/codex-loom/internal/codex"
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/rollout"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
@@ -276,6 +277,8 @@ func (s *subscriber) close() {
 type Hub struct {
 	st *store.Store
 
+	credentialStoreMu       sync.Mutex
+	credentialStore         *credentialstore.Store
 	mu                      sync.Mutex
 	contextCoverageMu       sync.Mutex
 	modelProviderMu         sync.Mutex
@@ -292,6 +295,7 @@ type Hub struct {
 	collaborationGroups     map[string]*CollaborationGroup
 	organizationLinks       map[string]*OrganizationRelationship
 	connections             map[string]*PlatformConnection
+	credentialMigrations    map[string]*CredentialMigrationReceipt
 	addresses               map[string]*AgentAddress
 	addressOperations       map[string]*AddressLifecycleOperation
 	memberships             map[string]*ConversationMembership
@@ -339,6 +343,26 @@ type Hub struct {
 	developerContextTimeout time.Duration
 }
 
+// CredentialStore opens the owner-only managed credential backend lazily.
+// Read-only projections and Hub features unrelated to credentials therefore do
+// not create or depend on secret-bearing local state.
+func (h *Hub) CredentialStore() (*credentialstore.Store, error) {
+	if h == nil || h.st == nil {
+		return nil, fmt.Errorf("managed credential store is unavailable")
+	}
+	h.credentialStoreMu.Lock()
+	defer h.credentialStoreMu.Unlock()
+	if h.credentialStore != nil {
+		return h.credentialStore, nil
+	}
+	credentials, err := credentialstore.Open(h.st.Dir())
+	if err != nil {
+		return nil, err
+	}
+	h.credentialStore = credentials
+	return credentials, nil
+}
+
 // New is retained for in-process callers that cannot recover from an invalid
 // store. The service entry point uses Open so it can report the startup error.
 func New(st *store.Store) *Hub {
@@ -377,6 +401,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		collaborationGroups:    map[string]*CollaborationGroup{},
 		organizationLinks:      map[string]*OrganizationRelationship{},
 		connections:            map[string]*PlatformConnection{},
+		credentialMigrations:   map[string]*CredentialMigrationReceipt{},
 		addresses:              map[string]*AgentAddress{},
 		addressOperations:      map[string]*AddressLifecycleOperation{},
 		memberships:            map[string]*ConversationMembership{},
@@ -456,6 +481,9 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	}
 	if err := h.loadIntegrations(); err != nil {
 		return nil, fmt.Errorf("load integrations: %w", err)
+	}
+	if err := h.loadCredentialMigrations(); err != nil {
+		return nil, fmt.Errorf("load credential migrations: %w", err)
 	}
 	if err := h.loadInboxState(); err != nil {
 		return nil, fmt.Errorf("load inbox state: %w", err)

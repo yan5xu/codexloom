@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
@@ -21,10 +22,20 @@ func TestRestartManagedGatewaysRestartsOnlyEnabledSupportedConnections(t *testin
 	}
 	h := hub.New(st)
 	defer h.Shutdown()
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	created := map[string]hub.PlatformConnection{}
 	for _, provider := range []string{"lark", "slack", "parall", "custom"} {
-		connection, err := h.CreateConnection(hub.ConnectionParams{Provider: provider})
+		credentialRef, _, err := credentials.PutBound("restart-test/"+provider, credentialstore.Payload{
+			Provider: provider, Kind: "test", Values: map[string]string{"value": randomTestCredential(t)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		connection, err := h.CreateConnection(hub.ConnectionParams{Provider: provider, CredentialRef: credentialRef})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -35,9 +46,14 @@ func TestRestartManagedGatewaysRestartsOnlyEnabledSupportedConnections(t *testin
 		t.Fatal(err)
 	}
 
-	previous := restartManagedConnectorService
-	defer func() { restartManagedConnectorService = previous }()
+	previousRestart := restartManagedConnectorService
+	previousPreflight := preflightManagedConnectorCredential
+	defer func() {
+		restartManagedConnectorService = previousRestart
+		preflightManagedConnectorCredential = previousPreflight
+	}()
 	calls := []string{}
+	preflightManagedConnectorCredential = func(_ *Server, _ hub.PlatformConnection) error { return nil }
 	restartManagedConnectorService = func(provider, connectionID string) (bool, error) {
 		calls = append(calls, fmt.Sprintf("%s:%s", provider, connectionID))
 		return true, nil
@@ -51,6 +67,35 @@ func TestRestartManagedGatewaysRestartsOnlyEnabledSupportedConnections(t *testin
 	if fmt.Sprint(calls) != fmt.Sprint(want) {
 		t.Fatalf("managed gateway restarts = %#v, want %#v", calls, want)
 	}
+}
+
+func TestRestartManagedGatewaysLeavesLegacyKeychainGatewayRunning(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hub.New(st)
+	defer h.Shutdown()
+	if _, err := h.CreateConnection(hub.ConnectionParams{
+		Provider: "lark", AccountRef: "app_test", CredentialRef: "keychain:legacy-service",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousRestart := restartManagedConnectorService
+	previousPreflight := preflightManagedConnectorCredential
+	defer func() {
+		restartManagedConnectorService = previousRestart
+		preflightManagedConnectorCredential = previousPreflight
+	}()
+	restartManagedConnectorService = func(string, string) (bool, error) {
+		t.Fatal("legacy Keychain gateway was restarted")
+		return false, nil
+	}
+	preflightManagedConnectorCredential = func(_ *Server, _ hub.PlatformConnection) error {
+		t.Fatal("legacy Keychain gateway entered managed credential preflight")
+		return nil
+	}
+	New(h, st, nil).RestartManagedGateways()
 }
 
 func TestManagedGatewayProviderAliasesFeishu(t *testing.T) {

@@ -25,6 +25,14 @@ var installNativeFeishuGateway = func(s *Server, connection hub.PlatformConnecti
 }
 
 func (s *Server) installFeishuGateway(connection hub.PlatformConnection, address hub.AgentAddress, appID, hubURL string) (managedFeishuGateway, error) {
+	return s.installFeishuGatewayMode(connection, address, appID, hubURL, true)
+}
+
+func (s *Server) installFeishuGatewayForMigration(connection hub.PlatformConnection, address hub.AgentAddress, appID, hubURL string) (managedFeishuGateway, error) {
+	return s.installFeishuGatewayMode(connection, address, appID, hubURL, false)
+}
+
+func (s *Server) installFeishuGatewayMode(connection hub.PlatformConnection, address hub.AgentAddress, appID, hubURL string, retireLegacy bool) (managedFeishuGateway, error) {
 	binary, err := siblingExecutable("loom-feishu-gateway")
 	if err != nil {
 		return managedFeishuGateway{}, err
@@ -36,11 +44,11 @@ func (s *Server) installFeishuGateway(connection hub.PlatformConnection, address
 	logPath := filepath.Join(logDir, "feishu-"+connection.ID+".log")
 	arguments := []string{
 		binary, "--hub", hubURL, "--connection", connection.ID,
-		"--address", address.ID, "--app-id", appID,
+		"--address", address.ID, "--app-id", appID, "--credential-ref", connection.CredentialRef,
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return s.installFeishuLaunchAgent(connection.ID, arguments, logPath)
+		return s.installFeishuLaunchAgent(connection.ID, arguments, logPath, retireLegacy)
 	case "linux":
 		return s.installFeishuSystemdUnit(connection.ID, arguments, logPath)
 	default:
@@ -48,7 +56,7 @@ func (s *Server) installFeishuGateway(connection hub.PlatformConnection, address
 	}
 }
 
-func (s *Server) installFeishuLaunchAgent(connectionID string, arguments []string, logPath string) (managedFeishuGateway, error) {
+func (s *Server) installFeishuLaunchAgent(connectionID string, arguments []string, logPath string, retireLegacy bool) (managedFeishuGateway, error) {
 	label := "com.codexloom.feishu." + safeServicePart(connectionID)
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -86,7 +94,10 @@ func (s *Server) installFeishuLaunchAgent(connectionID string, arguments []strin
 	uid := fmt.Sprint(os.Getuid())
 	serviceTarget := "gui/" + uid + "/" + label
 	_ = exec.Command("launchctl", "bootout", serviceTarget).Run()
-	legacyUnits := stopLegacyLarkGateways(connectionID)
+	legacyUnits := []string{}
+	if retireLegacy {
+		legacyUnits = stopLegacyLarkGateways(connectionID)
+	}
 	if output, err := exec.Command("launchctl", "bootstrap", "gui/"+uid, unitPath).CombinedOutput(); err != nil {
 		restoreLaunchAgents(uid, legacyUnits)
 		return managedFeishuGateway{}, fmt.Errorf("launchctl bootstrap: %s", strings.TrimSpace(string(output)))
@@ -96,7 +107,9 @@ func (s *Server) installFeishuLaunchAgent(connectionID string, arguments []strin
 		restoreLaunchAgents(uid, legacyUnits)
 		return managedFeishuGateway{}, fmt.Errorf("launchctl kickstart: %s", strings.TrimSpace(string(output)))
 	}
-	removeLegacyLaunchAgents(unitPath, legacyUnits)
+	if retireLegacy {
+		removeLegacyLaunchAgents(unitPath, legacyUnits)
+	}
 	return managedFeishuGateway{Managed: true, Manager: "launchd", Service: label, LogPath: logPath, UnitPath: unitPath}, nil
 }
 

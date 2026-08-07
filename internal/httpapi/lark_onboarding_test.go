@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	"github.com/yan5xu/codex-loom/internal/store"
@@ -18,6 +20,13 @@ func TestDiscoverLarkUsesNativeCredentialAndListsChats(t *testing.T) {
 	}
 	h := hub.New(st)
 	defer h.Shutdown()
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := feishu.SaveManagedAppSecret(credentials, "cli_test", randomTestCredential(t)); err != nil {
+		t.Fatal(err)
+	}
 	discovery := New(h, st, nil).discoverLark(context.Background(), "cli_test")
 	if !discovery.Available || !discovery.BotReady || !discovery.CredentialStored || discovery.Runtime != "native" || discovery.AppID != "cli_test" {
 		t.Fatalf("discovery = %#v", discovery)
@@ -42,6 +51,13 @@ func TestSetupLarkCreatesDurableAddressAndGroupRoleIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New(h, st, nil)
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := feishu.SaveManagedAppSecret(credentials, "cli_test", randomTestCredential(t)); err != nil {
+		t.Fatal(err)
+	}
 	params := larkSetupParams{
 		Agent: "lark-agent", AppID: "cli_test", ChatID: "oc_alpha", Purpose: "Coordinate Alpha",
 		Role: "Own Alpha questions", Guidance: "Do not expose secrets",
@@ -61,7 +77,7 @@ func TestSetupLarkCreatesDurableAddressAndGroupRoleIdempotently(t *testing.T) {
 	if firstConnection.ID != secondConnection.ID || firstAddress.ID != secondAddress.ID {
 		t.Fatalf("setup was not idempotent: first=%#v/%#v second=%#v/%#v", firstConnection, firstAddress, secondConnection, secondAddress)
 	}
-	if firstConnection.CredentialRef != "keychain:"+feishu.CredentialService("cli_test") {
+	if !strings.HasPrefix(firstConnection.CredentialRef, credentialstore.ManagedReferencePrefix) {
 		t.Fatalf("credential ref = %q", firstConnection.CredentialRef)
 	}
 	memberships, err := h.ListConversationMemberships("lark-agent", firstAddress.ID)
@@ -75,9 +91,7 @@ func TestSetupLarkCreatesDurableAddressAndGroupRoleIdempotently(t *testing.T) {
 
 func stubFeishu(t *testing.T) func() {
 	t.Helper()
-	oldLoad, oldSave, oldDiscover, oldInstall := loadFeishuSecret, saveFeishuSecret, discoverFeishu, installNativeFeishuGateway
-	loadFeishuSecret = func(appID string) (string, error) { return "secret-value", nil }
-	saveFeishuSecret = func(appID, secret string) error { return nil }
+	oldDiscover, oldInstall := discoverFeishu, installNativeFeishuGateway
 	discoverFeishu = func(ctx context.Context, appID, secret string) (feishu.Discovery, error) {
 		return feishu.Discovery{
 			Bot: feishu.Bot{AppID: appID, OpenID: "ou_bot", Name: "Test Bot", ActivateStatus: 2},
@@ -92,6 +106,6 @@ func stubFeishu(t *testing.T) func() {
 		return managedFeishuGateway{Managed: true, Manager: "test", Service: connection.ID}, nil
 	}
 	return func() {
-		loadFeishuSecret, saveFeishuSecret, discoverFeishu, installNativeFeishuGateway = oldLoad, oldSave, oldDiscover, oldInstall
+		discoverFeishu, installNativeFeishuGateway = oldDiscover, oldInstall
 	}
 }

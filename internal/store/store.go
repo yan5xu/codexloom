@@ -14,6 +14,7 @@
 //	triggers.json        durable external-condition definitions
 //	topics.json          durable cross-Agent coordination records
 //	integrations.json    platform connections, agent addresses and conversation memberships (no secrets)
+//	credential-migrations.json non-secret per-Connection migration receipts (credentials excluded)
 //	messages.ndjson      normalized external communication facts
 //	inbox.ndjson         per-agent inbox item snapshots
 //	attempts.ndjson      inbox handling attempt snapshots
@@ -200,6 +201,10 @@ func (s *Store) organizationLinksFile() string {
 
 func (s *Store) integrationsFile() string { return filepath.Join(s.dir, "integrations.json") }
 
+func (s *Store) credentialMigrationsFile() string {
+	return filepath.Join(s.dir, "credential-migrations.json")
+}
+
 func (s *Store) remoteFile() string { return filepath.Join(s.dir, "remote.json") }
 
 func (s *Store) messagesFile() string { return filepath.Join(s.dir, "messages.ndjson") }
@@ -256,6 +261,14 @@ func (s *Store) LoadAgentSkillConfigs(v any) error {
 
 func (s *Store) SaveAgentSkillConfigs(v any) error {
 	return saveJSON(s.agentSkillConfigFile(), v)
+}
+
+func (s *Store) LoadCredentialMigrations(v any) error {
+	return loadJSON(s.credentialMigrationsFile(), v)
+}
+
+func (s *Store) SaveCredentialMigrations(v any) error {
+	return saveJSON(s.credentialMigrationsFile(), v)
 }
 
 // Deprecated compatibility names.

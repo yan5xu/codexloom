@@ -7,8 +7,10 @@ Connection、Agent Address 和 Conversation Membership 分别回答三个问题�
 2. **Agent Address**：这个外部身份绑定到哪个长期 Agent，采用什么触发、回复和信任策略。
 3. **Conversation Membership**：同一个 Agent 面对某个具体群、channel 或私聊联系人时的目的、角色和行为约束。
 
-凭据不写入 `integrations.json`。Connection 的 `credentialRef` 只是运维引用，真实 token 由独立
-gateway 进程从操作系统 Keychain、环境变量或受权限保护的 env file 读取。
+凭据不写入 `integrations.json`。新建受管 Connection 默认只保存 Hub 签发的
+`managed:<credential-id>` opaque reference；真实值位于 Loom data directory 下 Owner-only 的
+`credentials/` store。`env:` 与 `keychain:` 继续兼容读取，但不是新 onboarding 的默认写入目标。
+ID 不能由客户端从路径构造或解析，且只有当前 store 中已存在并通过 ownership/权限校验的条目才能绑定。
 
 ## 通用流程
 
@@ -62,14 +64,43 @@ message ID，并为每个 Loom Artifact 保存 provider attachment ID 与对应 
 都会用新的业务幂等键创建一个新 Outbox。飞书 thread 需要同时提供 root/target `message_id` 和
 `thread_id`；Slack 使用 `thread_id`（即 `thread_ts`）；Parall 使用 `thread_id`（即 thread root message ID）。
 
-Restart Loom 会同时重启已启用的 managed Feishu、Slack 和 Parall gateway，使 Hub、WebUI 与 Connector
-使用同一次构建。未由 Loom 托管的外部进程不会被自动接管。
+Restart Loom 会同时重启使用 `managed:` reference 的已启用 Feishu、Slack 和 Parall gateway，使
+Hub、WebUI 与 Connector 使用同一次构建。仍使用 legacy Keychain reference 的 gateway 必须先通过下述
+preflight/migration；普通 restart 不会自动替换它。未由 Loom 托管的外部进程不会被自动接管。
+
+## 受管凭据迁移与回滚
+
+现有 Keychain-backed Connection 按 Connection 单独迁移。无 ID preflight 只枚举 enabled、non-archived
+的 Lark/Slack/Parall/GitHub Connection；`env:` 不会自动进入迁移：
+
+```sh
+loom integration credential preflight [CONNECTION_ID] [--json]
+loom integration credential migrate CONNECTION_ID --dry-run [--json]
+loom integration credential migrate CONNECTION_ID --confirm CONNECTION_ID [--json]
+loom integration credential rollback RECEIPT_ID --dry-run [--json]
+loom integration credential rollback RECEIPT_ID --confirm RECEIPT_ID [--json]
+```
+
+实际 migrate/rollback 必须使用精确确认值，dry-run 不需要。每个 Connection 只有一个 durable migration
+receipt；重跑恢复同一 receipt。迁移先写入并回读 owner-only entry，再验证 provider；有 gateway 的 provider
+还必须用目标 ref 启动同一候选 build 并取得新 heartbeat，最后才原子切换 Connection 的 canonical ref。
+Connection、Address、Membership、Inbox、Outbox ID 与历史均不改变。自动回滚不能完整恢复时终态为
+`manual_recovery_required`，不得描述为已恢复；迁移不会删除原 Keychain item。
+
+生产 cutover 必须把 accepted build 放在新的 versioned 路径，并先只切 Hub；不要在 capture rollback
+anchor 前原地覆盖旧 gateway wrapper 或 adapter。legacy Keychain gateway 会继续运行旧 inode，随后每个
+Connection 的 migrate 才复制旧 unit/executable/script 作为 anchor、启动 accepted build gateway 并切 ref。
+若旧路径已被覆盖，就没有证据证明 rollback anchor 对应故障前 gateway build，应停止迁移并重新建立锚点。
+
+普通 backup/support bundle 明确排除 `credentials/**`（包含 secret entry 与 gateway rollback anchor），
+只保留非 secret migration receipt。因此普通备份不是完整可运行恢复；secret backup/restore 与 Keychain
+清理由独立流程和授权管理。
 
 ## 飞书 / Lark
 
 推荐从 WebUI 侧边栏的集成管理入口 **External → Add integration** 开始。飞书使用 CodexLoom 内置的原生 Go
 gateway 和飞书官方 SDK，不依赖 `lark-cli`。首次连接需要从飞书开发者后台复制 App ID 和 App
-Secret；CodexLoom 验证身份后将 Secret 写入操作系统 Keychain，并自动识别 Bot 身份及已加入的群。
+Secret；CodexLoom 验证身份后将 Secret 写入 Owner-only managed store，并自动识别 Bot 身份及已加入的群。
 
 用户只需要：
 
@@ -105,14 +136,15 @@ loom integration send --from <agent> --reply-to <inbox-item-id> \
 10 MB，其他文件遵循 Loom 的 25 MB 上限。
 
 向导保存后，CodexLoom 会在 macOS 使用 launchd、在 Linux 使用 user systemd 托管
-`loom-feishu-gateway`。gateway 不在启动参数或配置文件中携带 App Secret，而是按 App ID 从
-Keychain 读取。需要手动诊断时可以运行：
+`loom-feishu-gateway`。unit 和启动参数只携带 opaque credential ref；wrapper 从 managed store 读取
+App Secret。需要手动诊断时可以从 Connection 复制完整 ref（不要解析 ID）并运行：
 
 ```sh
 ./bin/loom-feishu-gateway \
   --connection <connection-id> \
   --address <address-id> \
-  --app-id cli_your_app_id
+  --app-id cli_your_app_id \
+  --credential-ref managed:<hub-issued-id>
 ```
 
 gateway 通过飞书长连接监听 `im.message.receive_v1`，因此不需要公网域名或 webhook。DM 按 Address 的私聊策略进入；
@@ -137,14 +169,14 @@ gateway/slack-app-manifest.yaml
 
 然后在 Slack 完成：
 
-1. 安装或重新安装 App 到目标 Workspace，取得 Bot User OAuth Token（`xoxb-...`）。
-2. 在 **Basic Information → App-Level Tokens** 创建具有 `connections:write` scope 的 token（`xapp-...`）。
+1. 安装或重新安装 App 到目标 Workspace，取得 Bot User OAuth Token。
+2. 在 **Basic Information → App-Level Tokens** 创建具有 `connections:write` scope 的 token。
 3. 确认 **Socket Mode** 已启用。
 4. 在 Slack 里把 Bot 邀请进允许它工作的 channel；私有 channel 必须先邀请，Loom 才能发现它。
 
 回到 CodexLoom 向导：
 
-1. 输入 Bot token 和 App token。Loom 会先验证 Bot、Workspace、Socket Mode 和 scope，再把 token 写入操作系统 Keychain。
+1. 输入 Bot token 和 App token。Loom 会先验证 Bot、Workspace、Socket Mode 和 scope，再把 token 写入 Owner-only managed store。
 2. 选择代表这个 Slack 身份的长期 Agent。
 3. 选择一个 Bot 已加入的 channel，或者先建立仅私聊连接。
 4. 描述 channel 的用途、Agent 在其中的职责和行为边界。
@@ -165,7 +197,7 @@ Slack 附件使用官方 `files.getUploadURLExternal` + `files.completeUploadExt
 
 ### 运行与排障
 
-向导保存后，CodexLoom 会在 macOS 使用 launchd、在 Linux 使用 user systemd 托管 `loom-slack-gateway`。gateway 的配置文件和进程参数不包含 token；wrapper 按 Slack App ID 从 Keychain 读取凭据，再启动 `gateway/slack.mjs`。Connection 的 heartbeat、last event 和 last error 可在 Integrations 页面检查。
+向导保存后，CodexLoom 会在 macOS 使用 launchd、在 Linux 使用 user systemd 托管 `loom-slack-gateway`。unit 和进程参数只包含 opaque credential ref；wrapper 从 managed store 读取 token，再通过匿名 inherited FD 交给 `gateway/slack.mjs`，不使用 argv、普通环境变量、stdout 或 stderr。Connection 的 heartbeat、last event 和 last error 可在 Integrations 页面检查。
 
 需要手动诊断时可以运行：
 
@@ -175,7 +207,8 @@ Slack 附件使用官方 `files.getUploadURLExternal` + `files.completeUploadExt
   --address <address-id> \
   --app-id A_YOUR_APP_ID \
   --team-id T_WORKSPACE \
-  --bot-user-id U_BOT_USER
+  --bot-user-id U_BOT_USER \
+  --credential-ref managed:<hub-issued-id>
 ```
 
 已有直接运行 `gateway/slack.mjs` 的 launchd 部署可以在迁移期间继续工作。第一次通过新向导保存设置时，Loom 会先创建托管 gateway；启动成功后才停止同一 Connection 的旧 gateway，避免消息中断或重复消费。
@@ -211,7 +244,7 @@ Parall 是一等 Connector。外部身份运行和 Organization 管理是两项�
 2. Gateway 启动后每十秒检查一次已加入的 group。新群先进入 Loom 的 Conversation Candidate 目录，在 Integrations 中显示为“已加入 · 尚未配置”，不会自动触发 Agent。
 3. 用户为候选群填写 purpose、role 和 guidance 后创建 Conversation Membership。默认保存为 paused；显式启用后该群才可以投递 dispatch。Direct message 不在这里预绑定，首次收到联系人消息后在 Direct messages 中按人审批和设置边界。
 4. Owner key 是可选的管理能力，只在 Loom 需要创建或改名外部 Agent、创建 Agent key，或者主动把尚未入群的身份加入 Conversation 时使用。Owner 凭据不再决定一个现有外部身份是否“已连接”。
-5. Loom 在 macOS 使用 launchd、在 Linux 使用 user systemd 托管 `loom-parall-gateway`。wrapper 根据 Organization ID 和稳定的外部 Agent ID 从 Keychain 读取凭据，再启动 `gateway/parall.mjs`。
+5. Loom 在 macOS 使用 launchd、在 Linux 使用 user systemd 托管 `loom-parall-gateway`。unit 只保存 opaque credential ref；wrapper 从 managed store 读取凭据，再通过匿名 inherited FD 启动 `gateway/parall.mjs`。
 
 两种密钥都不会写入 `integrations.json`、launchd plist、systemd unit 或进程参数。Address 使用稳定身份 `prll://<user-id>`，所以 Parall 显示名变化只会更新 UI 名称，不会破坏 Connection、Address、Candidate 或 Membership。外部身份离开群后，Candidate 会标为 unavailable，但历史 Membership 不会被自动删除。
 
@@ -225,9 +258,14 @@ Parall 是一等 Connector。外部身份运行和 Organization 管理是两项�
   --agent-key-file /absolute/path/to/parall-agent.key
 ```
 
-这是导入已有身份的正式入口。Loom 会在写入 Keychain 前验证稳定身份和 WebSocket，幂等创建或复用 Connection/Address，并安装 managed Gateway。导入失败会恢复原 credential，并清理本次新建的配置；成功接管同一 Connection 后会卸载并删除旧 launchd gateway plist，避免下次登录时重复启动。CLI 只允许通过本机 loopback HTTP 或 HTTPS 传输 credential。命令不会删除源 key 文件；确认 `loom integration status <connection-id>` 为 `connected` 后再安全移除。群 Conversation 仍通过 Candidate 与 Membership 单独配置。
+这是导入已有身份的正式入口。Loom 会在写入 Owner-only managed store 前验证稳定身份和 WebSocket，幂等创建或复用 Connection/Address，并安装 managed Gateway。导入失败会恢复原 credential，并清理本次新建的配置；成功接管同一 Connection 后会卸载并删除旧 launchd gateway plist，避免下次登录时重复启动。CLI 只允许通过本机 loopback HTTP 或 HTTPS 传输 credential。命令不会删除源 key 文件；确认 `loom integration status <connection-id>` 为 `connected` 后再安全移除。群 Conversation 仍通过 Candidate 与 Membership 单独配置。
 
-Keychain 已有该外部 Agent 凭据时，可用同一命令省略 `--agent-key-file` 做修复或迁移。导入器按 Parall 外部稳定身份和 Loom Agent 收敛记录：单一 legacy `org-agent:<external-id>` Connection 原地迁移，保留稳定 Connection/Address ID；若此前已经生成重复记录，则保留 managed 记录作为 canonical，复制更完整的 Membership 策略后归档旧 Connection、Address 和 Membership。归档对象保留 `supersededBy` 和历史 ID，只用于 Inbox/Outbox 审计，不能重新启用或接收 gateway heartbeat。WebUI 将它们与当前 Integration 分开显示。
+managed store 已有该外部 Agent 凭据时，可用同一命令省略 `--agent-key-file` 做修复；legacy Keychain
+credential 在显式迁移前仍可兼容复用。导入器按 Parall 外部稳定身份和 Loom Agent 收敛记录：单一 legacy
+`org-agent:<external-id>` Connection 原地迁移，保留稳定 Connection/Address ID；若此前已经生成重复记录，
+则保留 managed 记录作为 canonical，复制更完整的 Membership 策略后归档旧 Connection、Address 和
+Membership。归档对象保留 `supersededBy` 和历史 ID，只用于 Inbox/Outbox 审计，不能重新启用或接收
+gateway heartbeat。WebUI 将它们与当前 Integration 分开显示。
 
 Parall 的显式 dispatch、reading 和 ack 语义由 provider adapter 映射，不套用 Slack 或飞书的 reaction 规则。Gateway 会在 Hub 开始处理 dispatch 时报告 reading，在对应 Inbox 工作完成后 ack，并通过 Outbox command stream 回传最终回复。
 

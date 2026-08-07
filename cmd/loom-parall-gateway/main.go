@@ -1,16 +1,20 @@
-// loom-parall-gateway keeps Parall Agent credentials in the operating system
-// credential store while running the JavaScript WebSocket adapter.
+// loom-parall-gateway resolves a managed or legacy Parall reference and passes
+// credentials to the JavaScript WebSocket adapter through an anonymous FD.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/yan5xu/codex-loom/internal/credentialpipe"
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/parall"
 )
 
@@ -20,14 +24,26 @@ func main() {
 	addressID := flag.String("address", envFirst("CODEX_LOOM_ADDRESS_ID", "CHUB_ADDRESS_ID"), "Agent address ID")
 	orgID := flag.String("org-id", os.Getenv("PRLL_ORG_ID"), "Parall organization ID")
 	agentID := flag.String("agent-id", os.Getenv("PRLL_AGENT_ID"), "Parall external Agent ID")
+	credentialRef := flag.String("credential-ref", os.Getenv("CODEX_LOOM_CREDENTIAL_REF"), "opaque credential reference")
 	node := flag.String("node", "", "Node.js executable")
 	script := flag.String("script", "", "Parall gateway script")
 	stateFile := flag.String("state-file", "", "gateway state file")
 	flag.Parse()
 
-	credentials, err := parall.LoadAgentCredentials(*orgID, *agentID)
+	if strings.TrimSpace(*credentialRef) == "" {
+		*credentialRef = "keychain:" + parall.AgentCredentialService(*orgID, *agentID)
+	}
+	var store *credentialstore.Store
+	var err error
+	if strings.HasPrefix(strings.TrimSpace(*credentialRef), credentialstore.ManagedReferencePrefix) {
+		store, err = credentialstore.Open(dataDir())
+		if err != nil {
+			fatalf("open managed Parall credential store: %v", err)
+		}
+	}
+	credentials, err := parall.LoadAgentCredentialsReference(store, *credentialRef, *orgID, *agentID)
 	if err != nil {
-		fatalf("read Parall Agent credentials from keychain: %v", err)
+		fatalf("read Parall Agent credential: %v", err)
 	}
 	if credentials.APIURL == "" || credentials.APIKey == "" {
 		fatalf("Parall Agent credentials are missing for %s", *agentID)
@@ -45,21 +61,32 @@ func main() {
 		}
 	}
 	arguments := []string{
-		*node, *script, "--hub", *hubURL, "--connection", *connectionID,
+		*script, "--hub", *hubURL, "--connection", *connectionID,
 		"--address", *addressID, "--agent-id", *agentID,
 	}
 	if *stateFile != "" {
 		arguments = append(arguments, "--state-file", *stateFile)
 	}
-	environment := append(os.Environ(),
-		"PRLL_API_URL="+credentials.APIURL,
-		"PRLL_API_KEY="+credentials.APIKey,
-		"PRLL_ORG_ID="+strings.TrimSpace(*orgID),
-		"PRLL_AGENT_ID="+strings.TrimSpace(*agentID),
-	)
-	if err := syscall.Exec(*node, arguments, environment); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := credentialpipe.Run(ctx, *node, arguments, map[string]string{
+		"apiURL": credentials.APIURL, "apiKey": credentials.APIKey,
+		"orgID": strings.TrimSpace(*orgID), "agentID": strings.TrimSpace(*agentID),
+	}, "PRLL_API_URL", "PRLL_API_KEY", "PRLL_ORG_ID", "PRLL_AGENT_ID"); err != nil {
 		fatalf("start Parall gateway: %v", err)
 	}
+}
+
+func dataDir() string {
+	if value := envFirst("CODEX_LOOM_DATA", "CODEX_HUB_DATA"); value != "" {
+		return value
+	}
+	home, _ := os.UserHomeDir()
+	current := filepath.Join(home, ".codex-loom")
+	if _, err := os.Stat(current); err == nil {
+		return current
+	}
+	return filepath.Join(home, ".codex-hub")
 }
 
 func findScript() (string, error) {

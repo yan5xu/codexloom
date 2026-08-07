@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -10,6 +11,7 @@ test('gateway sends a Loom outbox command through Slack and reports the durable 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'loom-slack-test-'));
   const stateFile = path.join(tempDir, 'state.json');
   const attachmentFile = path.join(tempDir, 'report.txt');
+  const botCredential = crypto.randomBytes(48).toString('base64url');
   await fs.promises.writeFile(attachmentFile, 'attachment payload');
   let slackRequest;
   let uploadRequest;
@@ -88,15 +90,16 @@ test('gateway sends a Loom outbox command through Slack and reports the durable 
     '--connection', 'conn_test',
     '--address', 'addr_test',
     '--state-file', stateFile,
+    '--credential-fd', '3',
   ], {
     cwd: path.resolve('.'),
     env: {
       ...process.env,
       SLACK_API_URL: `http://127.0.0.1:${port}/slack`,
-      SLACK_BOT_TOKEN: 'xoxb-test',
     },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'ignore', 'pipe', 'pipe'],
   });
+  child.stdio[3].end(JSON.stringify({ botToken: botCredential }));
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -107,7 +110,7 @@ test('gateway sends a Loom outbox command through Slack and reports the durable 
     await Promise.race([
       reported,
       new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(`gateway timed out:\n${stderr}`)), 5000);
+        timeout = setTimeout(() => reject(new Error('gateway timed out')), 5000);
       }),
     ]);
   } finally {
@@ -115,6 +118,7 @@ test('gateway sends a Loom outbox command through Slack and reports the durable 
   }
   child.kill('SIGTERM');
   await new Promise((resolve) => child.once('close', resolve));
+  assert.equal(stderr.includes(botCredential), false, 'gateway stderr exposed its credential');
 
   assert.deepEqual(slackRequest, {
     channel: 'C_DEV',

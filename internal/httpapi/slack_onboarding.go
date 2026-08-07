@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	loomslack "github.com/yan5xu/codex-loom/internal/slack"
 )
@@ -51,7 +52,6 @@ type slackSetupParams struct {
 
 var (
 	loadSlackTokens     = loomslack.LoadTokens
-	saveSlackTokens     = loomslack.SaveTokens
 	discoverSlackClient = loomslack.Discover
 )
 
@@ -59,10 +59,12 @@ func (s *Server) discoverSlack(ctx context.Context, connectionID, requestedAppID
 	result := slackDiscovery{Available: true, Runtime: "managed-socket-mode", Channels: []slackChannel{}}
 	appID := strings.TrimSpace(requestedAppID)
 	teamID := ""
+	credentialRef := ""
 	if connectionID != "" {
 		for _, connection := range s.hub.ListConnections() {
 			if connection.ID == connectionID && connection.Provider == "slack" {
 				teamID = connection.AccountRef
+				credentialRef = connection.CredentialRef
 				if appID == "" {
 					appID = slackAppIDFromCredentialRef(connection.CredentialRef)
 				}
@@ -75,15 +77,49 @@ func (s *Server) discoverSlack(ctx context.Context, connectionID, requestedAppID
 			if connection.Provider == "slack" {
 				appID = slackAppIDFromCredentialRef(connection.CredentialRef)
 				teamID = connection.AccountRef
+				credentialRef = connection.CredentialRef
 				break
 			}
 		}
 	}
-	result.AppID, result.TeamID = appID, teamID
-	if appID == "" {
+	result.TeamID = teamID
+	if appID == "" && credentialRef == "" {
 		return result
 	}
-	tokens, err := loadSlackTokens(appID, teamID)
+	var tokens loomslack.Tokens
+	var credentials *credentialstore.Store
+	var err error
+	if strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+		var storeErr error
+		credentials, storeErr = s.hub.CredentialStore()
+		if storeErr != nil {
+			result.Error = "Read Slack credentials: " + storeErr.Error()
+			return result
+		}
+		appID, tokens, err = loomslack.LoadTokensAndAppReference(credentials, credentialRef, appID, teamID)
+	} else {
+		if credentialRef == "" {
+			var storeErr error
+			credentials, storeErr = s.hub.CredentialStore()
+			if storeErr != nil {
+				result.Error = "Read Slack credentials: " + storeErr.Error()
+				return result
+			}
+			credentialRef, err = loomslack.ManagedTokensReference(credentials, appID)
+			if errors.Is(err, credentialstore.ErrNotFound) {
+				credentialRef = "keychain:" + loomslack.CredentialService(appID)
+				err = nil
+			}
+		}
+		if err == nil {
+			if strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+				appID, tokens, err = loomslack.LoadTokensAndAppReference(credentials, credentialRef, appID, teamID)
+			} else {
+				tokens, err = loadSlackTokens(appID, teamID)
+			}
+		}
+	}
+	result.AppID = appID
 	if err != nil {
 		result.Error = "Read Slack credentials: " + err.Error()
 		return result
@@ -111,7 +147,11 @@ func (s *Server) saveSlackCredentials(ctx context.Context, p slackCredentialPara
 	if discovery.Identity.AppID == "" {
 		return slackDiscovery{}, &hub.HubError{Status: 400, Message: "Slack verification did not return an App ID"}
 	}
-	if err := saveSlackTokens(discovery.Identity.AppID, botToken, appToken); err != nil {
+	credentials, storeErr := s.hub.CredentialStore()
+	if storeErr != nil {
+		return slackDiscovery{}, &hub.HubError{Status: 500, Message: "Open managed credential store: " + storeErr.Error()}
+	}
+	if _, err := loomslack.SaveManagedTokens(credentials, discovery.Identity.AppID, botToken, appToken); err != nil {
 		return slackDiscovery{}, &hub.HubError{Status: 500, Message: "Save Slack credentials: " + err.Error()}
 	}
 	return slackDiscoveryResult(discovery, err, true), nil
@@ -134,7 +174,28 @@ func (s *Server) setupSlack(ctx context.Context, p slackSetupParams, hubURL stri
 	}
 	appID := strings.TrimSpace(p.AppID)
 	teamID := strings.TrimSpace(p.TeamID)
-	tokens, err := loadSlackTokens(appID, teamID)
+	credentials, storeErr := s.hub.CredentialStore()
+	if storeErr != nil {
+		return nil, &hub.HubError{Status: 500, Message: "Open managed credential store: " + storeErr.Error()}
+	}
+	credentialRef, referenceErr := loomslack.ManagedTokensReference(credentials, appID)
+	var connection hub.PlatformConnection
+	if referenceErr != nil {
+		for _, candidate := range s.hub.ListConnections() {
+			if candidate.Provider == "slack" && candidate.ArchivedAt == "" && (candidate.AccountRef == teamID || slackAppIDFromCredentialRef(candidate.CredentialRef) == appID) {
+				connection = candidate
+				credentialRef = candidate.CredentialRef
+				break
+			}
+		}
+	}
+	var tokens loomslack.Tokens
+	var err error
+	if strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+		appID, tokens, err = loomslack.LoadTokensAndAppReference(credentials, credentialRef, appID, teamID)
+	} else {
+		tokens, err = loadSlackTokens(appID, teamID)
+	}
 	if err != nil || tokens.Bot == "" || tokens.App == "" {
 		return nil, &hub.HubError{Status: 409, Message: "Slack credentials are not configured"}
 	}
@@ -148,10 +209,8 @@ func (s *Server) setupSlack(ctx context.Context, p slackSetupParams, hubURL stri
 	}
 	appID, teamID = discovered.Identity.AppID, discovered.Identity.TeamID
 
-	credentialRef := "keychain:" + loomslack.CredentialService(appID)
-	var connection hub.PlatformConnection
 	for _, candidate := range s.hub.ListConnections() {
-		if candidate.Provider == "slack" && (candidate.CredentialRef == credentialRef || candidate.AccountRef == teamID) {
+		if candidate.Provider == "slack" && candidate.ArchivedAt == "" && (candidate.CredentialRef == credentialRef || candidate.AccountRef == teamID) {
 			connection = candidate
 			break
 		}

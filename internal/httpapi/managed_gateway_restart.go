@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -9,9 +10,18 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
+	"github.com/yan5xu/codex-loom/internal/feishu"
+	"github.com/yan5xu/codex-loom/internal/hub"
+	"github.com/yan5xu/codex-loom/internal/parall"
+	loomslack "github.com/yan5xu/codex-loom/internal/slack"
 )
 
 var restartManagedConnectorService = restartManagedGatewayService
+var preflightManagedConnectorCredential = func(s *Server, connection hub.PlatformConnection) error {
+	return s.preflightManagedGatewayCredential(connection)
+}
 var runManagedServiceCommand = func(name string, arguments ...string) ([]byte, error) {
 	return exec.Command(name, arguments...).CombinedOutput()
 }
@@ -34,6 +44,14 @@ func (s *Server) RestartManagedGateways() {
 		if provider == "" {
 			continue
 		}
+		if !strings.HasPrefix(strings.TrimSpace(connection.CredentialRef), credentialstore.ManagedReferencePrefix) {
+			log.Printf("[codex-loom] keep %s gateway %s on its current executable: credential is not migrated", provider, connection.ID)
+			continue
+		}
+		if err := preflightManagedConnectorCredential(s, connection); err != nil {
+			log.Printf("[codex-loom] keep %s gateway %s on its current executable: managed credential preflight failed: %v", provider, connection.ID, err)
+			continue
+		}
 		restarted, err := restartManagedConnectorService(provider, connection.ID)
 		if err != nil {
 			log.Printf("[codex-loom] restart %s gateway %s: %v", provider, connection.ID, err)
@@ -43,6 +61,42 @@ func (s *Server) RestartManagedGateways() {
 			log.Printf("[codex-loom] restarted managed %s gateway %s", provider, connection.ID)
 		}
 	}
+}
+
+func (s *Server) preflightManagedGatewayCredential(connection hub.PlatformConnection) error {
+	credentials, err := s.hub.CredentialStore()
+	if err != nil {
+		return err
+	}
+	switch managedGatewayProvider(connection.Provider) {
+	case "feishu":
+		secret, err := feishu.LoadAppSecretReference(credentials, connection.CredentialRef, connection.AccountRef)
+		if err != nil || secret == "" {
+			return errors.Join(err, errors.New("Feishu credential is unavailable"))
+		}
+	case "slack":
+		_, tokens, err := loomslack.LoadTokensAndAppReference(credentials, connection.CredentialRef, "", connection.AccountRef)
+		if err != nil || tokens.Bot == "" || tokens.App == "" {
+			return errors.Join(err, errors.New("Slack credential is unavailable"))
+		}
+	case "parall":
+		addresses, err := s.hub.ListAddresses("")
+		if err != nil {
+			return err
+		}
+		agentID := ""
+		for _, address := range addresses {
+			if address.ConnectionID == connection.ID && address.ArchivedAt == "" && address.DeletedAt == "" {
+				agentID = strings.TrimPrefix(strings.TrimSpace(address.ExternalIdentity), "prll://")
+				break
+			}
+		}
+		loaded, err := parall.LoadAgentCredentialsReference(credentials, connection.CredentialRef, connection.AccountRef, agentID)
+		if err != nil || loaded.APIURL == "" || loaded.APIKey == "" {
+			return errors.Join(err, errors.New("Parall credential is unavailable"))
+		}
+	}
+	return nil
 }
 
 func managedGatewayProvider(provider string) string {

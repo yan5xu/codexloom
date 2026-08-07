@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 )
 
 type PlatformConnection struct {
@@ -655,8 +657,12 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 		return PlatformConnection{}, errf(400, "provider is required")
 	}
 	credentialRef := strings.TrimSpace(p.CredentialRef)
-	if credentialRef != "" && !strings.HasPrefix(credentialRef, "env:") && !strings.HasPrefix(credentialRef, "keychain:") {
-		return PlatformConnection{}, errf(400, "credentialRef must use env: or keychain:")
+	credentialMetadata, err := h.validateCredentialReference(credentialRef)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
+	if credentialMetadata != nil && !credentialProviderMatches(provider, credentialMetadata.Provider) {
+		return PlatformConnection{}, errf(400, "managed credential provider does not match connection provider")
 	}
 	enabled := true
 	if p.Enabled != nil {
@@ -1042,6 +1048,11 @@ func maxInt(left, right int) int {
 }
 
 func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnection, error) {
+	credentialRef := strings.TrimSpace(p.CredentialRef)
+	credentialMetadata, err := h.validateCredentialReference(credentialRef)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[strings.TrimSpace(id)]
@@ -1063,11 +1074,10 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 		next.ScopeRef = strings.TrimSpace(p.ScopeRef)
 	}
 	if p.CredentialRef != "" {
-		value := strings.TrimSpace(p.CredentialRef)
-		if !strings.HasPrefix(value, "env:") && !strings.HasPrefix(value, "keychain:") {
-			return PlatformConnection{}, errf(400, "credentialRef must use env: or keychain:")
+		if credentialMetadata != nil && !credentialProviderMatches(next.Provider, credentialMetadata.Provider) {
+			return PlatformConnection{}, errf(400, "managed credential provider does not match connection provider")
 		}
-		next.CredentialRef = value
+		next.CredentialRef = credentialRef
 	}
 	if p.Capabilities != nil {
 		next.Capabilities = normalizeCapabilities(p.Capabilities)
@@ -1086,6 +1096,85 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
 	return next, nil
+}
+
+// CompareAndSwapConnectionCredential changes only the canonical credential
+// reference. It is used by the per-Connection migration transaction so a
+// concurrent operator update cannot be overwritten.
+func (h *Hub) CompareAndSwapConnectionCredential(id, expectedReference, targetReference string) (PlatformConnection, error) {
+	targetReference = strings.TrimSpace(targetReference)
+	metadata, err := h.validateCredentialReference(targetReference)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(id)]
+	if connection == nil {
+		return PlatformConnection{}, errf(404, "connection not found: %s", id)
+	}
+	if connection.ArchivedAt != "" {
+		return PlatformConnection{}, errf(409, "archived connection is superseded by %s", connection.SupersededBy)
+	}
+	if connection.CredentialRef != strings.TrimSpace(expectedReference) {
+		return PlatformConnection{}, errf(409, "connection credential reference changed; migration stopped")
+	}
+	if metadata != nil && !credentialProviderMatches(connection.Provider, metadata.Provider) {
+		return PlatformConnection{}, errf(400, "managed credential provider does not match connection provider")
+	}
+	previous := *connection
+	next := previous
+	next.CredentialRef = targetReference
+	next.UpdatedAt = now()
+	h.connections[next.ID] = &next
+	if err := h.persistIntegrationsLocked(); err != nil {
+		h.connections[next.ID] = connection
+		return PlatformConnection{}, errf(500, "save integration: %s", err)
+	}
+	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
+	return next, nil
+}
+
+func (h *Hub) validateCredentialReference(value string) (*credentialstore.Metadata, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(value, "env:") || strings.HasPrefix(value, "keychain:") {
+		parts := strings.SplitN(value, ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+			return nil, errf(400, "credentialRef suffix is required")
+		}
+		return nil, nil
+	}
+	if !strings.HasPrefix(value, credentialstore.ManagedReferencePrefix) {
+		return nil, errf(400, "credentialRef must use env:, keychain:, or managed:")
+	}
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		return nil, errf(409, "managed credential store is unavailable: %s", err)
+	}
+	id, err := credentialstore.ParseReference(value)
+	if err != nil {
+		return nil, errf(400, "%s", err)
+	}
+	metadata, err := credentials.Inspect(id)
+	if err != nil {
+		return nil, errf(409, "%s", err)
+	}
+	return &metadata, nil
+}
+
+func credentialProviderMatches(connectionProvider, credentialProvider string) bool {
+	connectionProvider = strings.ToLower(strings.TrimSpace(connectionProvider))
+	credentialProvider = strings.ToLower(strings.TrimSpace(credentialProvider))
+	if connectionProvider == "feishu" {
+		connectionProvider = "lark"
+	}
+	if credentialProvider == "feishu" {
+		credentialProvider = "lark"
+	}
+	return connectionProvider == credentialProvider
 }
 
 func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (PlatformConnection, error) {

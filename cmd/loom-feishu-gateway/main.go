@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/feishugw"
 )
@@ -21,15 +22,26 @@ func main() {
 	connectionID := flag.String("connection", envFirst("CODEX_LOOM_CONNECTION_ID", "CHUB_CONNECTION_ID"), "integration connection ID")
 	addressID := flag.String("address", envFirst("CODEX_LOOM_ADDRESS_ID", "CHUB_ADDRESS_ID"), "Agent address ID")
 	appID := flag.String("app-id", os.Getenv("FEISHU_APP_ID"), "Feishu App ID")
+	credentialRef := flag.String("credential-ref", os.Getenv("CODEX_LOOM_CREDENTIAL_REF"), "opaque credential reference")
 	stateFile := flag.String("state-file", "", "gateway state file")
 	flag.Parse()
 
 	secret := strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET"))
 	if secret == "" && strings.TrimSpace(*appID) != "" {
+		if strings.TrimSpace(*credentialRef) == "" {
+			*credentialRef = "keychain:" + feishu.CredentialService(*appID)
+		}
+		var credentials *credentialstore.Store
 		var err error
-		secret, err = feishu.LoadAppSecret(*appID)
+		if strings.HasPrefix(strings.TrimSpace(*credentialRef), credentialstore.ManagedReferencePrefix) {
+			credentials, err = credentialstore.Open(dataDir())
+			if err != nil {
+				log.Fatalf("open managed Feishu credential store: %v", err)
+			}
+		}
+		secret, err = feishu.LoadAppSecretReference(credentials, *credentialRef, *appID)
 		if err != nil {
-			log.Fatalf("read Feishu App Secret from keychain: %v", err)
+			log.Fatalf("read Feishu credential: %v", err)
 		}
 	}
 	if *stateFile == "" && *connectionID != "" {

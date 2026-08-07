@@ -30,6 +30,51 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/integrations/connections", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"connections": s.hub.ListConnections()})
 	})
+	mux.HandleFunc("GET /api/integrations/credentials/preflight", func(w http.ResponseWriter, r *http.Request) {
+		items, err := s.preflightCredentialMigrations(r.Context(), r.URL.Query().Get("connectionId"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"preflight": items, "credentialsIncluded": false,
+			"runnableRestore": false, "backupStatus": "credentials_excluded",
+		})
+	})
+	mux.HandleFunc("POST /api/integrations/connections/{id}/credential-migration", func(w http.ResponseWriter, r *http.Request) {
+		var body credentialMigrationRequest
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		result, err := s.migrateCredential(r.Context(), r.PathValue("id"), body, nativeHubURL(r.Host))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	})
+	mux.HandleFunc("GET /api/integrations/credential-migrations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		receipt, err := s.hub.GetCredentialMigration(r.PathValue("id"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, credentialMigrationReceiptView(receipt))
+	})
+	mux.HandleFunc("POST /api/integrations/credential-migrations/{id}/rollback", func(w http.ResponseWriter, r *http.Request) {
+		var body credentialMigrationRequest
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		result, err := s.rollbackCredentialMigration(r.Context(), r.PathValue("id"), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	})
 	mux.HandleFunc("POST /api/integrations/providers/github/token", func(w http.ResponseWriter, r *http.Request) {
 		var body githubTokenParams
 		if err := readJSON(r, &body); err != nil {

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { inboxDispatchAction, parallConversationCandidates, parallConversationType, parallDeliveryReceipts, parallOutboxRequest, parallProviderReadRequest, parallThreadContext } from './parall-protocol.mjs';
 
 const args = parseArgs(process.argv.slice(2));
+const credential = readCredentialPayload(args);
 const config = {
   hub: trimSlash(
     args.service || args.hub || process.env.CODEX_LOOM_URL || process.env.CHUB_URL || 'http://127.0.0.1:4870',
@@ -20,16 +21,21 @@ const config = {
     'address id',
   ),
   connectorToken: process.env.CODEX_LOOM_CONNECTOR_TOKEN || process.env.CODEX_HUB_CONNECTOR_TOKEN || '',
-  apiUrl: trimSlash(required(process.env.PRLL_API_URL, 'PRLL_API_URL')),
-  wsUrl: process.env.PRLL_WS_URL || parallWebSocketURL(process.env.PRLL_API_URL),
-  apiKey: required(process.env.PRLL_API_KEY, 'PRLL_API_KEY'),
-  orgId: required(process.env.PRLL_ORG_ID, 'PRLL_ORG_ID'),
+  apiUrl: trimSlash(required(credential.apiURL || process.env.PRLL_API_URL, 'Parall API URL')),
+  wsUrl: process.env.PRLL_WS_URL || parallWebSocketURL(credential.apiURL || process.env.PRLL_API_URL),
+  apiKey: required(credential.apiKey || process.env.PRLL_API_KEY, 'Parall API credential'),
+  orgId: required(credential.orgID || process.env.PRLL_ORG_ID, 'Parall organization ID'),
+  agentId: credential.agentID || args['agent-id'] || process.env.PRLL_AGENT_ID || '',
   stateFile:
     args['state-file'] || path.join(defaultDataDir(), 'gateway', `parall-${args.connection}.json`),
   pollOnly: args['poll-only'] === 'true',
   pollInbound: args['poll-inbound'] === 'true',
   includeReceived: args['include-received'] === 'true',
 };
+credential.apiURL = '';
+credential.apiKey = '';
+credential.orgID = '';
+credential.agentID = '';
 
 const controller = new AbortController();
 process.on('SIGINT', () => controller.abort());
@@ -41,7 +47,7 @@ state.dispatchMonitors ||= {};
 let stateWrite = Promise.resolve();
 const activeDispatchMonitors = new Set();
 const chatTypes = new Map();
-let ownAgentID = args['agent-id'] || process.env.PRLL_AGENT_ID || '';
+let ownAgentID = config.agentId;
 if (!ownAgentID) {
   try {
     const me = await parall(`/api/v1/orgs/${config.orgId}/agents/me`);
@@ -98,7 +104,7 @@ async function connectWebSocket() {
     controller.signal.addEventListener('abort', abort, { once: true });
     ws.onopen = () => console.error(`[parall] connected ${target.origin}`);
     ws.onerror = (event) => {
-      socketError = new Error(`WebSocket error${event?.message ? `: ${event.message}` : ''}`);
+      socketError = new Error('WebSocket error');
       try { ws.close(); } catch {}
     };
     ws.onclose = (event) => {
@@ -107,9 +113,9 @@ async function connectWebSocket() {
       if (settled) return;
       settled = true;
       if (socketError) {
-        reject(new Error(`${socketError.message}; close=${event.code} ${event.reason || ''}`.trim()));
+        reject(new Error(`${socketError.message}; close=${event.code}`));
       } else {
-        console.error(`[parall] disconnected close=${event.code} ${event.reason || ''}`.trim());
+        console.error(`[parall] disconnected close=${event.code}`);
         resolve();
       }
     };
@@ -495,7 +501,7 @@ async function parall(resource, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = data.error || data.message || response.statusText;
-    throw new Error(`Parall HTTP ${response.status}: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+    throw new Error(`Parall HTTP ${response.status}: ${redactCredentialText(typeof detail === 'string' ? detail : JSON.stringify(detail))}`);
   }
   return data;
 }
@@ -566,6 +572,20 @@ function persistState() {
   return stateWrite;
 }
 
+function readCredentialPayload(arguments_) {
+  const rawFD = arguments_['credential-fd'];
+  if (rawFD === undefined) return {};
+  const fd = Number(rawFD);
+  if (!Number.isInteger(fd) || fd < 3) throw new Error('invalid credential file descriptor');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid payload');
+    return parsed;
+  } catch {
+    throw new Error('read Parall credential pipe failed');
+  }
+}
+
 function parseArgs(values) {
   const result = {};
   for (let i = 0; i < values.length; i++) {
@@ -595,7 +615,13 @@ function parallWebSocketURL(apiURL) {
 }
 
 function errorText(error) {
-  return error instanceof Error ? error.message : String(error);
+  return redactCredentialText(error instanceof Error ? error.message : String(error));
+}
+
+function redactCredentialText(value) {
+  let result = String(value);
+  if (config.apiKey) result = result.split(config.apiKey).join('[credential]');
+  return result;
 }
 
 function delay(ms, signal) {

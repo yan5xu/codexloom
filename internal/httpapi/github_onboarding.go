@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	githubapi "github.com/yan5xu/codex-loom/internal/github"
 	"github.com/yan5xu/codex-loom/internal/hub"
 )
@@ -227,18 +228,21 @@ func (s *Server) connectGitHubToken(ctx context.Context, rawToken, rawResourceOw
 	if err != nil {
 		return hub.PlatformConnection{}, "", err
 	}
-	service := githubapi.ScopedCredentialService(user.Login, resourceOwner)
-	previousToken, previousErr := githubapi.LoadCredential("keychain:" + service)
-	credentialRef, err := githubapi.SaveScopedToken(user.Login, resourceOwner, token)
+	credentials, err := s.hub.CredentialStore()
+	if err != nil {
+		return hub.PlatformConnection{}, "", &hub.HubError{Status: 500, Message: "Open managed credential store: " + err.Error()}
+	}
+	previousConnection := findGitHubConnection(s.hub.ListConnections(), user.Login, resourceOwner)
+	previousRef := previousConnection.CredentialRef
+	previousToken, previousErr := githubapi.LoadCredentialFor(credentials, previousRef, user.Login, resourceOwner)
+	credentialRef, err := githubapi.SaveManagedScopedToken(credentials, user.Login, resourceOwner, token)
 	if err != nil {
 		return hub.PlatformConnection{}, "", &hub.HubError{Status: 500, Message: "Save GitHub credential: " + err.Error()}
 	}
 	connection, err := s.upsertGitHubConnection(user.Login, resourceOwner, credentialRef)
 	if err != nil {
-		if previousErr == nil && previousToken != "" {
-			_, _ = githubapi.SaveScopedToken(user.Login, resourceOwner, previousToken)
-		} else {
-			_ = githubapi.DeleteScopedToken(user.Login, resourceOwner)
+		if strings.HasPrefix(previousRef, credentialstore.ManagedReferencePrefix) && previousErr == nil && previousToken != "" {
+			_, _ = githubapi.SaveManagedScopedToken(credentials, user.Login, resourceOwner, previousToken)
 		}
 		return hub.PlatformConnection{}, "", err
 	}
@@ -247,10 +251,20 @@ func (s *Server) connectGitHubToken(ctx context.Context, rawToken, rawResourceOw
 
 func (s *Server) connectGitHubCredential(ctx context.Context, rawRef, rawResourceOwner string) (hub.PlatformConnection, string, error) {
 	credentialRef := strings.TrimSpace(rawRef)
-	if !strings.HasPrefix(credentialRef, "env:") && !strings.HasPrefix(credentialRef, "keychain:") {
-		return hub.PlatformConnection{}, "", &hub.HubError{Status: 400, Message: "GitHub credentialRef must use env: or keychain:"}
+	if !strings.HasPrefix(credentialRef, "env:") && !strings.HasPrefix(credentialRef, "keychain:") && !strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+		return hub.PlatformConnection{}, "", &hub.HubError{Status: 400, Message: "GitHub credentialRef must use env:, keychain:, or managed:"}
 	}
-	token, err := githubapi.LoadCredential(credentialRef)
+	var credentials *credentialstore.Store
+	var err error
+	var token string
+	if strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+		credentials, err = s.hub.CredentialStore()
+		if err == nil {
+			token, err = githubapi.LoadManagedCredential(credentials, credentialRef)
+		}
+	} else {
+		token, err = githubapi.LoadCredential(credentialRef)
+	}
 	if err != nil {
 		return hub.PlatformConnection{}, "", &hub.HubError{Status: 400, Message: "Load GitHub credential: " + err.Error()}
 	}
@@ -261,6 +275,11 @@ func (s *Server) connectGitHubCredential(ctx context.Context, rawRef, rawResourc
 	resourceOwner, err := normalizeGitHubResourceOwner(rawResourceOwner)
 	if err != nil {
 		return hub.PlatformConnection{}, "", err
+	}
+	if strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+		if err := credentials.ValidateBinding(credentialRef, githubapi.ManagedCredentialBinding(user.Login, resourceOwner)); err != nil {
+			return hub.PlatformConnection{}, "", &hub.HubError{Status: 400, Message: "Validate GitHub managed credential: " + err.Error()}
+		}
 	}
 	connection, err := s.upsertGitHubConnection(user.Login, resourceOwner, credentialRef)
 	if err != nil {
@@ -347,6 +366,25 @@ func (s *Server) upsertGitHubConnection(login, resourceOwner, credentialRef stri
 		return hub.PlatformConnection{}, err
 	}
 	return connection, nil
+}
+
+func findGitHubConnection(connections []hub.PlatformConnection, login, resourceOwner string) hub.PlatformConnection {
+	var legacy hub.PlatformConnection
+	for _, candidate := range connections {
+		if candidate.Provider != "github" || !strings.EqualFold(candidate.AccountRef, login) || candidate.ArchivedAt != "" {
+			continue
+		}
+		if strings.EqualFold(candidate.ScopeRef, resourceOwner) {
+			return candidate
+		}
+		if candidate.ScopeRef == "" && legacy.ID == "" {
+			legacy = candidate
+		}
+	}
+	if strings.EqualFold(resourceOwner, login) {
+		return legacy
+	}
+	return hub.PlatformConnection{}
 }
 
 func newGitHubDeviceID() string {

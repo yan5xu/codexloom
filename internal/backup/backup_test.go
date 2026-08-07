@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,10 +50,23 @@ func TestCreateUsesCodexLoomNameAndLayout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataDir, "collaboration-groups.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dataDir, "credential-migrations.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(dataDir, "events"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dataDir, "events", "agent-1.ndjson"), []byte("derived\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, "credentials"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secretBytes := make([]byte, 64)
+	if _, err := rand.Read(secretBytes); err != nil {
+		t.Fatal("random test value generation failed")
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "credentials", "managed.json"), secretBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := Create(Options{
@@ -65,6 +80,9 @@ func TestCreateUsesCodexLoomNameAndLayout(t *testing.T) {
 	}
 	if !isSnapshotName(snapshot.Name) || snapshot.Name[:11] != "codex-loom-" {
 		t.Fatalf("unexpected snapshot name %q", snapshot.Name)
+	}
+	if snapshot.CredentialsIncluded || snapshot.RunnableRestore || snapshot.BackupStatus != "credentials_excluded" {
+		t.Fatalf("ordinary snapshot credential status = included %v runnable %v status %q", snapshot.CredentialsIncluded, snapshot.RunnableRestore, snapshot.BackupStatus)
 	}
 
 	file, err := os.Open(snapshot.Path)
@@ -80,7 +98,10 @@ func TestCreateUsesCodexLoomNameAndLayout(t *testing.T) {
 	tr := tar.NewReader(gz)
 	found := false
 	foundCollaborationGroups := false
+	foundMigrationReceipts := false
 	foundDerivedEvent := false
+	foundCredential := false
+	manifestReportsExcludedCredentials := false
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -95,8 +116,21 @@ func TestCreateUsesCodexLoomNameAndLayout(t *testing.T) {
 		if header.Name == "codex-loom/collaboration-groups.json" {
 			foundCollaborationGroups = true
 		}
+		if header.Name == "codex-loom/credential-migrations.json" {
+			foundMigrationReceipts = true
+		}
 		if header.Name == "codex-loom/events/agent-1.ndjson" {
 			foundDerivedEvent = true
+		}
+		if strings.HasPrefix(header.Name, "codex-loom/credentials/") {
+			foundCredential = true
+		}
+		if header.Name == "manifest.json" {
+			manifestBytes, readErr := io.ReadAll(tr)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			manifestReportsExcludedCredentials = bytes.Contains(manifestBytes, []byte("credentials/**")) && bytes.Contains(manifestBytes, []byte("not a complete runnable restore"))
 		}
 	}
 	if !found {
@@ -105,8 +139,17 @@ func TestCreateUsesCodexLoomNameAndLayout(t *testing.T) {
 	if !foundCollaborationGroups {
 		t.Fatal("snapshot did not contain codex-loom/collaboration-groups.json")
 	}
+	if !foundMigrationReceipts {
+		t.Fatal("snapshot did not contain non-secret credential migration receipts")
+	}
 	if foundDerivedEvent {
 		t.Fatal("snapshot contained derived SSE replay events")
+	}
+	if foundCredential {
+		t.Fatal("ordinary snapshot contained managed credentials")
+	}
+	if !manifestReportsExcludedCredentials {
+		t.Fatal("snapshot manifest did not report that managed credentials were excluded")
 	}
 }
 

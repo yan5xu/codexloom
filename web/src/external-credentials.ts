@@ -90,21 +90,40 @@ export function canRepairParallGateway(connection: PlatformConnection, address?:
 }
 
 export function gatewayCommand(connection: PlatformConnection, address: AgentAddress, identity: { slackAppID?: string } = {}) {
-  const base = `node gateway/${connection.provider}.mjs --connection ${shellArg(connection.id)} --address ${shellArg(address.id)}`;
+  const credentialRef = connection.credentialRef?.trim() || "";
+  const source = credentialSourceKind(credentialRef);
+  if (
+    (source !== "keychain" && source !== "environment")
+    || !connection.id
+    || !connection.enabled
+    || connection.archivedAt
+    || !address.id
+    || !address.enabled
+    || address.archivedAt
+    || address.deletedAt
+    || address.connectionId !== connection.id
+  ) return "";
   if (connection.provider === "lark") {
-    return `bin/loom-feishu-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --app-id ${shellArg(connection.accountRef || externalIdentityID(address.externalIdentity))}`;
+    const appID = (connection.accountRef || "").trim();
+    if (!appID) return "";
+    if (source === "keychain" && credentialRef !== `keychain:com.codexloom.feishu.${appID}`) return "";
+    return `bin/loom-feishu-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --app-id ${shellArg(appID)} --credential-ref ${shellArg(credentialRef)}`;
   }
   if (connection.provider === "slack") {
     const app = identity.slackAppID?.trim() || "";
-    if (!app) return "";
-    const bot = externalIdentityID(address.externalIdentity);
-    const team = connection.accountRef || "";
-    return `bin/loom-slack-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --app-id ${shellArg(app)}${bot ? ` --bot-user-id ${shellArg(bot)}` : ""}${team ? ` --team-id ${shellArg(team)}` : ""}`;
+    const bot = externalIdentityID(address.externalIdentity).trim();
+    const team = (connection.accountRef || "").trim();
+    if (source !== "keychain" || !app || !bot || !team || credentialRef !== `keychain:com.codexloom.slack.${app}`) return "";
+    return `bin/loom-slack-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --app-id ${shellArg(app)} --bot-user-id ${shellArg(bot)} --team-id ${shellArg(team)} --credential-ref ${shellArg(credentialRef)}`;
   }
   if (connection.provider === "parall") {
-    return `bin/loom-parall-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --org-id ${shellArg(connection.accountRef || "")} --agent-id ${shellArg(externalIdentityID(address.externalIdentity))}`;
+    const org = (connection.accountRef || "").trim();
+    const agent = externalIdentityID(address.externalIdentity).trim();
+    if (!org || !agent) return "";
+    if (source === "keychain" && credentialRef !== `keychain:com.codexloom.parall.agent.${org}.${agent}`) return "";
+    return `bin/loom-parall-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --org-id ${shellArg(org)} --agent-id ${shellArg(agent)} --credential-ref ${shellArg(credentialRef)}`;
   }
-  return base;
+  return "";
 }
 
 export function externalIdentityID(value: string) {

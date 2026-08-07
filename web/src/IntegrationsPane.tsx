@@ -1787,9 +1787,16 @@ function ProviderIcon({ provider, className }: { provider: string; className?: s
 function GatewaySetup({ connection, addresses, slackAppID = "" }: { connection: PlatformConnection; addresses: AgentAddress[]; slackAppID?: string }) {
   const spec = providerSpec(connection.provider);
   const address = addresses[0];
+  const credentialSource = credentialSourceKind(connection.credentialRef);
   const command = address ? gatewayCommand(connection, address, { slackAppID }) : "";
-  const missingStructuredIdentity = Boolean(address && connection.provider === "slack" && !slackAppID.trim());
   const online = connection.enabled && connection.status === "connected";
+  const commandStatus = credentialSource === "managed"
+    ? "CodexLoom manages this gateway. Use Connection status and managed repair when available; manual gateway commands are intentionally unavailable."
+    : credentialSource === "keychain" || credentialSource === "environment"
+      ? "This legacy credential source does not match a runnable compatibility command. Migrate this Connection to a managed credential."
+      : !address
+        ? "Bind an active Agent Address before checking gateway availability."
+        : "Manual gateway commands are unavailable for this credential source. Complete managed onboarding or migrate the Connection.";
   return (
     <section className="mt-4 py-3">
       <div className="flex min-w-0 items-center gap-2">
@@ -1804,12 +1811,15 @@ function GatewaySetup({ connection, addresses, slackAppID = "" }: { connection: 
       </div>
       {spec.manifest && <div className="mt-2 truncate font-mono text-[10px] text-muted-foreground">manifest · {spec.manifest}</div>}
       {command ? (
-        <div className="mt-3 flex min-w-0 items-stretch border border-border bg-muted/25">
-          <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-3 py-2 font-mono text-[10.5px] text-foreground/80">{command}</code>
-          <CopyCommand value={command} />
-        </div>
-      ) : <div className="mt-3 border-l-2 border-warning bg-warning/5 px-3 py-2 text-[11px] text-muted-foreground">{missingStructuredIdentity ? "Refresh Slack discovery to verify its public App ID before generating a gateway command." : "Bind an Agent Address to generate the gateway command."}</div>}
-      {addresses.length > 1 && <div className="mt-2 font-mono text-[9.5px] text-warning">This command uses the first of {addresses.length} addresses.</div>}
+        <>
+          <div className="mt-3 text-[9.5px] font-semibold uppercase text-muted-foreground">Legacy compatibility command</div>
+          <div className="mt-1 flex min-w-0 items-stretch border border-border bg-muted/25" data-gateway-command="legacy">
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-3 py-2 font-mono text-[10.5px] text-foreground/80">{command}</code>
+            <CopyCommand value={command} />
+          </div>
+        </>
+      ) : <div className="mt-3 border-l-2 border-warning bg-warning/5 px-3 py-2 text-[11px] text-muted-foreground" data-gateway-command-status={credentialSource}>{commandStatus}</div>}
+      {command && addresses.length > 1 && <div className="mt-2 font-mono text-[9.5px] text-warning">This command uses the first of {addresses.length} addresses.</div>}
     </section>
   );
 }

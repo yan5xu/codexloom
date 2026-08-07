@@ -161,18 +161,89 @@ describe("External managed credential contract", () => {
     expect(canRepairParallGateway(connection(), address(), discovery({ selectedAgentId: "another-agent" }))).toBe(false);
   });
 
-  it("uses structured discovery identity for Slack commands instead of parsing an opaque managed ref", () => {
-    const item = connection({ provider: "slack", accountRef: "T_TEST", credentialRef: "managed:must-not-appear" });
-    const itemAddress = address({ externalIdentity: "slack://U_TEST" });
-    const command = gatewayCommand(item, itemAddress, { slackAppID: "A_DISCOVERED" });
-    expect(command).toContain("--app-id 'A_DISCOVERED'");
-    expect(command).toContain("--team-id 'T_TEST'");
-    expect(command).not.toContain("must-not-appear");
+  it("never emits a manual gateway command for a managed credential", () => {
+    expect(gatewayCommand(
+      connection({ provider: "lark", accountRef: "cli_test", credentialRef: "managed:opaque-lark" }),
+      address({ externalIdentity: "lark://ou_test" }),
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ provider: "slack", accountRef: "T_TEST", credentialRef: "managed:opaque-slack" }),
+      address({ externalIdentity: "slack://U_TEST" }),
+      { slackAppID: "A_DISCOVERED" },
+    )).toBe("");
+    expect(gatewayCommand(connection(), address())).toBe("");
   });
 
-  it("fails Slack command generation closed when public discovery has no App ID", () => {
-    const item = connection({ provider: "slack", accountRef: "T_TEST", credentialRef: "managed:must-not-be-parsed" });
-    expect(gatewayCommand(item, address({ externalIdentity: "slack://U_TEST" }))).toBe("");
+  it("preserves an exact runnable legacy reference in the generated command", () => {
+    const lark = gatewayCommand(
+      connection({ provider: "lark", accountRef: "cli_test", credentialRef: "env:FEISHU_APP_SECRET" }),
+      address({ externalIdentity: "lark://ou_test" }),
+    );
+    expect(lark).toContain("bin/loom-feishu-gateway");
+    expect(lark).toContain("--credential-ref 'env:FEISHU_APP_SECRET'");
+
+    const slack = gatewayCommand(
+      connection({ provider: "slack", accountRef: "T_TEST", credentialRef: "keychain:com.codexloom.slack.A_DISCOVERED" }),
+      address({ externalIdentity: "slack://U_TEST" }),
+      { slackAppID: "A_DISCOVERED" },
+    );
+    expect(slack).toContain("--app-id 'A_DISCOVERED'");
+    expect(slack).toContain("--team-id 'T_TEST'");
+    expect(slack).toContain("--credential-ref 'keychain:com.codexloom.slack.A_DISCOVERED'");
+
+    const parallEnv = gatewayCommand(
+      connection({ credentialRef: "env:PRLL_API_KEY" }),
+      address(),
+    );
+    expect(parallEnv).toContain("bin/loom-parall-gateway");
+    expect(parallEnv).toContain("--credential-ref 'env:PRLL_API_KEY'");
+
+    const parallKeychain = gatewayCommand(
+      connection({ credentialRef: "keychain:com.codexloom.parall.agent.org-test.external-test" }),
+      address(),
+    );
+    expect(parallKeychain).toContain("--credential-ref 'keychain:com.codexloom.parall.agent.org-test.external-test'");
+  });
+
+  it("fails legacy gateway commands closed when their scheme or identity is not runnable", () => {
+    expect(gatewayCommand(
+      connection({ provider: "lark", accountRef: "cli_test", credentialRef: "keychain:wrong.service" }),
+      address({ externalIdentity: "lark://ou_test" }),
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ provider: "slack", accountRef: "T_TEST", credentialRef: "env:SLACK_BOT_TOKEN" }),
+      address({ externalIdentity: "slack://U_TEST" }),
+      { slackAppID: "A_DISCOVERED" },
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ provider: "slack", accountRef: "T_TEST", credentialRef: "keychain:com.codexloom.slack.OTHER_APP" }),
+      address({ externalIdentity: "slack://U_TEST" }),
+      { slackAppID: "A_DISCOVERED" },
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ credentialRef: "keychain:wrong.service" }),
+      address(),
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ provider: "custom", credentialRef: "env:CUSTOM_TOKEN" }),
+      address({ externalIdentity: "custom://identity" }),
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ credentialRef: "env:PRLL_API_KEY", enabled: false }),
+      address(),
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ credentialRef: "env:PRLL_API_KEY", archivedAt: now }),
+      address(),
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ credentialRef: "env:PRLL_API_KEY" }),
+      address({ enabled: false }),
+    )).toBe("");
+    expect(gatewayCommand(
+      connection({ credentialRef: "env:PRLL_API_KEY" }),
+      address({ deletedAt: now }),
+    )).toBe("");
   });
 
   it("recognizes native Feishu through discovery rather than the credential reference", () => {
@@ -194,6 +265,15 @@ describe("External managed credential contract", () => {
     expect(screen.getByText(/wait for a later heartbeat before considering the Connection recovered/)).toBeVisible();
     expect(screen.queryByText(/Connection (is|has) recovered/i)).not.toBeInTheDocument();
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("shows managed status without exposing a manual gateway command", async () => {
+    renderPane(connection());
+    fireEvent.click(await screen.findByText("Advanced settings"));
+    expect(await screen.findByText(/CodexLoom manages this gateway/)).toBeVisible();
+    expect(screen.queryByText(/bin\/loom-parall-gateway/)).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Copy gateway command")).not.toBeInTheDocument();
+    expect(screen.queryByText(/managed:opaque-test-id/)).not.toBeInTheDocument();
   });
 
   it("refreshes Parall discovery when selecting another Connection in the same organization", async () => {
@@ -227,6 +307,24 @@ describe("External managed credential contract", () => {
     expect(screen.getByText("Migration required")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Restart gateway" })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes("/api/integrations/providers/parall/gateway") && init?.method === "POST")).toBe(false);
+  });
+
+  it("shows a runnable Parall env command with its exact legacy reference", async () => {
+    renderPane(connection({ credentialRef: "env:PRLL_API_KEY", status: "degraded" }));
+    fireEvent.click(await screen.findByText("Advanced settings"));
+    expect(await screen.findByText("Legacy compatibility command")).toBeVisible();
+    expect(screen.getByText(/--credential-ref 'env:PRLL_API_KEY'/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Restart gateway" })).not.toBeInTheDocument();
+    expect(screen.getByTitle("Copy gateway command")).toBeVisible();
+  });
+
+  it("fails a mismatched legacy Keychain command closed and points to migration", async () => {
+    renderPane(connection({ credentialRef: "keychain:wrong.service", status: "degraded" }));
+    fireEvent.click(await screen.findByText("Advanced settings"));
+    expect(await screen.findByText(/does not match a runnable compatibility command/)).toBeVisible();
+    expect(screen.getAllByText(/Migrate this Connection to a managed credential/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(/bin\/loom-parall-gateway/)).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Copy gateway command")).not.toBeInTheDocument();
   });
 
   it("does not offer repair for a connected managed connection", async () => {

@@ -1,17 +1,16 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   IntegrationsPane,
 } from "./IntegrationsPane";
 import {
-  canRepairParallGateway,
+  canOfferParallRepairCLI,
   credentialSourceKind,
   gatewayCommand,
   isLegacyCredentialRef,
-  isNativeFeishuConnection,
 } from "./external-credentials";
 import { resetGlobalEventsForTests } from "./global-events";
-import type { Agent, AgentAddress, LarkDiscovery, ParallDiscovery, PlatformConnection } from "./types";
+import type { Agent, AgentAddress, ParallDiscovery, PlatformConnection } from "./types";
 
 const now = "2026-08-07T00:00:00Z";
 const testAgent: Agent = {
@@ -107,6 +106,14 @@ function renderPane(item: PlatformConnection, itemAddress = address(), parallDis
   return { fetchMock, onError };
 }
 
+function isProtectedIntegrationRequest(input: RequestInfo | URL) {
+  const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  const path = new URL(raw, "http://localhost").pathname;
+  return path.startsWith("/api/integrations/providers/")
+    || path.includes("/credential-migration")
+    || path.startsWith("/api/integrations/credential-migrations/");
+}
+
 afterEach(() => {
   cleanup();
   resetGlobalEventsForTests();
@@ -117,6 +124,35 @@ afterEach(() => {
 });
 
 describe("External managed credential contract", () => {
+  it("keeps managed repair browser-safe and routes the operator to explicit-token CLI", async () => {
+    const { fetchMock, onError } = renderPane(connection());
+
+    expect((await screen.findAllByText("CodexLoom managed credential"))[0]).toBeVisible();
+    const repair = await screen.findByRole("button", { name: "Restart via CLI" });
+    expect(screen.queryByRole("button", { name: "Restart gateway" })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => isProtectedIntegrationRequest(input))).toBe(false);
+    fireEvent.click(repair);
+    expect(await screen.findByRole("heading", { name: "Terminal repair required" })).toBeVisible();
+    expect(screen.getByText("CODEX_LOOM_ADMIN_TOKEN")).toBeVisible();
+    expect(screen.getByText(/only a later heartbeat proves recovery/i)).toBeVisible();
+    expect(fetchMock.mock.calls.some(([input]) => isProtectedIntegrationRequest(input))).toBe(false);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("opens new onboarding as CLI-only guidance without secret fields or protected requests", async () => {
+    const fetchMock = mockExternalAPI([], []);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<IntegrationsPane agents={[testAgent]} onError={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTitle("Add integration"));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByRole("heading", { name: /terminal setup required/i })).toBeVisible();
+    expect(screen.getByText(/CODEX_LOOM_ADMIN_TOKEN/)).toBeVisible();
+    expect(screen.queryByLabelText(/secret|token/i)).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => isProtectedIntegrationRequest(input))).toBe(false);
+  });
+
   it.each([
     ["managed:opaque-id", "managed"],
     ["keychain:compatibility.service", "keychain"],
@@ -134,31 +170,28 @@ describe("External managed credential contract", () => {
     expect(isLegacyCredentialRef("managed:opaque-id")).toBe(false);
   });
 
-  it("allows managed recovery only when backend discovery is ready", () => {
+  it("offers managed repair CLI guidance only from eligible persisted state", () => {
     const item = connection({ credentialRef: "managed:opaque-id" });
-    expect(canRepairParallGateway(item, address(), discovery())).toBe(true);
-    expect(canRepairParallGateway(item, address(), discovery({ agentCredentialStored: false }))).toBe(false);
-    expect(canRepairParallGateway(item, address(), discovery({ externalReady: false }))).toBe(false);
-    expect(canRepairParallGateway(item, address(), discovery({ socketReady: false }))).toBe(false);
+    expect(canOfferParallRepairCLI(item, address())).toBe(true);
+    expect(canOfferParallRepairCLI({ ...item, accountRef: "" }, address())).toBe(false);
+    expect(canOfferParallRepairCLI(item, address({ externalIdentity: "" }))).toBe(false);
+    expect(canOfferParallRepairCLI(item, address({ agentId: "" }))).toBe(false);
   });
 
-  it.each(["keychain:existing.service", "env:EXISTING_TOKEN"])("keeps legacy %s outside manual repair even when discovery is ready", (credentialRef) => {
-    expect(canRepairParallGateway(connection({ credentialRef }), address(), discovery())).toBe(false);
+  it.each(["keychain:existing.service", "env:EXISTING_TOKEN"])("keeps legacy %s outside manual repair", (credentialRef) => {
+    expect(canOfferParallRepairCLI(connection({ credentialRef }), address())).toBe(false);
   });
 
   it("fails recovery closed for connected, disabled, archived, malformed, or incomplete inputs", () => {
-    expect(canRepairParallGateway(connection({ status: "connected" }), address(), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection({ status: "connecting" }), address(), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection({ enabled: false }), address(), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection({ archivedAt: now }), address(), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection({ credentialRef: "managed:" }), address(), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection(), address({ enabled: false }), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection(), address({ archivedAt: now }), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection(), address({ deletedAt: now }), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection(), address({ connectionId: "another-connection" }), discovery())).toBe(false);
-    expect(canRepairParallGateway(connection(), address(), discovery({ available: false }))).toBe(false);
-    expect(canRepairParallGateway(connection(), address(), discovery({ orgId: "another-org" }))).toBe(false);
-    expect(canRepairParallGateway(connection(), address(), discovery({ selectedAgentId: "another-agent" }))).toBe(false);
+    expect(canOfferParallRepairCLI(connection({ status: "connected" }), address())).toBe(false);
+    expect(canOfferParallRepairCLI(connection({ status: "connecting" }), address())).toBe(false);
+    expect(canOfferParallRepairCLI(connection({ enabled: false }), address())).toBe(false);
+    expect(canOfferParallRepairCLI(connection({ archivedAt: now }), address())).toBe(false);
+    expect(canOfferParallRepairCLI(connection({ credentialRef: "managed:" }), address())).toBe(false);
+    expect(canOfferParallRepairCLI(connection(), address({ enabled: false }))).toBe(false);
+    expect(canOfferParallRepairCLI(connection(), address({ archivedAt: now }))).toBe(false);
+    expect(canOfferParallRepairCLI(connection(), address({ deletedAt: now }))).toBe(false);
+    expect(canOfferParallRepairCLI(connection(), address({ connectionId: "another-connection" }))).toBe(false);
   });
 
   it("never emits a manual gateway command for a managed credential", () => {
@@ -246,23 +279,14 @@ describe("External managed credential contract", () => {
     )).toBe("");
   });
 
-  it("recognizes native Feishu through discovery rather than the credential reference", () => {
-    const item = connection({ provider: "lark", accountRef: "cli_test", credentialRef: "managed:opaque-lark" });
-    const larkDiscovery: LarkDiscovery = { available: true, runtime: "native", appId: "cli_test", credentialStored: true, botReady: true, chats: [] };
-    expect(isNativeFeishuConnection(item, larkDiscovery)).toBe(true);
-    expect(isNativeFeishuConnection(item, { ...larkDiscovery, appId: "cli_other" })).toBe(false);
-  });
-
-  it("shows managed recovery and sends only the connection ID to backend preflight", async () => {
+  it("opens managed repair instructions without sending a protected request", async () => {
     const { fetchMock, onError } = renderPane(connection());
     expect((await screen.findAllByText("CodexLoom managed credential"))[0]).toBeVisible();
-    const restart = await screen.findByRole("button", { name: "Restart gateway" });
+    const restart = await screen.findByRole("button", { name: "Restart via CLI" });
     fireEvent.click(restart);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/integrations/providers/parall/gateway",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ connectionId: "conn-parall" }) }),
-    ));
-    expect(screen.getByText(/wait for a later heartbeat before considering the Connection recovered/)).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Terminal repair required" })).toBeVisible();
+    expect(fetchMock.mock.calls.some(([input]) => isProtectedIntegrationRequest(input))).toBe(false);
+    expect(screen.getByText(/only a later heartbeat proves recovery/)).toBeVisible();
     expect(screen.queryByText(/Connection (is|has) recovered/i)).not.toBeInTheDocument();
     expect(onError).not.toHaveBeenCalled();
   });
@@ -276,25 +300,19 @@ describe("External managed credential contract", () => {
     expect(screen.queryByText(/managed:opaque-test-id/)).not.toBeInTheDocument();
   });
 
-  it("refreshes Parall discovery when selecting another Connection in the same organization", async () => {
+  it("switches same-org Connections from persisted state without protected discovery", async () => {
     const first = connection({ id: "conn-first" });
     const second = connection({ id: "conn-second" });
     const firstAddress = address({ id: "addr-first", connectionId: first.id, externalIdentity: "prll://first-agent", displayName: "First identity" });
     const secondAddress = address({ id: "addr-second", connectionId: second.id, externalIdentity: "prll://second-agent", displayName: "Second identity" });
-    const fetchMock = mockExternalAPI([first, second], [firstAddress, secondAddress], (connectionID) => {
-      const selectedAgentId = connectionID === second.id ? "second-agent" : "first-agent";
-      return discovery({
-        selectedAgentId,
-        agents: [{ id: selectedAgentId, name: selectedAgentId, status: "active", online: false, credentialStored: true }],
-      });
-    });
+    const fetchMock = mockExternalAPI([first, second], [firstAddress, secondAddress]);
     vi.stubGlobal("fetch", fetchMock);
     render(<IntegrationsPane agents={[testAgent]} onError={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Second identity/ }));
     expect(await screen.findByRole("heading", { name: "Second identity" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: "Restart gateway" })).toBeEnabled();
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/integrations/providers/parall/discovery?connectionId=conn-second"))).toBe(true);
+    expect(await screen.findByRole("button", { name: "Restart via CLI" })).toBeEnabled();
+    expect(fetchMock.mock.calls.some(([input]) => isProtectedIntegrationRequest(input))).toBe(false);
   });
 
   it.each([
@@ -322,7 +340,7 @@ describe("External managed credential contract", () => {
     renderPane(connection({ credentialRef: "keychain:wrong.service", status: "degraded" }));
     fireEvent.click(await screen.findByText("Advanced settings"));
     expect(await screen.findByText(/does not match a runnable compatibility command/)).toBeVisible();
-    expect(screen.getAllByText(/Migrate this Connection to a managed credential/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole("button", { name: "Migration required" })).toBeVisible();
     expect(screen.queryByText(/bin\/loom-parall-gateway/)).not.toBeInTheDocument();
     expect(screen.queryByTitle("Copy gateway command")).not.toBeInTheDocument();
   });
@@ -332,7 +350,7 @@ describe("External managed credential contract", () => {
     expect((await screen.findAllByText("CodexLoom managed credential"))[0]).toBeVisible();
     expect(screen.queryByText("managed:opaque-test-id")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Restart gateway" })).not.toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Add conversation" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Manage via CLI" })).toBeVisible();
   });
 
   it("fails an unknown source closed instead of asking for a secret", async () => {
@@ -356,13 +374,14 @@ describe("External managed credential contract", () => {
     expect(screen.getByRole("button", { name: "Create compatibility connection" })).toBeEnabled();
   });
 
-  it("describes new onboarding as managed and excludes ordinary backups", async () => {
+  it("describes CLI onboarding and limits the ordinary-backup claim to managed material", async () => {
     vi.stubGlobal("fetch", mockExternalAPI([], []));
     render(<IntegrationsPane agents={[testAgent]} onError={vi.fn()} />);
     fireEvent.click(await screen.findByTitle("Add integration"));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByText(/stored as a CodexLoom managed credential/)).toBeVisible();
-    expect(screen.getByText(/managed credential material is not exposed here or included in ordinary backups/)).toBeVisible();
+    expect(screen.getByText(/credential onboarding and provider discovery require the operator CLI/)).toBeVisible();
+    expect(screen.getByText(/Managed credential material and private rollback anchors are excluded from ordinary backups/)).toBeVisible();
+    expect(screen.getByText(/does not claim that every other configuration file is secret-free/)).toBeVisible();
     expect(screen.queryByText(/operating system Keychain/)).not.toBeInTheDocument();
   });
 });

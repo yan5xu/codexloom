@@ -1,4 +1,4 @@
-import type { AgentAddress, LarkDiscovery, ParallDiscovery, PlatformConnection } from "./types";
+import type { AgentAddress, PlatformConnection } from "./types";
 
 export type CredentialSourceKind = "managed" | "keychain" | "environment" | "missing" | "unknown";
 
@@ -63,30 +63,17 @@ export function credentialSourcePresentation(value = ""): CredentialSourcePresen
   }
 }
 
-export function isNativeFeishuConnection(connection?: PlatformConnection, discovery?: LarkDiscovery | null) {
-  return Boolean(
-    connection
-    && discovery?.runtime === "native"
-    && discovery.credentialStored
-    && discovery.appId
-    && discovery.appId === connection.accountRef,
-  );
-}
-
-export function canRepairParallGateway(connection: PlatformConnection, address?: AgentAddress, discovery?: ParallDiscovery | null) {
+// This is browser eligibility for showing terminal repair guidance, not proof
+// that provider/socket preflight passed. The explicit-token CLI performs those
+// protected checks again before any repair side effect.
+export function canOfferParallRepairCLI(connection: PlatformConnection, address?: AgentAddress) {
   const source = credentialSourceKind(connection.credentialRef);
   if (source !== "managed") return false;
   if (connection.provider !== "parall" || connection.archivedAt || !connection.enabled) return false;
   if (connection.status !== "disconnected" && connection.status !== "degraded") return false;
   if (!address || address.connectionId !== connection.id || address.archivedAt || address.deletedAt || !address.enabled) return false;
-  if (!discovery?.available || !discovery.agentCredentialStored || !discovery.externalReady || !discovery.socketReady) return false;
   const externalID = externalIdentityID(address.externalIdentity);
-  return Boolean(
-    connection.accountRef
-    && discovery.orgId === connection.accountRef
-    && externalID
-    && discovery.selectedAgentId === externalID,
-  );
+  return Boolean(connection.accountRef && address.agentId && externalID);
 }
 
 export function gatewayCommand(connection: PlatformConnection, address: AgentAddress, identity: { slackAppID?: string } = {}) {

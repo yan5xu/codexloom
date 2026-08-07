@@ -49,6 +49,7 @@ func TestMigrationGatewayAnchorIsPrivateAndIdempotent(t *testing.T) {
 	}
 	connection.GatewayBuild = "build-anchor"
 	connection.GatewayExecutableSHA256 = observed.SHA256
+	connection.GatewayGeneration = "ggen_anchor_fixture"
 	if err := os.WriteFile(script, []byte("gateway-adapter-fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func TestMigrationGatewayAnchorIsPrivateAndIdempotent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(service.UnitPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	unit := migrationGatewayUnitFixture(service.Manager, wrapper, script)
+	unit := migrationGatewayUnitFixture(service.Manager, wrapper, script, connection.GatewayGeneration)
 	if err := os.WriteFile(service.UnitPath, []byte(unit), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +125,32 @@ func TestMigrationGatewayAnchorRejectsExistingSymlinkDirectory(t *testing.T) {
 	}
 }
 
+func TestMigrationGatewayAnchorWithoutGenerationRemainsUnverified(t *testing.T) {
+	anchorDir := t.TempDir()
+	wrapper := filepath.Join(anchorDir, "loom-slack-gateway")
+	if err := os.WriteFile(wrapper, []byte("legacy-wrapper-without-generation"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := buildinfo.ObserveExecutable(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := migrationGatewayUnitFixture("launchd", wrapper, filepath.Join(anchorDir, "slack.mjs"), "")
+	if err := os.WriteFile(filepath.Join(anchorDir, "unit"), []byte(unit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	connection := hub.PlatformConnection{
+		GatewayBuild: "build-without-generation", GatewayExecutableSHA256: observed.SHA256,
+	}
+	if err := recordMigrationGatewayAnchorEvidence(anchorDir, "slack", "launchd", connection); err != nil {
+		t.Fatal(err)
+	}
+	evidence, verified, err := readMigrationGatewayAnchorEvidence(anchorDir, wrapper)
+	if err != nil || verified || evidence.Status != "unknown_unverified" || evidence.Generation != "" {
+		t.Fatalf("generation-less anchor evidence = %#v, verified=%v, err=%v", evidence, verified, err)
+	}
+}
+
 func TestMigrationGatewayRejectsUnanchoredLegacyLaunchAgent(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchd-only migration fence")
@@ -145,12 +172,12 @@ func TestMigrationGatewayRejectsUnanchoredLegacyLaunchAgent(t *testing.T) {
 	}
 }
 
-func migrationGatewayUnitFixture(manager, wrapper, script string) string {
+func migrationGatewayUnitFixture(manager, wrapper, script, generation string) string {
 	switch manager {
 	case "launchd":
-		return fmt.Sprintf(`<plist><dict><key>ProgramArguments</key><array><string>%s</string><string>--script</string><string>%s</string></array></dict></plist>`, html.EscapeString(wrapper), html.EscapeString(script))
+		return fmt.Sprintf(`<plist><dict><key>ProgramArguments</key><array><string>%s</string><string>--script</string><string>%s</string><string>--generation</string><string>%s</string></array></dict></plist>`, html.EscapeString(wrapper), html.EscapeString(script), html.EscapeString(generation))
 	case "systemd":
-		return "[Service]\nExecStart=" + systemdQuote(wrapper) + " \"--script\" " + systemdQuote(script) + "\n"
+		return "[Service]\nExecStart=" + systemdQuote(wrapper) + " \"--script\" " + systemdQuote(script) + " \"--generation\" " + systemdQuote(generation) + "\n"
 	default:
 		return ""
 	}

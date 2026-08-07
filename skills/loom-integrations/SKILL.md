@@ -62,6 +62,8 @@ loom integration credential rollback RECEIPT_ID --confirm RECEIPT_ID [--json]
 
 No-ID preflight enumerates all eligible Lark, Slack, Parall, and GitHub Connections; it does not auto-migrate `env:` references. Migration preserves Connection, Address, Membership, Inbox, and Outbox identity/history, verifies the provider and gateway before changing the canonical reference, and reuses one durable receipt per Connection. A failed automatic rollback reports `manual_recovery_required`; never describe that state as restored. Ordinary backups and support bundles exclude `credentials/**`, so their receipt is not a complete runnable restore. Keychain deletion and secret backup/restore require separate authorization and are not part of migration.
 
+Credential preflight/migrate/receipt/rollback and provider onboarding/setup/import/repair require an explicit admin token even on loopback; read-only canaries and cross-origin browser requests must fail before source/provider/service hooks. Before any managed credential write, require a bounded verified current-format ordinary backup from the exact accepted build with credential exclusion; legacy, corrupt, or ambiguous archives are `unknown_unverified`. Treat `credential_migration_in_progress` and `credential_rollback_build_floor_unavailable` as stop states. Rollback dry-run and execution share one validator, and only `ready` permits the effect. Slack managed entries bind both App ID and Team ID.
+
 For an existing Parall Agent whose one-time Agent key is already in an owner-only regular file, use the atomic CLI import instead of configuring an Owner key:
 
 ```sh

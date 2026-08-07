@@ -53,7 +53,7 @@ func TestSetupSlackCreatesDurableAddressAndChannelRoleIdempotently(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loomslack.SaveManagedTokens(credentials, "A_TEST", randomTestCredential(t), randomTestCredential(t)); err != nil {
+	if _, err := loomslack.SaveManagedTokens(credentials, "A_TEST", "T_TEST", randomTestCredential(t), randomTestCredential(t)); err != nil {
 		t.Fatal(err)
 	}
 	params := slackSetupParams{

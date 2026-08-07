@@ -28,20 +28,21 @@ import (
 )
 
 type Server struct {
-	hub                     *hub.Hub
-	st                      *store.Store
-	web                     fs.FS
-	restartMu               sync.Mutex
-	restart                 restartState
-	connectorMu             sync.Mutex
-	activeConnectors        map[string]struct{}
-	githubMu                sync.Mutex
-	githubDevices           map[string]*githubDeviceFlow
-	credentialMu            sync.Mutex
-	credentialLocks         map[string]*sync.Mutex
-	credentialMigrationSave func(hub.CredentialMigrationReceipt, int) (hub.CredentialMigrationReceipt, error)
-	build                   buildinfo.Info
-	readOnly                bool
+	hub                               *hub.Hub
+	st                                *store.Store
+	web                               fs.FS
+	restartMu                         sync.Mutex
+	restart                           restartState
+	connectorMu                       sync.Mutex
+	activeConnectors                  map[string]struct{}
+	githubMu                          sync.Mutex
+	githubDevices                     map[string]*githubDeviceFlow
+	credentialMu                      sync.Mutex
+	credentialLocks                   map[string]*sync.Mutex
+	credentialMigrationSave           func(hub.CredentialMigrationReceipt, int) (hub.CredentialMigrationReceipt, error)
+	credentialMigrationControlledSave func(hub.CredentialMigrationReceipt, int, ...string) (hub.CredentialMigrationReceipt, error)
+	build                             buildinfo.Info
+	readOnly                          bool
 }
 
 func New(h *hub.Hub, st *store.Store, web fs.FS) *Server {
@@ -70,6 +71,7 @@ func NewWithOptions(h *hub.Hub, st *store.Store, web fs.FS, options Options) *Se
 		readOnly: options.ReadOnly,
 	}
 	server.credentialMigrationSave = h.SaveCredentialMigration
+	server.credentialMigrationControlledSave = h.SaveCredentialMigrationControlled
 	return server
 }
 

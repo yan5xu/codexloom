@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/zalando/go-keyring"
 )
 
@@ -33,6 +34,33 @@ func TestTokenKeyringRoundTripAndLegacyFallback(t *testing.T) {
 	tokens, err = LoadTokens("A_TEST", "T_TEST")
 	if err != nil || tokens.Bot != legacyBotCredential || tokens.App != legacyAppCredential {
 		t.Fatal("legacy token values did not round-trip")
+	}
+}
+
+func TestManagedTokensBindAppAndTeamWithoutCrossWorkspaceReuse(t *testing.T) {
+	credentials, err := credentialstore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	botOne, appOne := randomCredentialValue(t), randomCredentialValue(t)
+	refOne, err := SaveManagedTokens(credentials, "A_SHARED", "T_ONE", botOne, appOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	botTwo, appTwo := randomCredentialValue(t), randomCredentialValue(t)
+	refTwo, err := SaveManagedTokens(credentials, "A_SHARED", "T_TWO", botTwo, appTwo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refOne == refTwo {
+		t.Fatal("Slack managed references collided across workspaces")
+	}
+	resolvedApp, tokens, err := LoadTokensAndAppReference(credentials, refOne, "A_SHARED", "T_ONE")
+	if err != nil || resolvedApp != "A_SHARED" || tokens.Bot != botOne || tokens.App != appOne {
+		t.Fatal("workspace-bound Slack tokens did not round-trip")
+	}
+	if _, _, err := LoadTokensAndAppReference(credentials, refOne, "A_SHARED", "T_TWO"); err == nil {
+		t.Fatal("Slack managed tokens were accepted for the wrong workspace")
 	}
 }
 

@@ -63,8 +63,21 @@ var prepareCredentialMigrationGatewayEffect = func(s *Server, connection hub.Pla
 	return s.prepareMigrationGatewayEffect(connection, receipt)
 }
 
+var prepareCredentialMigrationRollbackEffect = func(s *Server, connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (string, hub.CredentialMigrationGatewayReceipt, error) {
+	return s.prepareMigrationGatewayRollbackEffect(connection, receipt)
+}
+
 var reconcileCredentialMigrationGatewayEffect = func(ctx context.Context, s *Server, connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt, rollback bool) (hub.CredentialMigrationGatewayReceipt, bool, error) {
 	return s.reconcileMigrationGatewayEffect(ctx, connection, receipt, rollback)
+}
+
+var preflightCredentialMigrationRollback = func(s *Server, connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) error {
+	return s.preflightMigrationGatewayRollback(connection, receipt)
+}
+
+type credentialMigrationRollbackValidation struct {
+	Status string
+	Reason string
 }
 
 func (s *Server) preflightCredentialMigrations(ctx context.Context, connectionID string) ([]credentialMigrationPreflight, error) {
@@ -110,6 +123,8 @@ func (s *Server) preflightCredentialMigrations(ctx context.Context, connectionID
 		default:
 			if _, err := s.hub.CredentialStore(); err != nil {
 				item.Status = "managed_store_unsafe"
+			} else if err := verifyManagedCredentialWriteFloor(s); err != nil {
+				item.Status = "credential_rollback_build_floor_unavailable"
 			} else if _, err := loadCredentialMigrationSource(s, connection); err != nil {
 				item.Status = "source_unavailable"
 			} else if err := preflightCredentialMigrationGateway(s, connection); err != nil {
@@ -171,10 +186,9 @@ func (s *Server) migrateCredential(ctx context.Context, connectionID string, req
 			}
 			receipt.State = hub.CredentialMigrationPreparing
 			receipt.ProviderReceipt = nil
-			receipt.GatewayReceipt = nil
 			receipt.Error = nil
-			receipt = s.saveCredentialMigration(receipt)
-			if credentialMigrationPersistenceFailed(receipt) {
+			receipt = s.saveCredentialMigrationControlled(receipt, receipt.PreviousCredentialRef)
+			if receipt.State == hub.CredentialMigrationManualRecoveryRequired {
 				return credentialMigrationReceiptView(receipt), nil
 			}
 		case hub.CredentialMigrationRollingBack:
@@ -191,8 +205,8 @@ func (s *Server) migrateCredential(ctx context.Context, connectionID string, req
 				receipt.State = hub.CredentialMigrationCredentialStored
 			}
 			receipt.Error = nil
-			receipt = s.saveCredentialMigration(receipt)
-			if credentialMigrationPersistenceFailed(receipt) {
+			receipt = s.saveCredentialMigrationControlled(receipt, receipt.PreviousCredentialRef)
+			if receipt.State == hub.CredentialMigrationManualRecoveryRequired {
 				return credentialMigrationReceiptView(receipt), nil
 			}
 		}
@@ -216,6 +230,9 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 		return s.manualCredentialRecovery(receipt, "connection", "connection_unavailable", "Connection is unavailable while resuming migration")
 	}
 	if receipt.State == hub.CredentialMigrationSwitchingReference && receipt.TargetCredentialRef != "" && current.CredentialRef == receipt.TargetCredentialRef {
+		if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.TargetCredentialRef); err != nil {
+			return s.manualCredentialRecovery(receipt, "identity", "migration_identity_changed", "Credential migration identity changed before canonical completion")
+		}
 		receipt.State = hub.CredentialMigrationCompleted
 		receipt.Error = nil
 		return s.saveCredentialMigration(receipt)
@@ -223,11 +240,20 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 	if current.CredentialRef != receipt.PreviousCredentialRef {
 		return s.manualCredentialRecovery(receipt, "reference", "active_reference_drift", "Active migration no longer matches its previous credential reference")
 	}
+	if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef); err != nil {
+		return s.manualCredentialRecovery(receipt, "identity", "migration_identity_changed", "Credential migration Connection or Address identity changed")
+	}
 
 	var material credentialMigrationMaterial
 	if receipt.State == hub.CredentialMigrationPreparing {
+		if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef); err != nil {
+			return s.manualCredentialRecovery(receipt, "identity", "migration_identity_changed", "Credential migration identity changed before credential storage")
+		}
 		if err := preflightCredentialMigrationGateway(s, current); err != nil {
 			return s.failCredentialMigration(receipt, "gateway_preflight", "gateway_not_reversibly_managed", "Gateway cannot be safely activated and rolled back")
+		}
+		if err := s.requireManagedCredentialWriteFloor(); err != nil {
+			return s.failCredentialMigration(receipt, "backup", "credential_rollback_build_floor_unavailable", "A verified credential-excluding rollback build is required before managed credential storage")
 		}
 		material, err = loadCredentialMigrationSource(s, current)
 		if err != nil {
@@ -254,6 +280,9 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 	}
 
 	if receipt.State == hub.CredentialMigrationCredentialStored {
+		if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef); err != nil {
+			return s.manualCredentialRecovery(receipt, "identity", "migration_identity_changed", "Credential migration identity changed before provider verification")
+		}
 		if material.Payload.Values == nil {
 			material, err = s.loadManagedMigrationMaterial(current, receipt.TargetCredentialRef)
 			if err != nil {
@@ -278,15 +307,13 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 		if prepareErr != nil {
 			return s.failCredentialMigration(receipt, "gateway_preflight", "gateway_effect_prepare_failed", "Gateway activation effect could not be durably prepared")
 		}
-		if receipt.GatewayEffectID != "" && receipt.GatewayEffectID != effectID {
-			return s.manualCredentialRecovery(receipt, "gateway", "gateway_effect_identity_changed", "Gateway activation effect identity changed while resuming migration")
-		}
 		receipt.GatewayEffectID = effectID
+		receipt.GatewayEffectAttempt++
 		receipt.GatewayEffectState = "activation_prepared"
 		receipt.GatewayReceipt = &prepared
 		receipt.State = hub.CredentialMigrationGatewayActivating
-		receipt = s.saveCredentialMigration(receipt)
-		if credentialMigrationPersistenceFailed(receipt) {
+		receipt = s.saveCredentialMigrationControlled(receipt, receipt.PreviousCredentialRef)
+		if receipt.State == hub.CredentialMigrationManualRecoveryRequired {
 			return receipt
 		}
 		executeActivation = true
@@ -294,6 +321,7 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 	if receipt.State == hub.CredentialMigrationGatewayActivating {
 		if !executeActivation {
 			reconciled, proven, reconcileErr := reconcileCredentialMigrationGatewayEffect(ctx, s, current, receipt, false)
+			reconciled = preserveMigrationGatewayEffectTarget(receipt.GatewayReceipt, reconciled)
 			if reconcileErr != nil {
 				return s.manualCredentialRecovery(receipt, "gateway", "gateway_effect_reconcile_failed", "Gateway activation effect could not be reconciled")
 			}
@@ -309,6 +337,7 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 			}
 		} else {
 			gatewayReceipt, activationErr := activateCredentialMigrationGateway(ctx, s, current, receipt.TargetCredentialRef, receipt.ID, hubURL, *receipt.GatewayReceipt)
+			gatewayReceipt = preserveMigrationGatewayEffectTarget(receipt.GatewayReceipt, gatewayReceipt)
 			receipt.GatewayReceipt = &gatewayReceipt
 			if activationErr != nil {
 				return s.rollbackFailedCredentialMigration(ctx, receipt, "gateway", "gateway_activation_failed", "Gateway activation or heartbeat verification failed")
@@ -324,13 +353,13 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 
 	if receipt.State == hub.CredentialMigrationGatewayVerified {
 		receipt.State = hub.CredentialMigrationSwitchingReference
-		receipt = s.saveCredentialMigration(receipt)
-		if credentialMigrationPersistenceFailed(receipt) {
+		receipt = s.saveCredentialMigrationControlled(receipt, receipt.PreviousCredentialRef)
+		if receipt.State == hub.CredentialMigrationManualRecoveryRequired {
 			return receipt
 		}
 	}
 	if receipt.State == hub.CredentialMigrationSwitchingReference {
-		if _, err := s.hub.CompareAndSwapConnectionCredential(current.ID, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
+		if _, err := s.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
 			return s.rollbackFailedCredentialMigration(ctx, receipt, "reference", "credential_reference_conflict", "Canonical credential reference changed concurrently")
 		}
 		receipt.State = hub.CredentialMigrationCompleted
@@ -345,10 +374,14 @@ func (s *Server) rollbackCredentialMigration(ctx context.Context, receiptID stri
 	if err != nil {
 		return nil, err
 	}
+	plan := s.validateCredentialMigrationRollback(receipt)
 	if request.DryRun {
 		view := credentialMigrationReceiptView(receipt)
 		view["dryRun"] = true
-		view["rollbackStatus"] = "ready"
+		view["rollbackStatus"] = plan.Status
+		if plan.Reason != "" {
+			view["rollbackReason"] = plan.Reason
+		}
 		return view, nil
 	}
 	unlock := s.lockCredentialMigration("connection:" + receipt.ConnectionID)
@@ -363,25 +396,85 @@ func (s *Server) rollbackCredentialMigration(ctx context.Context, receiptID stri
 	if receipt.State == hub.CredentialMigrationRolledBack {
 		return credentialMigrationReceiptView(receipt), nil
 	}
-	if receipt.State == hub.CredentialMigrationGatewayActivating && receipt.GatewayReceipt == nil {
-		receipt.GatewayReceipt = &hub.CredentialMigrationGatewayReceipt{Status: "activation_unknown", AnchorID: receipt.ID}
+	plan = s.validateCredentialMigrationRollback(receipt)
+	if plan.Status != "ready" {
+		return nil, &hub.HubError{Status: 409, Message: "credential rollback blocked: " + plan.Reason}
 	}
-	receipt.GatewayEffectState = "rollback_prepared"
-	receipt.State = hub.CredentialMigrationRollingBack
-	receipt = s.saveCredentialMigration(receipt)
-	if credentialMigrationPersistenceFailed(receipt) {
-		return credentialMigrationReceiptView(receipt), nil
-	}
-	receipt = s.continueCredentialMigrationRollback(ctx, receipt, true)
+	receipt = s.prepareAndContinueCredentialMigrationRollback(ctx, receipt)
 	return credentialMigrationReceiptView(receipt), nil
 }
 
+func (s *Server) validateCredentialMigrationRollback(receipt hub.CredentialMigrationReceipt) credentialMigrationRollbackValidation {
+	if receipt.State == hub.CredentialMigrationRolledBack {
+		return credentialMigrationRollbackValidation{Status: "already_rolled_back"}
+	}
+	if receipt.State == hub.CredentialMigrationManualRecoveryRequired {
+		reason := "manual_recovery_required"
+		if receipt.Error != nil && receipt.Error.Code != "" {
+			reason = receipt.Error.Code
+		}
+		return credentialMigrationRollbackValidation{Status: "manual", Reason: reason}
+	}
+	if receipt.State != hub.CredentialMigrationCompleted && receipt.State != hub.CredentialMigrationFailed {
+		return credentialMigrationRollbackValidation{Status: "blocked", Reason: "receipt_phase_not_rollbackable"}
+	}
+	current, err := s.migrationConnection(receipt.ConnectionID)
+	if err != nil {
+		return credentialMigrationRollbackValidation{Status: "blocked", Reason: "connection_unavailable"}
+	}
+	expectedReference := receipt.PreviousCredentialRef
+	if receipt.State == hub.CredentialMigrationCompleted {
+		expectedReference = receipt.TargetCredentialRef
+		if _, err := credentialstore.ParseReference(expectedReference); err != nil {
+			return credentialMigrationRollbackValidation{Status: "blocked", Reason: "target_reference_unverified"}
+		}
+	}
+	if current.CredentialRef != expectedReference {
+		return credentialMigrationRollbackValidation{Status: "blocked", Reason: "canonical_reference_mismatch"}
+	}
+	if err := s.hub.MatchCredentialMigrationIdentity(receipt, expectedReference); err != nil {
+		return credentialMigrationRollbackValidation{Status: "blocked", Reason: "identity_snapshot_mismatch"}
+	}
+	if credentialMigrationGatewayRollbackRequired(current.Provider, receipt) {
+		if err := preflightCredentialMigrationRollback(s, current, receipt); err != nil {
+			return credentialMigrationRollbackValidation{Status: "blocked", Reason: "gateway_anchor_or_platform_unverified"}
+		}
+	}
+	return credentialMigrationRollbackValidation{Status: "ready"}
+}
+
 func (s *Server) rollbackFailedCredentialMigration(ctx context.Context, receipt hub.CredentialMigrationReceipt, stage, code, message string) hub.CredentialMigrationReceipt {
-	receipt.State = hub.CredentialMigrationRollingBack
-	receipt.GatewayEffectState = "rollback_prepared"
 	receipt.Error = &hub.CredentialMigrationError{Stage: stage, Code: code, Message: message}
-	receipt = s.saveCredentialMigration(receipt)
-	if credentialMigrationPersistenceFailed(receipt) {
+	return s.prepareAndContinueCredentialMigrationRollback(ctx, receipt)
+}
+
+func (s *Server) prepareAndContinueCredentialMigrationRollback(ctx context.Context, receipt hub.CredentialMigrationReceipt) hub.CredentialMigrationReceipt {
+	current, err := s.migrationConnection(receipt.ConnectionID)
+	if err != nil {
+		return s.manualCredentialRecovery(receipt, "rollback", "connection_unavailable", "Connection is unavailable for automatic rollback")
+	}
+	if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
+		return s.manualCredentialRecovery(receipt, "rollback", "migration_identity_changed", "Credential migration identity changed before rollback")
+	}
+	var effectID string
+	var prepared hub.CredentialMigrationGatewayReceipt
+	var prepareErr error
+	if credentialMigrationGatewayRollbackRequired(current.Provider, receipt) {
+		effectID, prepared, prepareErr = prepareCredentialMigrationRollbackEffect(s, current, receipt)
+	} else {
+		effectID = migrationGatewayEffectID(receipt.ID, receipt.PreviousCredentialRef, "rollback", receipt.RollbackEffectAttempt+1)
+		prepared = hub.CredentialMigrationGatewayReceipt{Status: "not_applicable"}
+	}
+	if prepareErr != nil {
+		return s.manualCredentialRecovery(receipt, "rollback", "rollback_effect_prepare_failed", "Gateway rollback effect could not be durably prepared")
+	}
+	receipt.RollbackEffectID = effectID
+	receipt.RollbackEffectAttempt++
+	receipt.RollbackEffectState = "rollback_prepared"
+	receipt.RollbackGatewayReceipt = &prepared
+	receipt.State = hub.CredentialMigrationRollingBack
+	receipt = s.saveCredentialMigrationControlled(receipt, receipt.PreviousCredentialRef, receipt.TargetCredentialRef)
+	if receipt.State == hub.CredentialMigrationManualRecoveryRequired {
 		return receipt
 	}
 	return s.continueCredentialMigrationRollback(ctx, receipt, true)
@@ -392,8 +485,11 @@ func (s *Server) continueCredentialMigrationRollback(ctx context.Context, receip
 	if err != nil {
 		return s.manualCredentialRecovery(receipt, "rollback", "connection_unavailable", "Connection is unavailable for automatic rollback")
 	}
+	if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
+		return s.manualCredentialRecovery(receipt, "rollback", "migration_identity_changed", "Credential migration identity changed during rollback")
+	}
 	if current.CredentialRef == receipt.TargetCredentialRef {
-		if _, err := s.hub.CompareAndSwapConnectionCredential(current.ID, receipt.TargetCredentialRef, receipt.PreviousCredentialRef); err != nil {
+		if _, err := s.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.TargetCredentialRef, receipt.PreviousCredentialRef); err != nil {
 			return s.manualCredentialRecovery(receipt, "rollback", "reference_restore_failed", "Canonical credential reference could not be restored")
 		}
 	} else if current.CredentialRef != receipt.PreviousCredentialRef {
@@ -411,27 +507,23 @@ func (s *Server) continueCredentialMigrationRollback(ctx context.Context, receip
 				return s.manualCredentialRecovery(receipt, "rollback", "gateway_rollback_indeterminate", "Gateway rollback may have occurred; explicit reconciliation is required before retry")
 			}
 		}
-		receipt.GatewayReceipt = &gatewayReceipt
+		gatewayReceipt = preserveMigrationGatewayEffectTarget(receipt.RollbackGatewayReceipt, gatewayReceipt)
+		receipt.RollbackGatewayReceipt = &gatewayReceipt
 		if rollbackErr != nil {
 			return s.manualCredentialRecovery(receipt, "rollback", "gateway_restore_failed", "Previous gateway executable, unit, or heartbeat could not be restored")
 		}
 	}
-	receipt.GatewayEffectState = "rollback_applied"
+	receipt.RollbackEffectState = "rollback_applied"
 	receipt.State = hub.CredentialMigrationRolledBack
 	return s.saveCredentialMigration(receipt)
 }
 
 func credentialMigrationGatewayRollbackRequired(provider string, receipt hub.CredentialMigrationReceipt) bool {
-	if managedGatewayProvider(provider) == "" || receipt.GatewayReceipt == nil {
+	if managedGatewayProvider(provider) == "" {
 		return false
 	}
-	if receipt.GatewayReceipt.Status == "not_applicable" {
-		return false
-	}
-	if receipt.GatewayReceipt.Status == "anchor_failed" && receipt.GatewayReceipt.AnchorID == "" {
-		return false
-	}
-	return receipt.GatewayReceipt.AnchorID != ""
+	return receipt.State == hub.CredentialMigrationCompleted || receipt.GatewayEffectAttempt > 0 ||
+		receipt.GatewayEffectID != "" || receipt.GatewayReceipt != nil
 }
 
 func (s *Server) migrationConnection(connectionID string) (hub.PlatformConnection, error) {
@@ -449,6 +541,14 @@ func (s *Server) saveCredentialMigration(receipt hub.CredentialMigrationReceipt)
 		receipt.State = hub.CredentialMigrationManualRecoveryRequired
 		receipt.Error = &hub.CredentialMigrationError{Stage: "receipt", Code: "receipt_persist_failed", Message: "Credential migration receipt could not be persisted"}
 		return receipt
+	}
+	return saved
+}
+
+func (s *Server) saveCredentialMigrationControlled(receipt hub.CredentialMigrationReceipt, allowedCredentialRefs ...string) hub.CredentialMigrationReceipt {
+	saved, err := s.credentialMigrationControlledSave(receipt, receipt.Version, allowedCredentialRefs...)
+	if err != nil {
+		return s.manualCredentialRecovery(receipt, "identity", "credential_migration_reservation_failed", "Credential migration identity reservation could not be persisted or matched")
 	}
 	return saved
 }
@@ -534,8 +634,8 @@ func (s *Server) loadKeychainMigrationSource(connection hub.PlatformConnection) 
 			return credentialMigrationMaterial{}, errors.New("Slack credential unavailable")
 		}
 		return credentialMigrationMaterial{
-			Binding: credentialstoreBinding(loomslack.ManagedCredentialBinding(appID)), Subject: connection.AccountRef,
-			Payload: credentialstore.Payload{Provider: "slack", Kind: "tokens", Values: map[string]string{"appID": appID, "botToken": tokens.Bot, "appToken": tokens.App}},
+			Binding: credentialstoreBinding(loomslack.ManagedCredentialBinding(appID, connection.AccountRef)), Subject: connection.AccountRef,
+			Payload: credentialstore.Payload{Provider: "slack", Kind: "tokens", Values: map[string]string{"appID": appID, "teamID": connection.AccountRef, "botToken": tokens.Bot, "appToken": tokens.App}},
 		}, nil
 	case "parall":
 		agentID, identityErr := s.parallMigrationAgentID(connection)
@@ -592,8 +692,8 @@ func (s *Server) loadManagedMigrationMaterial(connection hub.PlatformConnection,
 			return credentialMigrationMaterial{}, err
 		}
 		return credentialMigrationMaterial{
-			Binding: credentialstoreBinding(loomslack.ManagedCredentialBinding(appID)), Subject: connection.AccountRef,
-			Payload: credentialstore.Payload{Provider: "slack", Kind: "tokens", Values: map[string]string{"appID": appID, "botToken": tokens.Bot, "appToken": tokens.App}},
+			Binding: credentialstoreBinding(loomslack.ManagedCredentialBinding(appID, connection.AccountRef)), Subject: connection.AccountRef,
+			Payload: credentialstore.Payload{Provider: "slack", Kind: "tokens", Values: map[string]string{"appID": appID, "teamID": connection.AccountRef, "botToken": tokens.Bot, "appToken": tokens.App}},
 		}, nil
 	case "parall":
 		agentID, err := s.parallMigrationAgentID(connection)
@@ -660,10 +760,13 @@ func (s *Server) verifyMigrationProvider(ctx context.Context, connection hub.Pla
 		_, err := discoverFeishu(ctx, material.Payload.Values["appID"], material.Payload.Values["appSecret"])
 		return receipt, err
 	case "slack":
-		_, err := discoverSlackClient(ctx, material.Payload.Values["botToken"], material.Payload.Values["appToken"])
+		discovery, err := discoverSlackClient(ctx, material.Payload.Values["botToken"], material.Payload.Values["appToken"])
 		var apiErr *loomslack.APIError
 		if err != nil && errors.As(err, &apiErr) && apiErr.Method == "conversations.list" && apiErr.Code == "missing_scope" {
 			err = nil
+		}
+		if err == nil && (discovery.Identity.AppID != material.Payload.Values["appID"] || discovery.Identity.TeamID != material.Payload.Values["teamID"] || discovery.Identity.TeamID != connection.AccountRef) {
+			return receipt, errors.New("Slack App and Team identity verification failed")
 		}
 		return receipt, err
 	case "parall":

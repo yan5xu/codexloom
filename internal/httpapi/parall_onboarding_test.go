@@ -57,6 +57,43 @@ func TestRepairParallGatewayRejectsLegacyReferencesBeforeSideEffects(t *testing.
 	}
 }
 
+func TestRepairParallGatewaySharesActiveMigrationFenceBeforeSideEffects(t *testing.T) {
+	oldNew := newParallClient
+	oldLoadAgent := loadParallAgentCredentials
+	oldInstall := installManagedParallGateway
+	t.Cleanup(func() {
+		newParallClient = oldNew
+		loadParallAgentCredentials = oldLoadAgent
+		installManagedParallGateway = oldInstall
+	})
+	secretReads, providerCalls, installerCalls := 0, 0, 0
+	loadParallAgentCredentials = func(string, string) (parall.Credentials, error) {
+		secretReads++
+		return parall.Credentials{}, errors.New("migration fence must precede secret read")
+	}
+	newParallClient = func(string, string) parallAPI {
+		providerCalls++
+		return &fakeParallAPI{}
+	}
+	installManagedParallGateway = func(_ *Server, _ hub.PlatformConnection, _ hub.AgentAddress, _, _, _ string) (managedParallGateway, error) {
+		installerCalls++
+		return managedParallGateway{}, nil
+	}
+	server, connection, _ := newParallRepairFixture(t, "keychain:"+parall.AgentCredentialService("org_test", "usr_external"))
+	if _, _, err := server.hub.BeginCredentialMigration(connection); err != nil {
+		t.Fatal(err)
+	}
+	result := integrationAPIRequest(t, server.Handler(), http.MethodPost, "/api/integrations/providers/parall/gateway", map[string]any{
+		"connectionId": connection.ID,
+	}, http.StatusConflict)
+	if result["error"] != "credential_migration_in_progress" {
+		t.Fatalf("active migration repair response = %#v", result)
+	}
+	if secretReads != 0 || providerCalls != 0 || installerCalls != 0 {
+		t.Fatalf("active migration repair crossed fence: secret=%d provider=%d installer=%d", secretReads, providerCalls, installerCalls)
+	}
+}
+
 func TestRepairParallGatewayAcceptsEligibleManagedConnection(t *testing.T) {
 	fake := &fakeParallAPI{credential: randomTestCredential(t)}
 	restore := stubParall(t, fake)
@@ -178,6 +215,7 @@ func newManagedParallRepairFixtureWithHub(t *testing.T) (*Server, *hub.Hub, hub.
 }
 
 func TestSetupParallCreatesStableIdentityAndMembershipIdempotently(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{
 		organizations: []parall.Organization{{ID: "org_test", Name: "Test Org", Role: "owner"}},
 		chats:         []parall.Chat{{ID: "chat_alpha", Name: "Alpha", Description: "Alpha work", Type: "group", Visibility: "private"}},
@@ -234,6 +272,7 @@ func TestSetupParallCreatesStableIdentityAndMembershipIdempotently(t *testing.T)
 }
 
 func TestSetupParallRejectsDirectChatBeforeCreatingExternalIdentity(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{
 		organizations: []parall.Organization{{ID: "org_test", Name: "Test Org", Role: "owner"}},
 		chats:         []parall.Chat{{ID: "chat_dm", Name: "", Type: "direct", Visibility: "private"}},
@@ -259,6 +298,7 @@ func TestSetupParallRejectsDirectChatBeforeCreatingExternalIdentity(t *testing.T
 }
 
 func TestDiscoverParallUsesAgentCredentialsWithoutOwnerAccess(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{memberChats: []parall.Chat{{ID: "chat_joined", Name: "Joined group", Description: "Existing work", Type: "group"}}}
 	oldNew := newParallClient
 	oldLoadOwner := loadParallOwnerCredentials
@@ -294,6 +334,7 @@ func TestDiscoverParallUsesAgentCredentialsWithoutOwnerAccess(t *testing.T) {
 }
 
 func TestImportParallAgentWithoutOwnerIsIdempotent(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	_, restore := stubParallImport(t, fake, nil)
 	defer restore()
@@ -329,6 +370,7 @@ func TestImportParallAgentWithoutOwnerIsIdempotent(t *testing.T) {
 }
 
 func TestImportParallAgentReusesStoredCredentialWithoutKeyFile(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	stored, restore := stubParallImport(t, fake, nil)
 	defer restore()
@@ -355,6 +397,7 @@ func TestImportParallAgentReusesStoredCredentialWithoutKeyFile(t *testing.T) {
 }
 
 func TestImportParallAgentDoesNotSendStoredCredentialToAnotherAPI(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	stored, restore := stubParallImport(t, fake, nil)
 	defer restore()
@@ -377,6 +420,7 @@ func TestImportParallAgentDoesNotSendStoredCredentialToAnotherAPI(t *testing.T) 
 }
 
 func TestImportParallAgentMigratesSingleLegacyIdentityInPlace(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	_, restore := stubParallImport(t, fake, nil)
 	defer restore()
@@ -414,6 +458,7 @@ func TestImportParallAgentMigratesSingleLegacyIdentityInPlace(t *testing.T) {
 }
 
 func TestImportParallAgentArchivesDuplicateIdentityAndConvergesMembership(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	_, restore := stubParallImport(t, fake, nil)
 	defer restore()
@@ -510,6 +555,7 @@ func TestImportParallAgentArchivesDuplicateIdentityAndConvergesMembership(t *tes
 }
 
 func TestImportParallAgentRollsBackCredentialAndResourcesOnGatewayFailure(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	stored, restore := stubParallImport(t, fake, errors.New("gateway unavailable"))
 	defer restore()
@@ -538,6 +584,7 @@ func TestImportParallAgentRollsBackCredentialAndResourcesOnGatewayFailure(t *tes
 }
 
 func TestImportParallAgentRestoresLegacyConnectionOnGatewayFailure(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	fake := &fakeParallAPI{agents: []parall.User{{ID: "usr_external", DisplayName: "AI Observer", Status: "active"}}}
 	stored, restore := stubParallImport(t, fake, errors.New("gateway unavailable"))
 	defer restore()

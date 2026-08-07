@@ -88,9 +88,21 @@ loom integration credential rollback RECEIPT_ID --confirm RECEIPT_ID [--json]
 
 实际 migrate/rollback 必须使用精确确认值，dry-run 不需要。每个 Connection 只有一个 durable migration
 receipt；重跑恢复同一 receipt。迁移先写入并回读 owner-only entry，再验证 provider；有 gateway 的 provider
-还必须用目标 ref 启动同一候选 build 并取得新 heartbeat，最后才原子切换 Connection 的 canonical ref。
+还必须用目标 ref 启动同一候选 build，并取得与预持久化 generation、observed executable digest/build
+精确一致的新 heartbeat，最后才原子切换 Connection 的 canonical ref。
 Connection、Address、Membership、Inbox、Outbox ID 与历史均不改变。自动回滚不能完整恢复时终态为
 `manual_recovery_required`，不得描述为已恢复；迁移不会删除原 Keychain item。
+
+所有 credential/onboarding/setup/import/repair 操作都要求显式 `CODEX_LOOM_ADMIN_TOKEN`，loopback 地址
+本身不授予浏览器操作权限；跨 Origin/CSRF 与 read-only canary 在读取 source 或调用 provider/service 前
+fail closed。迁移冻结 Connection provider/account/scope/ref/revision 与 Address/external identity；相关并发
+写入返回 `409 credential_migration_in_progress`。Slack managed binding 同时包含 App ID 与 Team ID，同一
+App 在不同 Workspace 不共享 entry。
+
+第一份 managed credential 写入前，必须先用当前 accepted build 产生当前 manifest 版本、明确排除
+`credentials/**` 的可验证普通备份；旧、损坏、credential-bearing 或无法证明的 archive 只能标记
+`unknown_unverified`，不能满足 rollback build floor。rollback dry-run 和实际执行共用只读 validator；
+canonical ref、receipt phase、anchor/unit 或平台能力无法证明时返回 blocked/manual reason，且不修改 service。
 
 生产 cutover 必须把 accepted build 放在新的 versioned 路径，并先只切 Hub；不要在 capture rollback
 anchor 前原地覆盖旧 gateway wrapper 或 adapter。legacy Keychain gateway 会继续运行旧 inode，随后每个

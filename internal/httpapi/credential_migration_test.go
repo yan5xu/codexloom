@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/hub"
+	loomslack "github.com/yan5xu/codex-loom/internal/slack"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
 
@@ -225,7 +227,7 @@ func TestCredentialMigrationRecoversCanonicalSwitchWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.hub.CompareAndSwapConnectionCredential(fixture.connection.ID, fixture.connection.CredentialRef, targetRef); err != nil {
+	if _, err := fixture.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, fixture.connection.CredentialRef, targetRef); err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,6 +265,7 @@ func TestCredentialMigrationReconcilesPreparedEffectFromGenerationHeartbeat(t *t
 		Build: "build-reconcile", ExecutableSHA256: digest,
 	}
 	receipt.GatewayEffectID = "geff_reconcile"
+	receipt.GatewayEffectAttempt = 1
 	receipt.GatewayEffectState = "activation_prepared"
 	receipt.State = hub.CredentialMigrationGatewayActivating
 	receipt, err = fixture.hub.SaveCredentialMigration(receipt, receipt.Version)
@@ -285,12 +288,17 @@ func TestCredentialMigrationReconcilesPreparedEffectFromGenerationHeartbeat(t *t
 	}
 }
 
-func TestGatewayProcessEvidenceKeepsGenerationOptionalButExact(t *testing.T) {
+func TestGatewayProcessEvidenceRequiresExactGenerationForMigrationAcceptance(t *testing.T) {
 	digest := strings.Repeat("d", 64)
 	expected := hub.CredentialMigrationGatewayReceipt{Build: "build-optional", ExecutableSHA256: digest}
 	connection := hub.PlatformConnection{GatewayBuild: expected.Build, GatewayExecutableSHA256: digest}
+	if gatewayProcessEvidenceMatches(connection, expected) {
+		t.Fatal("generation-less heartbeat satisfied a new migration effect")
+	}
+	expected.Generation = "ggen_expected"
+	connection.GatewayGeneration = expected.Generation
 	if !gatewayProcessEvidenceMatches(connection, expected) {
-		t.Fatal("matching build and digest without a generation were rejected")
+		t.Fatal("matching generation, build, and digest were rejected")
 	}
 	connection.GatewayGeneration = "ggen_unexpected"
 	if gatewayProcessEvidenceMatches(connection, expected) {
@@ -366,9 +374,52 @@ func TestCredentialMigrationReopenDoesNotRepeatIndeterminateGatewayEffects(t *te
 			t.Fatalf("rollback reopen = %#v, err=%v, calls=%#v", recovered, err, fake)
 		}
 	})
+
+	t.Run("rollback persist failure reconciles proven effect", func(t *testing.T) {
+		fixture := newCredentialMigrationFixture(t)
+		fake := installCredentialMigrationFake(t, fixture.connection, randomTestCredential(t))
+		completed, err := fixture.server.migrateCredential(t.Context(), fixture.connection.ID, credentialMigrationRequest{Confirm: fixture.connection.ID}, "http://127.0.0.1")
+		if err != nil || completed["state"] != hub.CredentialMigrationCompleted {
+			t.Fatalf("completed migration = %#v, err=%v", completed, err)
+		}
+		reconcileCredentialMigrationGatewayEffect = func(_ context.Context, _ *Server, _ hub.PlatformConnection, receipt hub.CredentialMigrationReceipt, rollback bool) (hub.CredentialMigrationGatewayReceipt, bool, error) {
+			if !rollback || receipt.RollbackGatewayReceipt == nil {
+				return hub.CredentialMigrationGatewayReceipt{}, false, nil
+			}
+			result := *receipt.RollbackGatewayReceipt
+			result.Status = "restored"
+			return result, true, nil
+		}
+		persist := fixture.server.credentialMigrationSave
+		failed := false
+		fixture.server.credentialMigrationSave = func(receipt hub.CredentialMigrationReceipt, version int) (hub.CredentialMigrationReceipt, error) {
+			if receipt.State == hub.CredentialMigrationRolledBack && !failed {
+				failed = true
+				return hub.CredentialMigrationReceipt{}, errors.New("injected rollback receipt persistence failure")
+			}
+			return persist(receipt, version)
+		}
+		result, err := fixture.server.rollbackCredentialMigration(t.Context(), completed["id"].(string), credentialMigrationRequest{Confirm: completed["id"].(string)})
+		if err != nil || result["state"] != hub.CredentialMigrationManualRecoveryRequired || fake.rollbackCalls != 1 {
+			t.Fatalf("rollback = %#v, err=%v, calls=%#v", result, err, fake)
+		}
+		fixture.hub.Shutdown()
+		reopened, err := hub.OpenWithOptions(fixture.server.st, hub.OpenOptions{Passive: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.Shutdown()
+		recovered, err := New(reopened, fixture.server.st, fstest.MapFS{"index.html": {Data: []byte("app")}}).migrateCredential(t.Context(), fixture.connection.ID, credentialMigrationRequest{Confirm: fixture.connection.ID}, "http://127.0.0.1")
+		if err != nil || recovered["state"] != hub.CredentialMigrationRolledBack || fake.rollbackCalls != 1 {
+			t.Fatalf("proven rollback reopen = %#v, err=%v, calls=%#v", recovered, err, fake)
+		}
+	})
 }
 
 func TestCredentialMigrationPreflightEnumeratesOnlyEnabledKeychainConnections(t *testing.T) {
+	oldFloor := verifyManagedCredentialWriteFloor
+	verifyManagedCredentialWriteFloor = func(*Server) error { return nil }
+	t.Cleanup(func() { verifyManagedCredentialWriteFloor = oldFloor })
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -426,6 +477,30 @@ func TestCredentialMigrationPreflightEnumeratesOnlyEnabledKeychainConnections(t 
 	}
 }
 
+func TestSlackMigrationVerificationRequiresAppAndTeamIdentity(t *testing.T) {
+	oldDiscover := discoverSlackClient
+	t.Cleanup(func() { discoverSlackClient = oldDiscover })
+	material := credentialMigrationMaterial{Payload: credentialstore.Payload{
+		Provider: "slack", Kind: "tokens", Values: map[string]string{
+			"appID": "A_EXPECTED", "teamID": "T_EXPECTED",
+			"botToken": randomTestCredential(t), "appToken": randomTestCredential(t),
+		},
+	}}
+	connection := hub.PlatformConnection{Provider: "slack", AccountRef: "T_EXPECTED"}
+	discoverSlackClient = func(context.Context, string, string) (loomslack.Discovery, error) {
+		return loomslack.Discovery{Identity: loomslack.Identity{AppID: "A_EXPECTED", TeamID: "T_OTHER"}}, nil
+	}
+	if _, err := (&Server{}).verifyMigrationProvider(t.Context(), connection, material); err == nil {
+		t.Fatal("Slack migration accepted credentials from a different workspace")
+	}
+	discoverSlackClient = func(context.Context, string, string) (loomslack.Discovery, error) {
+		return loomslack.Discovery{Identity: loomslack.Identity{AppID: "A_EXPECTED", TeamID: "T_EXPECTED"}}, nil
+	}
+	if _, err := (&Server{}).verifyMigrationProvider(t.Context(), connection, material); err != nil {
+		t.Fatalf("matching Slack App and Team identity failed: %v", err)
+	}
+}
+
 func TestCredentialMigrationHTTPContract(t *testing.T) {
 	fixture := newCredentialMigrationFixture(t)
 	installCredentialMigrationFake(t, fixture.connection, randomTestCredential(t))
@@ -450,6 +525,86 @@ func TestCredentialMigrationHTTPContract(t *testing.T) {
 	if rolledBack["state"] != hub.CredentialMigrationRolledBack {
 		t.Fatalf("rollback API response = %#v", rolledBack)
 	}
+}
+
+func TestCredentialMigrationReservationReturnsConflictForIdentityWrites(t *testing.T) {
+	fixture := newCredentialMigrationFixture(t)
+	if _, _, err := fixture.hub.BeginCredentialMigration(fixture.connection); err != nil {
+		t.Fatal(err)
+	}
+	handler := fixture.server.Handler()
+	connectionResult := integrationAPIRequest(t, handler, http.MethodPatch,
+		"/api/integrations/connections/"+fixture.connection.ID,
+		map[string]any{"accountRef": "changed-account"}, http.StatusConflict)
+	if connectionResult["error"] != "credential_migration_in_progress" {
+		t.Fatalf("Connection conflict response = %#v", connectionResult)
+	}
+	addressResult := integrationAPIRequest(t, handler, http.MethodPatch,
+		"/api/integrations/addresses/"+fixture.address.ID,
+		map[string]any{"externalIdentity": "changed-identity"}, http.StatusConflict)
+	if addressResult["error"] != "credential_migration_in_progress" {
+		t.Fatalf("Address conflict response = %#v", addressResult)
+	}
+}
+
+func TestProviderSetupSharesMigrationReservationBeforeCredentialOrProviderHooks(t *testing.T) {
+	fixture := newCredentialMigrationFixture(t)
+	if _, _, err := fixture.hub.BeginCredentialMigration(fixture.connection); err != nil {
+		t.Fatal(err)
+	}
+	oldDiscover := discoverFeishu
+	providerCalls := 0
+	discoverFeishu = func(context.Context, string, string) (feishu.Discovery, error) {
+		providerCalls++
+		return feishu.Discovery{}, errors.New("provider hook must not run")
+	}
+	t.Cleanup(func() { discoverFeishu = oldDiscover })
+	_, err := fixture.server.setupLark(t.Context(), larkSetupParams{
+		Agent: "migration-agent", AppID: fixture.connection.AccountRef,
+	}, "http://127.0.0.1")
+	var hubErr *hub.HubError
+	if !errors.As(err, &hubErr) || hubErr.Status != http.StatusConflict || hubErr.Message != "credential_migration_in_progress" {
+		t.Fatalf("provider setup migration fence = %v", err)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider setup crossed migration fence: calls=%d", providerCalls)
+	}
+}
+
+func TestCredentialMigrationRollbackDryRunSharesFailClosedValidator(t *testing.T) {
+	t.Run("receipt phase", func(t *testing.T) {
+		fixture := newCredentialMigrationFixture(t)
+		receipt, _, err := fixture.hub.BeginCredentialMigration(fixture.connection)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.server.rollbackCredentialMigration(t.Context(), receipt.ID, credentialMigrationRequest{DryRun: true})
+		if err != nil || result["rollbackStatus"] != "blocked" || result["rollbackReason"] != "receipt_phase_not_rollbackable" {
+			t.Fatalf("preparing rollback dry-run = %#v, err=%v", result, err)
+		}
+	})
+
+	t.Run("anchor proof", func(t *testing.T) {
+		fixture := newCredentialMigrationFixture(t)
+		fake := installCredentialMigrationFake(t, fixture.connection, randomTestCredential(t))
+		completed, err := fixture.server.migrateCredential(t.Context(), fixture.connection.ID, credentialMigrationRequest{Confirm: fixture.connection.ID}, "http://127.0.0.1")
+		if err != nil || completed["state"] != hub.CredentialMigrationCompleted {
+			t.Fatalf("completed migration = %#v, err=%v", completed, err)
+		}
+		preflightCredentialMigrationRollback = func(_ *Server, _ hub.PlatformConnection, _ hub.CredentialMigrationReceipt) error {
+			return errors.New("anchor unavailable")
+		}
+		result, err := fixture.server.rollbackCredentialMigration(t.Context(), completed["id"].(string), credentialMigrationRequest{DryRun: true})
+		if err != nil || result["rollbackStatus"] != "blocked" || result["rollbackReason"] != "gateway_anchor_or_platform_unverified" {
+			t.Fatalf("unverified anchor dry-run = %#v, err=%v", result, err)
+		}
+		if _, err := fixture.server.rollbackCredentialMigration(t.Context(), completed["id"].(string), credentialMigrationRequest{Confirm: completed["id"].(string)}); err == nil {
+			t.Fatal("actual rollback bypassed the shared validator")
+		}
+		if fake.rollbackCalls != 0 {
+			t.Fatal("blocked rollback invoked the gateway effect")
+		}
+	})
 }
 
 func TestCredentialRoutesRequireExplicitTokenAndRejectCrossOriginBeforeHooks(t *testing.T) {
@@ -614,7 +769,11 @@ func installCredentialMigrationFake(t *testing.T, connection hub.PlatformConnect
 	oldRollback := rollbackCredentialMigrationGateway
 	oldGatewayPreflight := preflightCredentialMigrationGateway
 	oldPrepare := prepareCredentialMigrationGatewayEffect
+	oldPrepareRollback := prepareCredentialMigrationRollbackEffect
 	oldReconcile := reconcileCredentialMigrationGatewayEffect
+	oldRollbackPreflight := preflightCredentialMigrationRollback
+	oldFloor := verifyManagedCredentialWriteFloor
+	verifyManagedCredentialWriteFloor = func(*Server) error { return nil }
 	loadCredentialMigrationSource = func(_ *Server, candidate hub.PlatformConnection) (credentialMigrationMaterial, error) {
 		fake.sourceCalls++
 		if candidate.ID != connection.ID {
@@ -630,9 +789,15 @@ func installCredentialMigrationFake(t *testing.T, connection hub.PlatformConnect
 		return hub.CredentialMigrationProviderReceipt{Status: "verified", Subject: candidate.AccountRef}, fake.providerErr
 	}
 	prepareCredentialMigrationGatewayEffect = func(_ *Server, _ hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (string, hub.CredentialMigrationGatewayReceipt, error) {
-		return "geff_fixture", hub.CredentialMigrationGatewayReceipt{
+		return fmt.Sprintf("geff_fixture_%d", receipt.GatewayEffectAttempt+1), hub.CredentialMigrationGatewayReceipt{
 			Status: "activation_prepared", AnchorID: receipt.ID, Generation: "ggen_fixture",
 			Build: "fake-build", ExecutableSHA256: strings.Repeat("a", 64),
+		}, nil
+	}
+	prepareCredentialMigrationRollbackEffect = func(_ *Server, _ hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (string, hub.CredentialMigrationGatewayReceipt, error) {
+		return fmt.Sprintf("geff_rollback_fixture_%d", receipt.RollbackEffectAttempt+1), hub.CredentialMigrationGatewayReceipt{
+			Status: "rollback_prepared", AnchorID: receipt.ID, Generation: "ggen_rollback_fixture",
+			Build: "fake-build", ExecutableSHA256: strings.Repeat("b", 64),
 		}, nil
 	}
 	reconcileCredentialMigrationGatewayEffect = func(_ context.Context, _ *Server, _ hub.PlatformConnection, _ hub.CredentialMigrationReceipt, _ bool) (hub.CredentialMigrationGatewayReceipt, bool, error) {
@@ -650,9 +815,12 @@ func installCredentialMigrationFake(t *testing.T, connection hub.PlatformConnect
 	}
 	rollbackCredentialMigrationGateway = func(_ context.Context, _ *Server, _ hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (hub.CredentialMigrationGatewayReceipt, error) {
 		fake.rollbackCalls++
-		return hub.CredentialMigrationGatewayReceipt{Status: "restored", AnchorID: receipt.ID, Build: "fake-build"}, fake.rollbackErr
+		prepared := *receipt.RollbackGatewayReceipt
+		prepared.Status = "restored"
+		return prepared, fake.rollbackErr
 	}
 	preflightCredentialMigrationGateway = func(_ *Server, _ hub.PlatformConnection) error { return nil }
+	preflightCredentialMigrationRollback = func(_ *Server, _ hub.PlatformConnection, _ hub.CredentialMigrationReceipt) error { return nil }
 	t.Cleanup(func() {
 		loadCredentialMigrationSource = oldSource
 		verifyCredentialMigrationProvider = oldVerify
@@ -660,7 +828,10 @@ func installCredentialMigrationFake(t *testing.T, connection hub.PlatformConnect
 		rollbackCredentialMigrationGateway = oldRollback
 		preflightCredentialMigrationGateway = oldGatewayPreflight
 		prepareCredentialMigrationGatewayEffect = oldPrepare
+		prepareCredentialMigrationRollbackEffect = oldPrepareRollback
 		reconcileCredentialMigrationGatewayEffect = oldReconcile
+		preflightCredentialMigrationRollback = oldRollbackPreflight
+		verifyManagedCredentialWriteFloor = oldFloor
 	})
 	return fake
 }

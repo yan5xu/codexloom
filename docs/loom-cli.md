@@ -690,7 +690,12 @@ loom integration credential rollback RECEIPT_ID --confirm RECEIPT_ID [--json]
 
 无 ID preflight 只枚举 enabled、non-archived 的 Lark/Slack/Parall/GitHub Keychain Connection，排除
 `env:`。每个 Connection 重用同一 durable receipt；自动回滚不完整时返回
-`manual_recovery_required`。普通 backup/support bundle 排除 `credentials/**`，不是完整可运行恢复。
+`manual_recovery_required`。这些 credential 命令即使连接 loopback Hub 也必须使用显式
+`CODEX_LOOM_ADMIN_TOKEN`；read-only canary 不会读取 source。第一份 managed credential 写入前，当前
+accepted build 必须已有可验证、明确排除 `credentials/**` 的当前格式普通备份，否则返回
+`credential_rollback_build_floor_unavailable`。普通 backup/support bundle 不是完整可运行恢复；legacy、
+损坏或无法证明 exclusion 的 archive 显示为 `unknown_unverified`。rollback dry-run 与真实 rollback 使用
+同一 validator，只有 `ready` 才会执行。
 
 单个 Address 的生命周期和跨 Agent 迁移必须使用受管命令。所有写操作都会先执行同一份
 preflight；`--dry-run` 只显示结果，实际执行必须提供刚读取到的 version 和精确确认值。CLI 在未显式

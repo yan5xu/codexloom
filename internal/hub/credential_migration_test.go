@@ -98,6 +98,113 @@ func TestConnectionAcceptsOnlyExistingProviderMatchedManagedReference(t *testing
 	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{CredentialRef: "managed:../../outside"}); err == nil {
 		t.Fatal("path-like managed credential reference was accepted")
 	}
+	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{Provider: "slack"}); err == nil {
+		t.Fatal("provider-only update left a managed credential bound to the wrong provider")
+	}
+}
+
+func TestCredentialMigrationReservationFencesConnectionAndAddressIdentity(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveAgents(map[string]*Agent{
+		"agent-fence": {ID: "agent-fence", Name: "agent-fence", Status: "idle", CreatedAt: "2026-08-07T00:00:00Z", UpdatedAt: "2026-08-07T00:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	enabled := true
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", AccountRef: "A_FENCE", CredentialRef: "keychain:fence", Enabled: &enabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(AddressParams{
+		Agent: "agent-fence", ConnectionID: connection.ID, ExternalIdentity: "bot-fence",
+		TriggerPolicy: "mention", ReplyPolicy: "final_answer", TrustDomain: "fence",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, created, err := h.BeginCredentialMigration(connection)
+	if err != nil || !created || receipt.ConnectionRevision < 1 || len(receipt.AddressSnapshots) != 1 || receipt.AddressSnapshots[0].ID != address.ID {
+		t.Fatalf("migration identity snapshot = %#v, created=%v, err=%v", receipt, created, err)
+	}
+	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{AccountRef: "A_CHANGED"}); err == nil || err.Error() != "credential_migration_in_progress" {
+		t.Fatalf("Connection identity mutation error = %v", err)
+	}
+	if _, err := h.UpdateAddress(address.ID, AddressParams{ExternalIdentity: "bot-changed"}); err == nil || err.Error() != "credential_migration_in_progress" {
+		t.Fatalf("Address identity mutation error = %v", err)
+	}
+	if _, err := h.CreateAddress(AddressParams{
+		Agent: "agent-fence", ConnectionID: connection.ID, ExternalIdentity: "bot-new",
+		TriggerPolicy: "mention", ReplyPolicy: "final_answer", TrustDomain: "fence",
+	}); err == nil || err.Error() != "credential_migration_in_progress" {
+		t.Fatalf("new Address binding error = %v", err)
+	}
+	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{Status: "connected"}); err != nil {
+		t.Fatalf("heartbeat was incorrectly fenced: %v", err)
+	}
+	if err := h.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef); err != nil {
+		t.Fatalf("heartbeat changed the frozen migration identity: %v", err)
+	}
+}
+
+func TestCredentialMigrationEffectAttemptFreezesTargetProof(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", AccountRef: "A_EFFECT", CredentialRef: "keychain:effect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := h.BeginCredentialMigration(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRef, _, err := credentials.PutBound("lark/app-secret/A_EFFECT", credentialstore.Payload{
+		Provider: "lark", Kind: "app-secret", Values: map[string]string{"appID": "A_EFFECT", "appSecret": randomHubCredential(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.TargetCredentialRef = targetRef
+	receipt.State = CredentialMigrationGatewayActivating
+	receipt.GatewayEffectID = "geff_attempt_one"
+	receipt.GatewayEffectAttempt = 1
+	receipt.GatewayEffectState = "activation_prepared"
+	receipt.GatewayReceipt = &CredentialMigrationGatewayReceipt{
+		Status: "activation_prepared", Manager: "launchd", Service: "svc-effect", AnchorID: receipt.ID,
+		Build: "build-effect", ExecutableSHA256: strings.Repeat("a", 64), Generation: "ggen-effect-1",
+	}
+	receipt, err = h.SaveCredentialMigrationControlled(receipt, receipt.Version, receipt.PreviousCredentialRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := cloneCredentialMigrationReceipt(receipt)
+	tampered.GatewayReceipt.Build = "build-tampered"
+	if _, err := h.SaveCredentialMigration(tampered, tampered.Version); err == nil {
+		t.Fatal("same activation attempt changed its target proof")
+	}
+	tampered = cloneCredentialMigrationReceipt(receipt)
+	tampered.GatewayEffectAttempt++
+	if _, err := h.SaveCredentialMigration(tampered, tampered.Version); err == nil {
+		t.Fatal("new activation attempt reused the prior effect identity")
+	}
 }
 
 func TestConnectionControlSnapshotIgnoresHeartbeatButDetectsIdentityDrift(t *testing.T) {
@@ -135,11 +242,51 @@ func TestConnectionControlSnapshotIgnoresHeartbeatButDetectsIdentityDrift(t *tes
 	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{Enabled: &enabled}); err != nil {
 		t.Fatal(err)
 	}
+	if err := h.MatchConnectionControl(snapshot); err == nil {
+		t.Fatal("control revision allowed enabled-state ABA to match the frozen snapshot")
+	}
 	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{AccountRef: "app-b"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.MatchConnectionControl(snapshot); err == nil {
 		t.Fatal("identity drift matched the frozen control snapshot")
+	}
+}
+
+func TestLegacyCandidateMigrationReceiptFailsClosedWithoutIdentitySnapshot(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", AccountRef: "A_LEGACY", CredentialRef: "keychain:legacy", Enabled: &enabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Shutdown()
+	receiptID := "cmig_legacy_candidate"
+	if err := st.SaveCredentialMigrations(map[string]*CredentialMigrationReceipt{
+		receiptID: {
+			ID: receiptID, ConnectionID: connection.ID, Provider: connection.Provider,
+			State: CredentialMigrationGatewayActivating, PreviousCredentialRef: connection.CredentialRef,
+			GatewayEffectID: "geff_legacy_candidate", GatewayEffectState: "activation_prepared",
+			CreatedAt: "2026-08-07T00:00:00Z", UpdatedAt: "2026-08-07T00:00:00Z", Version: 1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Shutdown()
+	receipt, err := reopened.GetCredentialMigration(receiptID)
+	if err != nil || receipt.State != CredentialMigrationManualRecoveryRequired || receipt.Error == nil || receipt.Error.Code != "migration_identity_snapshot_unavailable" {
+		t.Fatalf("legacy candidate receipt = %#v, err=%v", receipt, err)
 	}
 }
 

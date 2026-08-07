@@ -220,12 +220,22 @@ func (s *Server) connectGitHubToken(ctx context.Context, rawToken, rawResourceOw
 	if token == "" {
 		return hub.PlatformConnection{}, "", &hub.HubError{Status: 400, Message: "GitHub token is required"}
 	}
+	resourceOwner, err := normalizeGitHubResourceOwner(rawResourceOwner)
+	if err != nil {
+		return hub.PlatformConnection{}, "", err
+	}
+	unlock, guardErr := s.lockCredentialIdentityMutation(providerConnectionIDs(s.hub.ListConnections(), "github", func(connection hub.PlatformConnection) bool {
+		return strings.EqualFold(connection.ScopeRef, resourceOwner) || connection.ScopeRef == ""
+	})...)
+	if guardErr != nil {
+		return hub.PlatformConnection{}, "", guardErr
+	}
+	defer unlock()
 	user, err := validateGitHubCredential(ctx, token)
 	if err != nil {
 		return hub.PlatformConnection{}, "", err
 	}
-	resourceOwner, err := normalizeGitHubResourceOwner(rawResourceOwner)
-	if err != nil {
+	if err := s.requireManagedCredentialWriteFloor(); err != nil {
 		return hub.PlatformConnection{}, "", err
 	}
 	credentials, err := s.hub.CredentialStore()
@@ -254,8 +264,18 @@ func (s *Server) connectGitHubCredential(ctx context.Context, rawRef, rawResourc
 	if !strings.HasPrefix(credentialRef, "env:") && !strings.HasPrefix(credentialRef, "keychain:") && !strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
 		return hub.PlatformConnection{}, "", &hub.HubError{Status: 400, Message: "GitHub credentialRef must use env:, keychain:, or managed:"}
 	}
+	resourceOwner, err := normalizeGitHubResourceOwner(rawResourceOwner)
+	if err != nil {
+		return hub.PlatformConnection{}, "", err
+	}
+	unlock, guardErr := s.lockCredentialIdentityMutation(providerConnectionIDs(s.hub.ListConnections(), "github", func(connection hub.PlatformConnection) bool {
+		return connection.CredentialRef == credentialRef || strings.EqualFold(connection.ScopeRef, resourceOwner) || connection.ScopeRef == ""
+	})...)
+	if guardErr != nil {
+		return hub.PlatformConnection{}, "", guardErr
+	}
+	defer unlock()
 	var credentials *credentialstore.Store
-	var err error
 	var token string
 	if strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
 		credentials, err = s.hub.CredentialStore()
@@ -269,10 +289,6 @@ func (s *Server) connectGitHubCredential(ctx context.Context, rawRef, rawResourc
 		return hub.PlatformConnection{}, "", &hub.HubError{Status: 400, Message: "Load GitHub credential: " + err.Error()}
 	}
 	user, err := validateGitHubCredential(ctx, token)
-	if err != nil {
-		return hub.PlatformConnection{}, "", err
-	}
-	resourceOwner, err := normalizeGitHubResourceOwner(rawResourceOwner)
 	if err != nil {
 		return hub.PlatformConnection{}, "", err
 	}

@@ -133,8 +133,18 @@ func (s *Server) saveLarkCredentials(ctx context.Context, p larkCredentialParams
 	if appID == "" || appSecret == "" {
 		return larkDiscovery{}, &hub.HubError{Status: 400, Message: "Feishu App ID and App Secret are required"}
 	}
+	unlock, err := s.lockCredentialIdentityMutation(providerConnectionIDs(s.hub.ListConnections(), "lark", func(connection hub.PlatformConnection) bool {
+		return connection.AccountRef == appID
+	})...)
+	if err != nil {
+		return larkDiscovery{}, err
+	}
+	defer unlock()
 	if _, err := discoverFeishu(ctx, appID, appSecret); err != nil {
 		return larkDiscovery{}, &hub.HubError{Status: 400, Message: "Feishu verification failed: " + err.Error()}
+	}
+	if err := s.requireManagedCredentialWriteFloor(); err != nil {
+		return larkDiscovery{}, err
 	}
 	credentials, err := s.hub.CredentialStore()
 	if err != nil {
@@ -162,6 +172,14 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 	if agentID == "" {
 		return nil, &hub.HubError{Status: 404, Message: "Agent not found: " + agentKey}
 	}
+	requestedAppID := strings.TrimSpace(p.AppID)
+	unlock, err := s.lockCredentialIdentityMutation(providerConnectionIDs(s.hub.ListConnections(), "lark", func(connection hub.PlatformConnection) bool {
+		return requestedAppID == "" || connection.AccountRef == requestedAppID
+	})...)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	discovery := s.discoverLark(ctx, p.AppID)
 	if !discovery.BotReady {
@@ -179,7 +197,6 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 			break
 		}
 	}
-	var err error
 	credentials, credentialErr := s.hub.CredentialStore()
 	if credentialErr != nil {
 		return nil, &hub.HubError{Status: 500, Message: "Open managed credential store: " + credentialErr.Error()}

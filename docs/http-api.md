@@ -252,6 +252,22 @@ values and keep the existing Connection/Address/Membership wire shape. They alwa
 `credentialsIncluded=false`, `runnableRestore=false`, and `backupStatus=credentials_excluded`, because ordinary
 backup excludes `credentials/**`. `manual_recovery_required` is a terminal fail-closed state, not a successful restore.
 
+Credential preflight, migrate, receipt, rollback, onboarding, import, setup, and repair routes always require the
+explicit `X-Codex-Loom-Admin-Token`, including on loopback. The request Origin must match the request scheme and
+host; cross-site browser requests and read-only canaries fail before body parsing, credential resolution, provider
+access, or service mutation. While a receipt owns a Connection, writes that would change its provider/account/scope,
+canonical credential reference, enabled/archive state, or Address identity return HTTP `409`
+`credential_migration_in_progress`.
+
+Before the first managed credential write, the current accepted build must have a bounded, verified ordinary backup
+manifest at the current format floor, explicitly excluding `credentials/**`; otherwise the operation returns HTTP
+`409 credential_rollback_build_floor_unavailable`. Backup archives with legacy, corrupt, ambiguous, or
+credential-bearing manifests are `unknown_unverified`, not proof of exclusion. Rollback dry-run and execution share
+the same read-only validator and report a non-secret `rollbackStatus`/`rollbackReason`; only `ready` may proceed.
+Gateway migration success requires a fresh heartbeat matching the prepared generation, observed executable digest,
+and build. An HTTP success still means only that an operation reached its stated durable phase, not that an unrelated
+or later heartbeat has recovered the Connection.
+
 ### Provider Setup Routes
 
 | Provider | Exact route |

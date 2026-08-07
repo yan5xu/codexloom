@@ -111,10 +111,10 @@ func (s *Server) preflightMigrationGateway(connection hub.PlatformConnection) er
 }
 
 func (s *Server) prepareMigrationGatewayEffect(connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (string, hub.CredentialMigrationGatewayReceipt, error) {
-	if err := s.matchMigrationConnectionControl(connection); err != nil {
+	if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef); err != nil {
 		return "", hub.CredentialMigrationGatewayReceipt{}, err
 	}
-	effectID := migrationGatewayEffectID(receipt.ID, receipt.TargetCredentialRef)
+	effectID := migrationGatewayEffectID(receipt.ID, receipt.TargetCredentialRef, "activation", receipt.GatewayEffectAttempt+1)
 	provider := managedGatewayProvider(connection.Provider)
 	if !buildinfo.ValidBuildIdentity(s.build.Commit) {
 		return "", hub.CredentialMigrationGatewayReceipt{}, errors.New("gateway build identity is unavailable")
@@ -157,8 +157,73 @@ func (s *Server) prepareMigrationGatewayEffect(connection hub.PlatformConnection
 	return effectID, prepared, nil
 }
 
+func (s *Server) prepareMigrationGatewayRollbackEffect(connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (string, hub.CredentialMigrationGatewayReceipt, error) {
+	if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	provider := managedGatewayProvider(connection.Provider)
+	if provider == "" {
+		if strings.EqualFold(connection.Provider, "github") {
+			attempt := receipt.RollbackEffectAttempt + 1
+			effectID := migrationGatewayEffectID(receipt.ID, receipt.PreviousCredentialRef, "rollback", attempt)
+			return effectID, hub.CredentialMigrationGatewayReceipt{Status: "not_applicable"}, nil
+		}
+		return "", hub.CredentialMigrationGatewayReceipt{}, errors.New("provider has no managed gateway")
+	}
+	if receipt.GatewayReceipt == nil || !validMigrationObjectID(receipt.GatewayReceipt.AnchorID, "cmig_") {
+		return "", hub.CredentialMigrationGatewayReceipt{}, errors.New("gateway rollback anchor is unavailable")
+	}
+	service, err := migrationGatewayServiceFor(provider, connection.ID)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	anchorDir, err := s.migrationGatewayAnchorDir(receipt.GatewayReceipt.AnchorID, false)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	if exists, validateErr := validateExistingMigrationGatewayAnchor(anchorDir, provider, service.Manager); validateErr != nil || !exists {
+		return "", hub.CredentialMigrationGatewayReceipt{}, errors.Join(validateErr, errors.New("gateway rollback anchor is incomplete"))
+	}
+	unit, err := readBoundedPrivateFile(filepath.Join(anchorDir, "unit"), 1<<20, false)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	arguments, err := gatewayUnitArguments(string(unit), service.Manager)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	wrapperName := "loom-" + provider + "-gateway"
+	if provider == "feishu" {
+		wrapperName = "loom-feishu-gateway"
+	}
+	wrapperPath := findArgumentByBase(arguments, wrapperName)
+	evidence, verified, err := readMigrationGatewayAnchorEvidence(anchorDir, wrapperPath)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	if !verified {
+		return "", hub.CredentialMigrationGatewayReceipt{}, errors.New("gateway rollback anchor executable build is unverified")
+	}
+	attempt := receipt.RollbackEffectAttempt + 1
+	effectID := migrationGatewayEffectID(receipt.ID, evidence.ExecutableSHA256+"/"+evidence.Generation, "rollback", attempt)
+	evidence.Status = "rollback_prepared"
+	evidence.AnchorID = receipt.GatewayReceipt.AnchorID
+	evidence.Manager = service.Manager
+	evidence.Service = service.Service
+	return effectID, evidence, nil
+}
+
+func (s *Server) preflightMigrationGatewayRollback(connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) error {
+	_, _, err := s.prepareMigrationGatewayRollbackEffect(connection, receipt)
+	return err
+}
+
 func (s *Server) activateMigrationGateway(ctx context.Context, connection hub.PlatformConnection, targetRef, receiptID, hubURL string, prepared hub.CredentialMigrationGatewayReceipt) (hub.CredentialMigrationGatewayReceipt, error) {
-	if err := s.matchMigrationConnectionControl(connection); err != nil {
+	durableReceipt, receiptErr := s.hub.GetCredentialMigration(receiptID)
+	if receiptErr != nil {
+		return prepared, receiptErr
+	}
+	if err := s.hub.MatchCredentialMigrationIdentity(durableReceipt, durableReceipt.PreviousCredentialRef); err != nil {
 		return prepared, err
 	}
 	provider := managedGatewayProvider(connection.Provider)
@@ -251,6 +316,11 @@ func (s *Server) activateMigrationGateway(ctx context.Context, connection hub.Pl
 func (s *Server) rollbackMigrationGateway(ctx context.Context, connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (hub.CredentialMigrationGatewayReceipt, error) {
 	provider := managedGatewayProvider(connection.Provider)
 	result := hub.CredentialMigrationGatewayReceipt{Status: "restoring"}
+	if receipt.RollbackGatewayReceipt != nil {
+		result = *receipt.RollbackGatewayReceipt
+		result.Status = "restoring"
+		result.HeartbeatAt = ""
+	}
 	if provider == "" {
 		result.Status = "not_applicable"
 		return result, nil
@@ -298,7 +368,7 @@ func (s *Server) rollbackMigrationGateway(ctx context.Context, connection hub.Pl
 		result.AnchorID = receipt.GatewayReceipt.AnchorID
 		return result, errors.New("gateway rollback anchor executable build is unverified")
 	}
-	if err := s.matchMigrationConnectionControl(connection); err != nil {
+	if err := s.hub.MatchCredentialMigrationIdentity(receipt, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
 		result.Status = "restore_failed"
 		return result, err
 	}
@@ -475,7 +545,7 @@ func readMigrationGatewayAnchorEvidence(anchorDir, wrapperPath string) (hub.Cred
 }
 
 func validGatewayGeneration(value string) bool {
-	if len(value) > 128 {
+	if value == "" || len(value) > 128 {
 		return false
 	}
 	for index := 0; index < len(value); index++ {

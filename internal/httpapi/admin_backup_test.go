@@ -39,7 +39,7 @@ func TestBackupRetentionPolicyReadsEnvironmentAndNormalizes(t *testing.T) {
 
 func TestBackupStatusReportsCredentialExclusion(t *testing.T) {
 	status := backupStatus(nil, backup.DefaultRetentionPolicy(), t.TempDir())
-	if status["credentialsIncluded"] != false || status["runnableRestore"] != false || status["backupStatus"] != "credentials_excluded" {
+	if status["credentialsIncluded"] != false || status["runnableRestore"] != false || status["backupStatus"] != "unknown_unverified" {
 		t.Fatalf("ordinary backup status = %#v", status)
 	}
 }

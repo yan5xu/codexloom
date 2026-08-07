@@ -21,6 +21,7 @@ import (
 )
 
 func TestGitHubDeviceFlowRetriesConnectionWithGrantedToken(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	keyring.MockInit()
 	grantedCredential := randomTestCredential(t)
 	var tokenRequests atomic.Int32
@@ -188,6 +189,7 @@ func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
 }
 
 func TestGitHubTokenConnectionsMigrateLegacyAndSeparateResourceOwners(t *testing.T) {
+	allowManagedCredentialWritesForTest(t)
 	t.Setenv("CODEX_LOOM_ADMIN_TOKEN", "github-http-test-admin-token")
 	keyring.MockInit()
 	parallCredential := randomTestCredential(t)

@@ -277,70 +277,71 @@ func (s *subscriber) close() {
 type Hub struct {
 	st *store.Store
 
-	credentialStoreMu       sync.Mutex
-	credentialStore         *credentialstore.Store
-	mu                      sync.Mutex
-	contextCoverageMu       sync.Mutex
-	modelProviderMu         sync.Mutex
-	agents                  map[string]*Agent
-	agentSkillConfigs       map[string]*AgentSkillConfig
-	comms                   map[string]*AgentMessage
-	commOrder               []string
-	schedules               map[string]*Schedule
-	triggers                map[string]*Trigger
-	topics                  map[string]*Topic
-	profiles                map[string]*AgentProfile
-	teamLinks               map[string]*TeamRelationship
-	loomAgentPrompt         *LoomAgentPrompt
-	collaborationGroups     map[string]*CollaborationGroup
-	organizationLinks       map[string]*OrganizationRelationship
-	connections             map[string]*PlatformConnection
-	credentialMigrations    map[string]*CredentialMigrationReceipt
-	addresses               map[string]*AgentAddress
-	addressOperations       map[string]*AddressLifecycleOperation
-	memberships             map[string]*ConversationMembership
-	conversationCandidates  map[string]*ConversationCandidate
-	messages                map[string]*InboxMessage
-	messageOrder            []string
-	externalMessages        map[string]string
-	inbox                   map[string]*InboxItem
-	inboxOrder              []string
-	attempts                map[string]*HandlingAttempt
-	outbox                  map[string]*OutboxItem
-	outboxOrder             []string
-	providerOperations      map[string]*ProviderOperation
-	providerOperationOrder  []string
-	humanRequests           map[string]*HumanRequest
-	humanRequestOrder       []string
-	goals                   map[string]*ThreadGoal
-	seqs                    map[string]int64
-	globalSeq               int64
-	runtimes                map[string]*runtime
-	subs                    map[string]map[*subscriber]struct{}
-	globalSubs              map[*subscriber]struct{}
-	remoteConfig            RemoteConfig
-	remoteStatus            RemoteStatus
-	remotePairing           *RemotePairing
-	remoteRuntime           *remoteRuntime
-	remoteGeneration        uint64
-	remoteStartMu           sync.Mutex
-	remoteEnabledGeneration uint64
-	codexHost               *codexHostRuntime
-	codexHostGeneration     uint64
-	stop                    chan struct{}
-	stopOnce                sync.Once
-	stopping                bool
-	draining                bool
-	providerSwitching       bool
-	triggerObservations     map[string]struct{}
-	background              sync.WaitGroup
-	workers                 sync.WaitGroup
-	steerTurn               func(threadID, expectedTurnID, input string, timeout time.Duration) (string, error)
-	dispatchHumanAnswer     func(key, text string) (SendResult, error)
-	observeTrigger          triggerObserver
-	contextHistoryProbe     contextHistoryProbeFunc
-	threadResumeTimeout     time.Duration
-	developerContextTimeout time.Duration
+	credentialStoreMu         sync.Mutex
+	credentialStore           *credentialstore.Store
+	mu                        sync.Mutex
+	contextCoverageMu         sync.Mutex
+	modelProviderMu           sync.Mutex
+	agents                    map[string]*Agent
+	agentSkillConfigs         map[string]*AgentSkillConfig
+	comms                     map[string]*AgentMessage
+	commOrder                 []string
+	schedules                 map[string]*Schedule
+	triggers                  map[string]*Trigger
+	topics                    map[string]*Topic
+	profiles                  map[string]*AgentProfile
+	teamLinks                 map[string]*TeamRelationship
+	loomAgentPrompt           *LoomAgentPrompt
+	collaborationGroups       map[string]*CollaborationGroup
+	organizationLinks         map[string]*OrganizationRelationship
+	connections               map[string]*PlatformConnection
+	connectionControlVersions map[string]int
+	credentialMigrations      map[string]*CredentialMigrationReceipt
+	addresses                 map[string]*AgentAddress
+	addressOperations         map[string]*AddressLifecycleOperation
+	memberships               map[string]*ConversationMembership
+	conversationCandidates    map[string]*ConversationCandidate
+	messages                  map[string]*InboxMessage
+	messageOrder              []string
+	externalMessages          map[string]string
+	inbox                     map[string]*InboxItem
+	inboxOrder                []string
+	attempts                  map[string]*HandlingAttempt
+	outbox                    map[string]*OutboxItem
+	outboxOrder               []string
+	providerOperations        map[string]*ProviderOperation
+	providerOperationOrder    []string
+	humanRequests             map[string]*HumanRequest
+	humanRequestOrder         []string
+	goals                     map[string]*ThreadGoal
+	seqs                      map[string]int64
+	globalSeq                 int64
+	runtimes                  map[string]*runtime
+	subs                      map[string]map[*subscriber]struct{}
+	globalSubs                map[*subscriber]struct{}
+	remoteConfig              RemoteConfig
+	remoteStatus              RemoteStatus
+	remotePairing             *RemotePairing
+	remoteRuntime             *remoteRuntime
+	remoteGeneration          uint64
+	remoteStartMu             sync.Mutex
+	remoteEnabledGeneration   uint64
+	codexHost                 *codexHostRuntime
+	codexHostGeneration       uint64
+	stop                      chan struct{}
+	stopOnce                  sync.Once
+	stopping                  bool
+	draining                  bool
+	providerSwitching         bool
+	triggerObservations       map[string]struct{}
+	background                sync.WaitGroup
+	workers                   sync.WaitGroup
+	steerTurn                 func(threadID, expectedTurnID, input string, timeout time.Duration) (string, error)
+	dispatchHumanAnswer       func(key, text string) (SendResult, error)
+	observeTrigger            triggerObserver
+	contextHistoryProbe       contextHistoryProbeFunc
+	threadResumeTimeout       time.Duration
+	developerContextTimeout   time.Duration
 }
 
 // CredentialStore opens the owner-only managed credential backend lazily.
@@ -389,37 +390,38 @@ func Open(st *store.Store) (*Hub, error) {
 
 func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	h := &Hub{
-		st:                     st,
-		agents:                 map[string]*Agent{},
-		agentSkillConfigs:      map[string]*AgentSkillConfig{},
-		comms:                  map[string]*AgentMessage{},
-		schedules:              map[string]*Schedule{},
-		triggers:               map[string]*Trigger{},
-		topics:                 map[string]*Topic{},
-		profiles:               map[string]*AgentProfile{},
-		teamLinks:              map[string]*TeamRelationship{},
-		collaborationGroups:    map[string]*CollaborationGroup{},
-		organizationLinks:      map[string]*OrganizationRelationship{},
-		connections:            map[string]*PlatformConnection{},
-		credentialMigrations:   map[string]*CredentialMigrationReceipt{},
-		addresses:              map[string]*AgentAddress{},
-		addressOperations:      map[string]*AddressLifecycleOperation{},
-		memberships:            map[string]*ConversationMembership{},
-		conversationCandidates: map[string]*ConversationCandidate{},
-		messages:               map[string]*InboxMessage{},
-		externalMessages:       map[string]string{},
-		inbox:                  map[string]*InboxItem{},
-		attempts:               map[string]*HandlingAttempt{},
-		outbox:                 map[string]*OutboxItem{},
-		providerOperations:     map[string]*ProviderOperation{},
-		humanRequests:          map[string]*HumanRequest{},
-		goals:                  map[string]*ThreadGoal{},
-		seqs:                   map[string]int64{},
-		runtimes:               map[string]*runtime{},
-		subs:                   map[string]map[*subscriber]struct{}{},
-		globalSubs:             map[*subscriber]struct{}{},
-		triggerObservations:    map[string]struct{}{},
-		stop:                   make(chan struct{}),
+		st:                        st,
+		agents:                    map[string]*Agent{},
+		agentSkillConfigs:         map[string]*AgentSkillConfig{},
+		comms:                     map[string]*AgentMessage{},
+		schedules:                 map[string]*Schedule{},
+		triggers:                  map[string]*Trigger{},
+		topics:                    map[string]*Topic{},
+		profiles:                  map[string]*AgentProfile{},
+		teamLinks:                 map[string]*TeamRelationship{},
+		collaborationGroups:       map[string]*CollaborationGroup{},
+		organizationLinks:         map[string]*OrganizationRelationship{},
+		connections:               map[string]*PlatformConnection{},
+		connectionControlVersions: map[string]int{},
+		credentialMigrations:      map[string]*CredentialMigrationReceipt{},
+		addresses:                 map[string]*AgentAddress{},
+		addressOperations:         map[string]*AddressLifecycleOperation{},
+		memberships:               map[string]*ConversationMembership{},
+		conversationCandidates:    map[string]*ConversationCandidate{},
+		messages:                  map[string]*InboxMessage{},
+		externalMessages:          map[string]string{},
+		inbox:                     map[string]*InboxItem{},
+		attempts:                  map[string]*HandlingAttempt{},
+		outbox:                    map[string]*OutboxItem{},
+		providerOperations:        map[string]*ProviderOperation{},
+		humanRequests:             map[string]*HumanRequest{},
+		goals:                     map[string]*ThreadGoal{},
+		seqs:                      map[string]int64{},
+		runtimes:                  map[string]*runtime{},
+		subs:                      map[string]map[*subscriber]struct{}{},
+		globalSubs:                map[*subscriber]struct{}{},
+		triggerObservations:       map[string]struct{}{},
+		stop:                      make(chan struct{}),
 	}
 	h.globalSeq = st.LastSeq(globalEventLogID)
 	if err := st.LoadAgents(&h.agents); err != nil {

@@ -105,7 +105,7 @@ func (s *Server) discoverSlack(ctx context.Context, connectionID, requestedAppID
 				result.Error = "Read Slack credentials: " + storeErr.Error()
 				return result
 			}
-			credentialRef, err = loomslack.ManagedTokensReference(credentials, appID)
+			credentialRef, err = loomslack.ManagedTokensReference(credentials, appID, teamID)
 			if errors.Is(err, credentialstore.ErrNotFound) {
 				credentialRef = "keychain:" + loomslack.CredentialService(appID)
 				err = nil
@@ -139,19 +139,32 @@ func (s *Server) saveSlackCredentials(ctx context.Context, p slackCredentialPara
 	if botToken == "" || appToken == "" {
 		return slackDiscovery{}, &hub.HubError{Status: 400, Message: "Slack Bot token and App token are required"}
 	}
+	// The credential body has no public App/Team selector, so serialize it
+	// against every existing Slack Connection before provider discovery can
+	// reveal which durable identity it would overwrite.
+	unlock, guardErr := s.lockCredentialIdentityMutation(providerConnectionIDs(s.hub.ListConnections(), "slack", func(hub.PlatformConnection) bool {
+		return true
+	})...)
+	if guardErr != nil {
+		return slackDiscovery{}, guardErr
+	}
+	defer unlock()
 	discovery, err := discoverSlackClient(ctx, botToken, appToken)
 	var apiErr *loomslack.APIError
 	if err != nil && (!errors.As(err, &apiErr) || apiErr.Method != "conversations.list" || apiErr.Code != "missing_scope") {
 		return slackDiscovery{}, &hub.HubError{Status: 400, Message: "Slack verification failed: " + err.Error()}
 	}
-	if discovery.Identity.AppID == "" {
-		return slackDiscovery{}, &hub.HubError{Status: 400, Message: "Slack verification did not return an App ID"}
+	if discovery.Identity.AppID == "" || discovery.Identity.TeamID == "" {
+		return slackDiscovery{}, &hub.HubError{Status: 400, Message: "Slack verification did not return an App ID and Team ID"}
+	}
+	if err := s.requireManagedCredentialWriteFloor(); err != nil {
+		return slackDiscovery{}, err
 	}
 	credentials, storeErr := s.hub.CredentialStore()
 	if storeErr != nil {
 		return slackDiscovery{}, &hub.HubError{Status: 500, Message: "Open managed credential store: " + storeErr.Error()}
 	}
-	if _, err := loomslack.SaveManagedTokens(credentials, discovery.Identity.AppID, botToken, appToken); err != nil {
+	if _, err := loomslack.SaveManagedTokens(credentials, discovery.Identity.AppID, discovery.Identity.TeamID, botToken, appToken); err != nil {
 		return slackDiscovery{}, &hub.HubError{Status: 500, Message: "Save Slack credentials: " + err.Error()}
 	}
 	return slackDiscoveryResult(discovery, err, true), nil
@@ -174,11 +187,18 @@ func (s *Server) setupSlack(ctx context.Context, p slackSetupParams, hubURL stri
 	}
 	appID := strings.TrimSpace(p.AppID)
 	teamID := strings.TrimSpace(p.TeamID)
+	unlock, guardErr := s.lockCredentialIdentityMutation(providerConnectionIDs(s.hub.ListConnections(), "slack", func(connection hub.PlatformConnection) bool {
+		return teamID != "" && connection.AccountRef == teamID || appID != "" && connection.CredentialRef == "keychain:"+loomslack.CredentialService(appID)
+	})...)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer unlock()
 	credentials, storeErr := s.hub.CredentialStore()
 	if storeErr != nil {
 		return nil, &hub.HubError{Status: 500, Message: "Open managed credential store: " + storeErr.Error()}
 	}
-	credentialRef, referenceErr := loomslack.ManagedTokensReference(credentials, appID)
+	credentialRef, referenceErr := loomslack.ManagedTokensReference(credentials, appID, teamID)
 	var connection hub.PlatformConnection
 	if referenceErr != nil {
 		for _, candidate := range s.hub.ListConnections() {
@@ -206,6 +226,9 @@ func (s *Server) setupSlack(ctx context.Context, p slackSetupParams, hubURL stri
 	}
 	if discovered.Identity.AppID == "" || discovered.Identity.TeamID == "" || discovered.Identity.BotUserID == "" {
 		return nil, &hub.HubError{Status: 409, Message: "Slack bot identity is incomplete"}
+	}
+	if appID != "" && discovered.Identity.AppID != appID || teamID != "" && discovered.Identity.TeamID != teamID {
+		return nil, &hub.HubError{Status: 409, Message: "Slack App and Team identity do not match the selected Connection"}
 	}
 	appID, teamID = discovered.Identity.AppID, discovered.Identity.TeamID
 

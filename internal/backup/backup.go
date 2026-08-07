@@ -7,6 +7,7 @@ package backup
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
@@ -14,10 +15,21 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/yan5xu/codex-loom/internal/buildinfo"
+)
+
+const (
+	CurrentManifestVersion  = 3
+	maxManifestBytes        = 1 << 20
+	maxSnapshotEntries      = 200_000
+	maxSnapshotBytes        = int64(8 << 30)
+	maxSnapshotDecodedBytes = int64(16 << 30)
 )
 
 type AgentRef struct {
@@ -40,32 +52,66 @@ type Options struct {
 	Sessions         []SessionRef // legacy input alias
 	MaxBackups       int
 	Retention        RetentionPolicy
+	Build            string
 }
 
 type Snapshot struct {
-	Name         string       `json:"name"`
-	Path         string       `json:"path"`
-	CreatedAt    time.Time    `json:"createdAt"`
-	Reason       string       `json:"reason"`
-	SizeBytes    int64        `json:"sizeBytes"`
-	FileCount    int          `json:"fileCount"`
-	RolloutCount int          `json:"rolloutCount"`
-	Warnings     []string     `json:"warnings,omitempty"`
-	Prune        *PruneReport `json:"prune,omitempty"`
+	Name                string       `json:"name"`
+	Path                string       `json:"path"`
+	CreatedAt           time.Time    `json:"createdAt"`
+	Reason              string       `json:"reason"`
+	SizeBytes           int64        `json:"sizeBytes"`
+	FileCount           int          `json:"fileCount"`
+	RolloutCount        int          `json:"rolloutCount"`
+	CredentialsIncluded bool         `json:"credentialsIncluded"`
+	RunnableRestore     bool         `json:"runnableRestore"`
+	BackupStatus        string       `json:"backupStatus"`
+	Build               string       `json:"build,omitempty"`
+	Warnings            []string     `json:"warnings,omitempty"`
+	Prune               *PruneReport `json:"prune,omitempty"`
 }
 
 type manifest struct {
-	Version          int          `json:"version"`
-	CreatedAt        string       `json:"createdAt"`
-	Reason           string       `json:"reason"`
-	DataDir          string       `json:"dataDir"`
-	CodexSessionsDir string       `json:"codexSessionsDir"`
-	EdgeNamesFile    string       `json:"edgeNamesFile,omitempty"`
-	Agents           []AgentRef   `json:"agents"`
-	Sessions         []SessionRef `json:"sessions,omitempty"`
-	Files            []string     `json:"files"`
-	Excluded         []string     `json:"excluded,omitempty"`
-	Warnings         []string     `json:"warnings,omitempty"`
+	Version             int          `json:"version"`
+	CreatedAt           string       `json:"createdAt"`
+	Reason              string       `json:"reason"`
+	DataDir             string       `json:"dataDir"`
+	CodexSessionsDir    string       `json:"codexSessionsDir"`
+	EdgeNamesFile       string       `json:"edgeNamesFile,omitempty"`
+	Agents              []AgentRef   `json:"agents"`
+	Sessions            []SessionRef `json:"sessions,omitempty"`
+	Files               []string     `json:"files"`
+	Excluded            []string     `json:"excluded,omitempty"`
+	Warnings            []string     `json:"warnings,omitempty"`
+	CredentialsIncluded bool         `json:"credentialsIncluded"`
+	RunnableRestore     bool         `json:"runnableRestore"`
+	BackupStatus        string       `json:"backupStatus"`
+	Build               string       `json:"build,omitempty"`
+}
+
+// Verification is an internal, non-secret proof obtained by bounded parsing of
+// a snapshot manifest. API callers continue to use Snapshot.BackupStatus.
+type Verification struct {
+	Status              string
+	ManifestVersion     int
+	Build               string
+	CredentialsIncluded bool
+	RunnableRestore     bool
+}
+
+// ValidateRollbackFloor proves that a snapshot was produced by the
+// credential-excluding manifest format and by the explicitly accepted build.
+// Commit hashes are identities, so acceptedBuild is an exact proof.
+func (v Verification) ValidateRollbackFloor(minimumManifestVersion int, acceptedBuild string) error {
+	if v.Status != "credentials_excluded" || v.CredentialsIncluded || v.RunnableRestore || v.ManifestVersion < minimumManifestVersion {
+		return fmt.Errorf("backup is not a verified credential-excluding rollback anchor")
+	}
+	acceptedBuild = strings.TrimSpace(acceptedBuild)
+	build := strings.TrimSpace(v.Build)
+	if !buildinfo.ValidBuildIdentity(acceptedBuild) || !buildinfo.ValidBuildIdentity(build) || build != acceptedBuild {
+		return fmt.Errorf("backup build does not satisfy the accepted rollback build")
+	}
+	return nil
 }
 
 func DefaultDir(dataDir string) string {
@@ -124,7 +170,7 @@ func Create(opts Options) (*Snapshot, error) {
 	gz := gzip.NewWriter(out)
 	tw := tar.NewWriter(gz)
 	m := manifest{
-		Version:          2,
+		Version:          CurrentManifestVersion,
 		CreatedAt:        created.Format(time.RFC3339Nano),
 		Reason:           opts.Reason,
 		DataDir:          opts.DataDir,
@@ -132,7 +178,15 @@ func Create(opts Options) (*Snapshot, error) {
 		EdgeNamesFile:    opts.EdgeNamesFile,
 		Agents:           opts.Agents,
 		Sessions:         opts.Agents,
-		Excluded:         []string{"codex-loom/events/** (derived SSE replay cache)"},
+		Excluded: []string{
+			"codex-loom/events/** (derived SSE replay cache)",
+			"codex-loom/credentials/** (secret-bearing managed credentials; ordinary backup is not a complete runnable restore)",
+		},
+		CredentialsIncluded: false, RunnableRestore: false, BackupStatus: "credentials_excluded",
+		Build: strings.TrimSpace(opts.Build),
+	}
+	if m.Build == "" {
+		m.Build = strings.TrimSpace(buildinfo.Commit)
 	}
 
 	var requiredErrors []error
@@ -232,14 +286,11 @@ func Create(opts Options) (*Snapshot, error) {
 		return nil, err
 	}
 	s := &Snapshot{
-		Name:         name,
-		Path:         path,
-		CreatedAt:    created,
-		Reason:       opts.Reason,
-		SizeBytes:    info.Size(),
-		FileCount:    len(m.Files),
-		RolloutCount: rolloutCount,
-		Warnings:     m.Warnings,
+		Name: name, Path: path, CreatedAt: created, Reason: opts.Reason,
+		SizeBytes: info.Size(), FileCount: len(m.Files), RolloutCount: rolloutCount,
+		CredentialsIncluded: false, RunnableRestore: false, BackupStatus: "credentials_excluded",
+		Build:    m.Build,
+		Warnings: m.Warnings,
 	}
 	postPrune, pruneErr := ApplyRetention(opts.DataDir, policy)
 	pruneReport.merge(postPrune)
@@ -271,11 +322,12 @@ func listSnapshots(backupDir string) ([]Snapshot, error) {
 		if err != nil {
 			continue
 		}
+		path := filepath.Join(backupDir, e.Name())
+		verification := Verify(path)
 		out = append(out, Snapshot{
-			Name:      e.Name(),
-			Path:      filepath.Join(backupDir, e.Name()),
-			CreatedAt: info.ModTime().UTC(),
-			SizeBytes: info.Size(),
+			Name: e.Name(), Path: path, CreatedAt: info.ModTime().UTC(), SizeBytes: info.Size(),
+			CredentialsIncluded: verification.CredentialsIncluded, RunnableRestore: verification.RunnableRestore,
+			BackupStatus: verification.Status, Build: verification.Build,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -283,6 +335,122 @@ func listSnapshots(backupDir string) ([]Snapshot, error) {
 		out = []Snapshot{}
 	}
 	return out, nil
+}
+
+// Verify reads a snapshot with explicit archive, entry, and manifest bounds.
+// Legacy or malformed snapshots remain visible but never inherit a verified
+// credential-exclusion claim from their filename.
+func Verify(path string) Verification {
+	return verify(path, maxSnapshotDecodedBytes)
+}
+
+func verify(path string, maxDecodedBytes int64) Verification {
+	unknown := Verification{Status: "corrupt_unverified"}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxSnapshotBytes {
+		return unknown
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return unknown
+	}
+	defer file.Close()
+	compressed := bufio.NewReader(file)
+	gz, err := gzip.NewReader(compressed)
+	if err != nil {
+		return unknown
+	}
+	// Verification is for one exact archive, not for the first valid member of
+	// an ambiguous concatenated stream. Keeping multistream disabled also lets
+	// us prove that no raw bytes follow the verified gzip trailer.
+	gz.Multistream(false)
+	defer gz.Close()
+	if maxDecodedBytes <= 0 {
+		return unknown
+	}
+	decodedReader := &io.LimitedReader{R: gz, N: maxDecodedBytes + 1}
+	reader := tar.NewReader(decodedReader)
+	var decoded manifest
+	manifestSeen := false
+	credentialEntrySeen := false
+	entries := 0
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return unknown
+		}
+		entries++
+		if entries > maxSnapshotEntries {
+			return unknown
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			return unknown
+		}
+		rawName := strings.ReplaceAll(header.Name, "\\", "/")
+		name := pathpkg.Clean(rawName)
+		if name == "." || strings.HasPrefix(rawName, "/") || name == ".." || strings.HasPrefix(name, "../") {
+			return unknown
+		}
+		if name == "codex-loom/credentials" || strings.HasPrefix(name, "codex-loom/credentials/") {
+			credentialEntrySeen = true
+		}
+		if name != "manifest.json" {
+			continue
+		}
+		if manifestSeen || header.Size <= 0 || header.Size > maxManifestBytes {
+			return unknown
+		}
+		manifestSeen = true
+		data, err := io.ReadAll(io.LimitReader(reader, maxManifestBytes+1))
+		if err != nil || int64(len(data)) != header.Size || len(data) > maxManifestBytes {
+			return unknown
+		}
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		if err := decoder.Decode(&decoded); err != nil {
+			return unknown
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return unknown
+		}
+	}
+	// tar.Reader reports EOF at the archive terminator. Drain the containing
+	// gzip member to force CRC/trailer validation and reject any decoded bytes
+	// after the tar terminator. Then prove that the compressed stream itself has
+	// no second member or trailing payload.
+	trailingDecoded, err := io.Copy(io.Discard, decodedReader)
+	if err != nil || trailingDecoded != 0 || decodedReader.N <= 0 {
+		return unknown
+	}
+	if _, err := compressed.Peek(1); err != io.EOF {
+		return unknown
+	}
+	if !manifestSeen {
+		return Verification{Status: "legacy_unverified"}
+	}
+	if decoded.Version < CurrentManifestVersion {
+		return Verification{Status: "legacy_unverified", ManifestVersion: decoded.Version, Build: strings.TrimSpace(decoded.Build)}
+	}
+	verification := Verification{
+		Status: decoded.BackupStatus, ManifestVersion: decoded.Version, Build: strings.TrimSpace(decoded.Build),
+		CredentialsIncluded: decoded.CredentialsIncluded, RunnableRestore: decoded.RunnableRestore,
+	}
+	if decoded.Version != CurrentManifestVersion || credentialEntrySeen || decoded.CredentialsIncluded || decoded.RunnableRestore || decoded.BackupStatus != "credentials_excluded" || !manifestExcludesCredentials(decoded) {
+		return unknown
+	}
+	return verification
+}
+
+func manifestExcludesCredentials(value manifest) bool {
+	for _, item := range value.Excluded {
+		if strings.Contains(item, "codex-loom/credentials/**") && strings.Contains(item, "not a complete runnable restore") {
+			return true
+		}
+	}
+	return false
 }
 
 func isSnapshotName(name string) bool {
@@ -307,7 +475,15 @@ func walkDataDir(dataDir, backupDir string, fn func(src, rel string)) error {
 	}
 	backupAbs, _ := filepath.Abs(backupDir)
 	eventsAbs, _ := filepath.Abs(filepath.Join(dataAbs, "events"))
+	credentialsAbs, _ := filepath.Abs(filepath.Join(dataAbs, "credentials"))
 	return filepath.WalkDir(dataAbs, func(path string, d os.DirEntry, err error) error {
+		pathAbs, _ := filepath.Abs(path)
+		if pathAbs == credentialsAbs || strings.HasPrefix(pathAbs, credentialsAbs+string(os.PathSeparator)) {
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if err != nil {
 			return nil
 		}

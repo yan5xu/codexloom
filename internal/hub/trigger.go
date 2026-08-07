@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	githubapi "github.com/yan5xu/codex-loom/internal/github"
 )
 
@@ -651,7 +652,7 @@ func (h *Hub) observeTriggerNow(id string) {
 	observer := h.observeTrigger
 	h.mu.Unlock()
 	if observer == nil {
-		observer = observeProviderTrigger
+		observer = h.observeProviderTrigger
 	}
 	ctx, cancel := h.triggerObservationContext()
 	observation, err := observer(ctx, connectionCopy, trigger)
@@ -848,6 +849,10 @@ func (h *Hub) ensureTriggerMessageLocked(trigger *Trigger, event TriggerEvent) (
 }
 
 func (h *Hub) reconcileTriggersLocked() error {
+	return h.reconcileTriggersLockedWithPersistence(true)
+}
+
+func (h *Hub) reconcileTriggersLockedWithPersistence(persist bool) error {
 	messages := map[string]*AgentMessage{}
 	for _, id := range h.commOrder {
 		message := h.comms[id]
@@ -878,17 +883,28 @@ func (h *Hub) reconcileTriggersLocked() error {
 	if !changed {
 		return nil
 	}
+	if !persist {
+		return nil
+	}
 	if err := h.persistTriggersLocked(); err != nil {
 		return fmt.Errorf("persist reconciled triggers: %w", err)
 	}
 	return nil
 }
 
-func observeProviderTrigger(ctx context.Context, connection PlatformConnection, trigger Trigger) (TriggerObservation, error) {
+func (h *Hub) observeProviderTrigger(ctx context.Context, connection PlatformConnection, trigger Trigger) (TriggerObservation, error) {
 	if trigger.Provider != "github" {
 		return TriggerObservation{Permanent: true}, fmt.Errorf("unsupported Trigger provider: %s", trigger.Provider)
 	}
-	token, err := githubapi.LoadCredential(connection.CredentialRef)
+	var credentials *credentialstore.Store
+	var err error
+	if strings.HasPrefix(connection.CredentialRef, credentialstore.ManagedReferencePrefix) {
+		credentials, err = h.CredentialStore()
+		if err != nil {
+			return TriggerObservation{}, err
+		}
+	}
+	token, err := githubapi.LoadCredentialFor(credentials, connection.CredentialRef, connection.AccountRef, connection.ScopeRef)
 	if err != nil {
 		return TriggerObservation{}, err
 	}

@@ -168,6 +168,9 @@ func (h *Hub) ApplyAddressLifecycle(addressID string, params AddressLifecyclePar
 	if err != nil {
 		return result, err
 	}
+	if !params.DryRun && h.activeCredentialMigrationLocked(address.ConnectionID) != nil {
+		return result, credentialMigrationInProgressError()
+	}
 	if params.DryRun {
 		return result, nil
 	}
@@ -274,6 +277,9 @@ func (h *Hub) RollbackAddressTransfer(operationID string, params AddressTransfer
 	if err != nil {
 		return result, err
 	}
+	if !params.DryRun && h.activeCredentialMigrationLocked(address.ConnectionID) != nil {
+		return result, credentialMigrationInProgressError()
+	}
 	if params.DryRun {
 		return result, nil
 	}
@@ -327,6 +333,9 @@ func (h *Hub) preflightAddressLifecycleLocked(addressID string, params AddressLi
 		return AddressLifecyclePreflight{}, nil, errf(404, "agent address not found: %s", addressID)
 	}
 	plan := h.baseAddressLifecyclePlanLocked(action, address)
+	if h.activeCredentialMigrationLocked(address.ConnectionID) != nil {
+		plan.addBlocker("credential_migration", address.ConnectionID, "in_progress", "credential_migration_in_progress")
+	}
 	if params.ExpectedVersion != nil && *params.ExpectedVersion != address.Version {
 		plan.addBlocker("expected_version", address.ID, "stale", "expectedVersion does not match the current Address version")
 	}
@@ -403,6 +412,9 @@ func (h *Hub) preflightAddressTransferRollbackLocked(operationID string, expecte
 		return AddressLifecyclePreflight{}, source, nil, errf(404, "transferred address not found: %s", source.AddressID)
 	}
 	plan := h.baseAddressLifecyclePlanLocked(AddressLifecycleRollback, address)
+	if h.activeCredentialMigrationLocked(address.ConnectionID) != nil {
+		plan.addBlocker("credential_migration", address.ConnectionID, "in_progress", "credential_migration_in_progress")
+	}
 	if expectedVersion != nil && *expectedVersion != address.Version {
 		plan.addBlocker("expected_version", address.ID, "stale", "expectedVersion does not match the current Address version")
 	}

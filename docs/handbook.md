@@ -110,7 +110,8 @@ Topic 是跨 Turn、跨 Agent 的薄共享协调聚合。它保存 Responsible�
 ### Platform Integration
 
 负责 Connection、Address、Conversation Membership、Inbox、Handling Attempt、Outbox 和
-gateway connector protocol。凭据只保存 `env:` / `keychain:` 引用，不保存明文。
+gateway connector protocol。新受管凭据只在 Owner-only store 保存 secret，业务状态使用 Hub 签发的
+`managed:` opaque reference；`env:` / `keychain:` 仅兼容读取，不保存明文。
 
 不变量：
 
@@ -270,9 +271,11 @@ React/Vite/TypeScript/Tailwind 治理工作台。第一屏是实际工作台，�
 
 ### `cmd/loom-gateway` 与 `gateway/`
 
-规范通用二进制名是 `loom-gateway`。Go fake provider 用于协议与幂等测试。`parall.mjs` 由 `loom-parall-gateway` 从 Keychain 加载每个外部 Agent 的独立凭据，并通过 launchd/systemd 托管；`lark.mjs`、`slack.mjs` 负责真实平台 cursor、ack、reaction/read-state 和发送。飞书由
-`loom-feishu-gateway` 使用官方 SDK 和长连接托管；Slack 由 `loom-slack-gateway` 从 Keychain
-读取 token，再通过 Socket Mode 运行 `slack.mjs`。Slack App manifest 位于
+规范通用二进制名是 `loom-gateway`。Go fake provider 用于协议与幂等测试。`loom-parall-gateway` 从
+Owner-only managed store 加载每个外部 Agent 的独立凭据，通过匿名 inherited FD 交给 `parall.mjs`，
+并由 launchd/systemd 托管；`lark.mjs`、`slack.mjs` 负责真实平台 cursor、ack、reaction/read-state 和
+发送。飞书由 `loom-feishu-gateway` 使用官方 SDK 和长连接托管；Slack 由 `loom-slack-gateway` 从
+managed store 读取 token，再通过匿名 inherited FD 运行 `slack.mjs`。Slack App manifest 位于
 `gateway/slack-app-manifest.yaml`。平台 Secret 不得出现在 launchd/systemd 参数、plist/unit 或仓库文件中。
 
 Slack CLI 负责 App 开发、安装和部署，Slack MCP 为 Agent 提供用户身份下的消息工具；它们都不消费
@@ -505,7 +508,7 @@ adapter 边界，并在未来明确版本窗口后删除。
 
 包含：
 
-- `codex-loom/`：registry、Profile、Team、Schedules、Communication/Inbox/Outbox ledgers；不包含可重建的 SSE event cache。
+- `codex-loom/`：registry、Profile、Team、Schedules、Communication/Inbox/Outbox ledgers；不包含可重建的 SSE event cache，也不包含 Owner-only `credentials/**`。
 - `codex-sessions/`：当前可见 Agent 对应 rollout。
 - `pinix-edge/names.json`（存在时）。
 - `codex/config.toml`（存在时）。
@@ -518,10 +521,13 @@ adapter 边界，并在未来明确版本窗口后删除。
 Event cache 独立轮转：active NDJSON 保留最新 replay window，旧段压缩为 gzip 后按数量、总字节和
 年龄组合淘汰。备份与 Event cache 都是派生运维数据，不能替代 Codex rollout 或业务 ledger。
 
-本地快照不等于异地备份。需要抗磁盘损坏时，把 backups 同步到另一个磁盘或远端。
+本地快照不等于异地备份，也不是 Connector 的完整可运行恢复。managed secret 与 gateway rollback anchor
+被排除，secret backup/restore 需要独立合同与授权。需要抗磁盘损坏时，把允许同步的普通 backups 同步到
+另一个磁盘或远端。
 
-恢复：停 Loom，检查 manifest，将 `codex-loom/` 恢复到数据目录，将 `codex-sessions/` 恢复到
-`CODEX_SESSIONS_DIR` 或 `~/.codex/sessions`，再启动并验证 Agent/Thread 数量与 history。
+普通恢复：停 Loom，检查 manifest，将 `codex-loom/` 恢复到数据目录，将 `codex-sessions/` 恢复到
+`CODEX_SESSIONS_DIR` 或 `~/.codex/sessions`，再启动并验证 Agent/Thread 数量与 history。没有另行授权和
+验证过的 secret restore 时，受管 Connector 不具备可运行凭据，不能把该结果标记为完整恢复。
 
 ## 已知限制
 

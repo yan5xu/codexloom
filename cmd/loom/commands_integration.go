@@ -326,9 +326,11 @@ func cmdOutbox(a args) {
 
 func cmdIntegration(a args) {
 	if len(a.positional) == 0 {
-		usage("integration list|send|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|status ...")
+		usage("integration list|send|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|credential|status ...")
 	}
 	switch a.positional[0] {
+	case "credential":
+		cmdIntegrationCredential(a)
 	case "list":
 		connectionsResp, err := api("GET", "/api/integrations/connections", nil)
 		if err != nil {
@@ -445,9 +447,9 @@ func cmdIntegration(a args) {
 			fmt.Printf("  %s %s\n", yellow("gateway cleanup warning:"), warning)
 		}
 		if strings.TrimSpace(a.flags["agent-key-file"]) != "" {
-			fmt.Println(dim("  Agent key stored in Keychain; source key file was not modified."))
+			fmt.Println(dim("  Agent credential stored in the owner-only managed store; source key file was not modified."))
 		} else {
-			fmt.Println(dim("  Existing Keychain credential reused; no secret was read from a file."))
+			fmt.Println(dim("  Existing managed or legacy credential revalidated; no secret was read from a file."))
 		}
 	case "bind":
 		if len(a.positional) < 3 || strings.TrimSpace(a.flags["identity"]) == "" {
@@ -570,8 +572,91 @@ func cmdIntegration(a args) {
 			fmt.Println(string(out))
 		}
 	default:
-		usage("integration list|send|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|status ...")
+		usage("integration list|send|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|credential|status ...")
 	}
+}
+
+func cmdIntegrationCredential(a args) {
+	if len(a.positional) < 2 {
+		usage("integration credential preflight [CONNECTION_ID] [--json] | migrate CONNECTION_ID [--dry-run] [--confirm CONNECTION_ID] [--json] | rollback RECEIPT_ID [--dry-run] [--confirm RECEIPT_ID] [--json]")
+	}
+	action := a.positional[1]
+	var result map[string]any
+	var err error
+	switch action {
+	case "preflight":
+		path := "/api/integrations/credentials/preflight"
+		if len(a.positional) > 2 {
+			path += "?connectionId=" + url.QueryEscape(a.positional[2])
+		}
+		result, err = api("GET", path, nil)
+	case "migrate":
+		if len(a.positional) != 3 {
+			usage("integration credential migrate CONNECTION_ID [--dry-run] [--confirm CONNECTION_ID] [--json]")
+		}
+		connectionID := strings.TrimSpace(a.positional[2])
+		result, err = api("POST", "/api/integrations/connections/"+url.PathEscape(connectionID)+"/credential-migration", map[string]any{
+			"dryRun": lifecycleDryRun(a.flags), "confirm": strings.TrimSpace(a.flags["confirm"]),
+		})
+	case "rollback":
+		if len(a.positional) != 3 {
+			usage("integration credential rollback RECEIPT_ID [--dry-run] [--confirm RECEIPT_ID] [--json]")
+		}
+		receiptID := strings.TrimSpace(a.positional[2])
+		result, err = api("POST", "/api/integrations/credential-migrations/"+url.PathEscape(receiptID)+"/rollback", map[string]any{
+			"dryRun": lifecycleDryRun(a.flags), "confirm": strings.TrimSpace(a.flags["confirm"]),
+		})
+	default:
+		usage("integration credential preflight|migrate|rollback ...")
+	}
+	if err != nil {
+		fail(err)
+	}
+	if a.flags["json"] == "true" {
+		encoded, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(encoded))
+		return
+	}
+	if action == "preflight" {
+		items := anySlice(result["preflight"])
+		if len(items) == 0 {
+			fmt.Println("no enabled Keychain-backed Connections require migration")
+			return
+		}
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			status := str(item, "status")
+			marker := yellow(status)
+			if eligible, _ := item["eligible"].(bool); eligible {
+				marker = green(status)
+			}
+			fmt.Printf("%s %s  %s  %s\n", bold(str(item, "connectionId")), cyan(str(item, "provider")), marker, dim(str(item, "credentialScheme")))
+		}
+		fmt.Println(dim("ordinary backup excludes managed credentials and is not a complete runnable restore"))
+		return
+	}
+	if action == "migrate" && lifecycleDryRun(a.flags) {
+		preflight, _ := result["preflight"].(map[string]any)
+		fmt.Printf("%s %s  %s\n", bold(str(preflight, "connectionId")), cyan(str(preflight, "provider")), "dry-run")
+		fmt.Printf("  status: %s\n", str(preflight, "status"))
+		fmt.Println(dim("  credentials are excluded from ordinary backup; no migration receipt or side effect was created"))
+		return
+	}
+	state := str(result, "state")
+	if lifecycleDryRun(a.flags) {
+		state = "dry-run"
+	}
+	fmt.Printf("%s %s  %s\n", bold(str(result, "id")), cyan(str(result, "provider")), state)
+	if connectionID := str(result, "connectionId"); connectionID != "" {
+		fmt.Printf("  connection: %s\n", connectionID)
+	}
+	if target := str(result, "targetCredentialRef"); target != "" {
+		fmt.Printf("  target: %s\n", target)
+	}
+	if failure, ok := result["error"].(map[string]any); ok {
+		fmt.Printf("  %s %s (%s)\n", red("error:"), str(failure, "message"), str(failure, "code"))
+	}
+	fmt.Println(dim("  credentials are excluded from ordinary backup; rollback anchors remain owner-only"))
 }
 
 func cmdAddressLifecycle(a args) {

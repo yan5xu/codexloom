@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	loomslack "github.com/yan5xu/codex-loom/internal/slack"
 	"github.com/yan5xu/codex-loom/internal/store"
@@ -47,6 +49,13 @@ func TestSetupSlackCreatesDurableAddressAndChannelRoleIdempotently(t *testing.T)
 		t.Fatal(err)
 	}
 	s := New(h, st, nil)
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loomslack.SaveManagedTokens(credentials, "A_TEST", "T_TEST", randomTestCredential(t), randomTestCredential(t)); err != nil {
+		t.Fatal(err)
+	}
 	params := slackSetupParams{
 		Agent: "slack-agent", AppID: "A_TEST", TeamID: "T_TEST", ChannelID: "C_ALPHA",
 		Purpose: "Coordinate Alpha", Role: "Own Alpha questions", Guidance: "Do not expose secrets",
@@ -66,7 +75,7 @@ func TestSetupSlackCreatesDurableAddressAndChannelRoleIdempotently(t *testing.T)
 	if firstConnection.ID != secondConnection.ID || firstAddress.ID != secondAddress.ID {
 		t.Fatalf("setup was not idempotent: first=%#v/%#v second=%#v/%#v", firstConnection, firstAddress, secondConnection, secondAddress)
 	}
-	if firstConnection.CredentialRef != "keychain:"+loomslack.CredentialService("A_TEST") {
+	if !strings.HasPrefix(firstConnection.CredentialRef, credentialstore.ManagedReferencePrefix) {
 		t.Fatalf("credential ref = %q", firstConnection.CredentialRef)
 	}
 	memberships, err := h.ListConversationMemberships("slack-agent", firstAddress.ID)
@@ -80,11 +89,10 @@ func TestSetupSlackCreatesDurableAddressAndChannelRoleIdempotently(t *testing.T)
 
 func stubSlack(t *testing.T, missingScopes bool) func() {
 	t.Helper()
-	oldLoad, oldSave, oldDiscover, oldInstall := loadSlackTokens, saveSlackTokens, discoverSlackClient, installManagedSlackGateway
+	oldLoad, oldDiscover, oldInstall := loadSlackTokens, discoverSlackClient, installManagedSlackGateway
 	loadSlackTokens = func(appID, teamID string) (loomslack.Tokens, error) {
-		return loomslack.Tokens{Bot: "xoxb-test", App: "xapp-test"}, nil
+		return loomslack.Tokens{Bot: randomTestCredential(t), App: randomTestCredential(t)}, nil
 	}
-	saveSlackTokens = func(appID, botToken, appToken string) error { return nil }
 	discoverSlackClient = func(ctx context.Context, botToken, appToken string) (loomslack.Discovery, error) {
 		discovery := loomslack.Discovery{
 			Identity: loomslack.Identity{AppID: "A_TEST", TeamID: "T_TEST", TeamName: "Test Workspace", BotID: "B_TEST", BotUserID: "U_TEST", BotName: "Test Bot"},
@@ -100,6 +108,6 @@ func stubSlack(t *testing.T, missingScopes bool) func() {
 		return managedSlackGateway{Managed: true, Manager: "test", Service: connection.ID}, nil
 	}
 	return func() {
-		loadSlackTokens, saveSlackTokens, discoverSlackClient, installManagedSlackGateway = oldLoad, oldSave, oldDiscover, oldInstall
+		loadSlackTokens, discoverSlackClient, installManagedSlackGateway = oldLoad, oldDiscover, oldInstall
 	}
 }

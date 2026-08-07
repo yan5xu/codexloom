@@ -36,17 +36,33 @@ Interpret the layers correctly:
 
 ## Provision Connections carefully
 
-`integration connect` registers a Connection record. It does not verify a provider secret, save it to Keychain, or install a managed gateway:
+`integration connect` registers a Connection record. It does not verify or store a provider secret and does not install a managed gateway:
 
 ```sh
 loom integration connect PROVIDER \
   --account ACCOUNT_REF \
-  --credential-ref keychain:SERVICE_NAME
+  --credential-ref managed:CREDENTIAL_ID
 ```
 
-Use it only when the credential and gateway lifecycle have already been provisioned by an operator. `env:NAME` is valid for legacy or manually managed gateways, but never print or inspect the variable's value.
+Use it only when the credential and gateway lifecycle have already been provisioned by an operator. A `managed:` ID is opaque, Hub-issued, and valid only when that entry already exists in the current owner-only store; never construct one from a path or parse its suffix. `env:NAME` and `keychain:SERVICE_NAME` remain compatibility reads for legacy or manually managed gateways, but never print or inspect their values.
 
-For first-time native Feishu or Slack onboarding, use CodexLoom's Integrations setup flow to validate credentials, store them in Keychain, discover platform identities, and install the managed gateway.
+Automatic managed gateway restart and the manual Parall gateway repair endpoint accept only eligible `managed:` Connections. A Parall `keychain:` or `env:` Connection returns non-secret HTTP `409 migration_required` before secret resolution, provider access, or service mutation; preserve its current executable and migrate it instead of attempting repair. A successful repair response means the restart was initiated, not that a new heartbeat has arrived.
+
+For first-time native Feishu, Slack, Parall, or GitHub onboarding, use CodexLoom's setup/import flow to validate credentials, store them behind a `managed:` reference in the owner-only file store, discover platform identities, and install the managed gateway when that provider has one.
+
+Migrate an existing enabled, non-archived Keychain-backed Connection one at a time:
+
+```sh
+loom integration credential preflight [CONNECTION_ID] [--json]
+loom integration credential migrate CONNECTION_ID --dry-run [--json]
+loom integration credential migrate CONNECTION_ID --confirm CONNECTION_ID [--json]
+loom integration credential rollback RECEIPT_ID --dry-run [--json]
+loom integration credential rollback RECEIPT_ID --confirm RECEIPT_ID [--json]
+```
+
+No-ID preflight enumerates all eligible Lark, Slack, Parall, and GitHub Connections; it does not auto-migrate `env:` references. Migration preserves Connection, Address, Membership, Inbox, and Outbox identity/history, verifies the provider and gateway before changing the canonical reference, and reuses one durable receipt per Connection. A failed automatic rollback reports `manual_recovery_required`; never describe that state as restored. Ordinary backups and support bundles exclude `credentials/**`, so their receipt is not a complete runnable restore. Keychain deletion and secret backup/restore require separate authorization and are not part of migration.
+
+Credential preflight/migrate/receipt/rollback and provider onboarding/setup/import/repair require an explicit admin token even on loopback; read-only canaries and cross-origin browser requests must fail before source/provider/service hooks. Before any managed credential write, require a bounded verified current-format ordinary backup from the exact accepted build with credential exclusion; legacy, corrupt, or ambiguous archives are `unknown_unverified`. Treat `credential_migration_in_progress` and `credential_rollback_build_floor_unavailable` as stop states. Rollback dry-run and execution share one validator, and only `ready` permits the effect. Slack managed entries bind both App ID and Team ID.
 
 For an existing Parall Agent whose one-time Agent key is already in an owner-only regular file, use the atomic CLI import instead of configuring an Owner key:
 
@@ -58,9 +74,9 @@ loom integration import parall \
   --agent-key-file /absolute/path/to/agent.key
 ```
 
-The file must belong to the current user, must not be a symlink, and must use `0600` or `0400` permissions. The command only sends credentials to loopback HTTP or HTTPS. It verifies that the key belongs to the specified active external Agent and can open a WebSocket, stores it in Keychain, creates or reuses the Connection and Address, and installs the managed gateway. It is idempotent and rolls back newly created state on failure. After a successful migration of the same Connection, Loom unloads and removes its legacy launchd gateway plist. The command does not require an Owner key, change the external display name, configure a group, or delete the source key file. After `integration status` reports connected, securely remove the source file. Never put the key in a command argument, environment variable, JSON config, message, or transcript.
+The file must belong to the current user, must not be a symlink, and must use `0600` or `0400` permissions. The command only sends credentials to loopback HTTP or HTTPS. It verifies that the key belongs to the specified active external Agent and can open a WebSocket, stores it in the owner-only managed store, creates or reuses the Connection and Address, and installs the managed gateway. It is idempotent and rolls back newly created state on failure. After a successful migration of the same Connection, Loom unloads and removes its legacy launchd gateway plist. The command does not require an Owner key, change the external display name, configure a group, or delete the source key file. After `integration status` reports connected, securely remove the source file. Never put the key in a command argument, environment variable, JSON config, message, or transcript.
 
-After the first successful import, omit `--agent-key-file` to reuse and revalidate the credential already in Keychain. The importer matches provider, stable external identity, and Loom Agent. It upgrades one legacy `org-agent:USER_ID` Connection in place. If duplicate legacy and managed records already exist, it keeps the managed identity canonical, projects the preferred Membership policy onto it, and archives the old Connection, Address, and Membership with `supersededBy` links. Historical IDs remain readable for Inbox/Outbox audit, but archived records must never be re-enabled or selected for new delivery.
+After the first successful import, omit `--agent-key-file` to reuse and revalidate the managed credential; a legacy Keychain reference remains readable until explicitly migrated. The importer matches provider, stable external identity, and Loom Agent. It upgrades one legacy `org-agent:USER_ID` Connection in place. If duplicate legacy and managed records already exist, it keeps the managed identity canonical, projects the preferred Membership policy onto it, and archives the old Connection, Address, and Membership with `supersededBy` links. Historical IDs remain readable for Inbox/Outbox audit, but archived records must never be re-enabled or selected for new delivery.
 
 ## Bind and govern an Address
 

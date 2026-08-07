@@ -29,7 +29,8 @@ id, provider, accountRef, credentialRef, capabilities,
 status, cursor, lastHeartbeatAt, lastError, enabled
 ```
 
-`credentialRef` 只允许 `env:`、keychain 等引用，不保存 secret 明文。
+`credentialRef` 允许 Hub 签发的 `managed:` opaque reference，以及兼容读取用的 `env:` / `keychain:`
+reference；业务对象不保存 secret 明文。`managed:` ID 不能表示路径，也不能由客户端构造或解析。
 
 ### AgentAddress
 

@@ -95,6 +95,7 @@ func (s *Server) createBackup(reason string) (*backup.Snapshot, error) {
 		EdgeNamesFile:    store.EdgeNamesFile(),
 		Agents:           refs,
 		Retention:        backupRetentionPolicy(),
+		Build:            s.build.Commit,
 	})
 }
 
@@ -137,14 +138,19 @@ func positiveEnvFloat(primary, legacy string) float64 {
 
 func backupStatus(items []backup.Snapshot, policy backup.RetentionPolicy, dataDir string) map[string]any {
 	var totalBytes int64
+	status := "credentials_excluded"
+	if len(items) == 0 {
+		status = "unknown_unverified"
+	}
 	for _, item := range items {
 		totalBytes += item.SizeBytes
+		if item.BackupStatus != "credentials_excluded" {
+			status = "unknown_unverified"
+		}
 	}
 	return map[string]any{
-		"backups":    items,
-		"dir":        backup.DefaultDir(dataDir),
-		"count":      len(items),
-		"totalBytes": totalBytes,
+		"backups": items, "dir": backup.DefaultDir(dataDir), "count": len(items), "totalBytes": totalBytes,
+		"credentialsIncluded": false, "runnableRestore": false, "backupStatus": status,
 		"retention": map[string]any{
 			"minCount":   policy.MinCount,
 			"maxCount":   policy.MaxCount,

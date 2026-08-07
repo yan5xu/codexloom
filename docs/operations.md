@@ -47,7 +47,7 @@
 2. 如果新进程已启动但行为异常，先通过页面 Restart 或 reloader 切回旧 executable；
    直接删除/替换正在运行的二进制不保证 launchd 使用新 inode。
 3. 如果状态文件被新版本写入且需要回退，使用发布前备份恢复到临时目录，先检查
-   `manifest.json`，再执行全量恢复。
+   `manifest.json`，再执行受覆盖范围约束的业务 ledger/rollout 恢复。
 
 ## 备份检查
 
@@ -61,12 +61,14 @@
 默认保留策略：至少 2 份、最多 5 份、总计不超过 2 GiB、最长 30 天。恢复底线优先于
 容量和年龄限制。快照是 tar.gz，包含 `codex-loom/` 业务 ledger、`codex-sessions/`
 rollout、`pinix-edge/names.json` 和 `codex/config.toml`；可重建的 SSE event cache
-不进入快照。
+不进入快照。Owner-only `credentials/**`（managed secret 与 gateway rollback anchor）也明确排除，
+所以普通快照不是完整可运行恢复；secret restore 需要独立备份合同与授权。
 
 每次恢复演练前先确认：
 
 - 快照文件权限和 hash 可读取；
 - `manifest.json` 中 Agent/Thread 数量与预期一致；
+- `manifest.json` 明确列出 `credentials/**` excluded，且 operator 不把该快照标记为 runnable restore；
 - `codex-loom/` 和 `codex-sessions/` 均有内容；
 - 目标数据目录有足够剩余空间，避免恢复过程再次触发磁盘写失败。
 

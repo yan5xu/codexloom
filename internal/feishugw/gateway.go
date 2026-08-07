@@ -34,14 +34,17 @@ import (
 )
 
 type Config struct {
-	HubURL         string
-	ConnectionID   string
-	AddressID      string
-	AppID          string
-	AppSecret      string
-	ConnectorToken string
-	StateFile      string
-	HTTPClient     *http.Client
+	HubURL                  string
+	ConnectionID            string
+	AddressID               string
+	AppID                   string
+	AppSecret               string
+	ConnectorToken          string
+	StateFile               string
+	HTTPClient              *http.Client
+	GatewayGeneration       string
+	GatewayBuild            string
+	GatewayExecutableSHA256 string
 }
 
 type reactionRecord struct {
@@ -1066,7 +1069,9 @@ func (g *Gateway) sendHeartbeat(ctx context.Context) {
 	}
 	body := hub.ConnectionHeartbeatParams{
 		Status: status, Error: g.errorText(),
-		Capabilities: []string{"receive_events", "threads", "mentions", "attachments", "reactions", "proactive_send"},
+		Capabilities:      []string{"receive_events", "threads", "mentions", "attachments", "reactions", "proactive_send"},
+		GatewayGeneration: g.cfg.GatewayGeneration, GatewayBuild: g.cfg.GatewayBuild,
+		GatewayExecutableSHA256: g.cfg.GatewayExecutableSHA256,
 	}
 	var ignored map[string]any
 	if err := g.hubJSON(ctx, http.MethodPost, "/api/integrations/connections/"+g.cfg.ConnectionID+"/heartbeat", body, &ignored); err != nil && ctx.Err() == nil {

@@ -9,25 +9,32 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/yan5xu/codex-loom/internal/buildinfo"
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 )
 
 type PlatformConnection struct {
-	ID              string   `json:"id"`
-	Provider        string   `json:"provider"`
-	AccountRef      string   `json:"accountRef,omitempty"`
-	ScopeRef        string   `json:"scopeRef,omitempty"`
-	CredentialRef   string   `json:"credentialRef,omitempty"`
-	Status          string   `json:"status"`
-	Capabilities    []string `json:"capabilities,omitempty"`
-	Cursor          string   `json:"cursor,omitempty"`
-	LastEventAt     string   `json:"lastEventAt,omitempty"`
-	LastHeartbeatAt string   `json:"lastHeartbeatAt,omitempty"`
-	LastError       string   `json:"lastError,omitempty"`
-	Enabled         bool     `json:"enabled"`
-	SupersededBy    string   `json:"supersededBy,omitempty"`
-	ArchivedAt      string   `json:"archivedAt,omitempty"`
-	CreatedAt       string   `json:"createdAt"`
-	UpdatedAt       string   `json:"updatedAt"`
+	ID                      string   `json:"id"`
+	Provider                string   `json:"provider"`
+	AccountRef              string   `json:"accountRef,omitempty"`
+	ScopeRef                string   `json:"scopeRef,omitempty"`
+	CredentialRef           string   `json:"credentialRef,omitempty"`
+	Status                  string   `json:"status"`
+	Capabilities            []string `json:"capabilities,omitempty"`
+	Cursor                  string   `json:"cursor,omitempty"`
+	LastEventAt             string   `json:"lastEventAt,omitempty"`
+	LastHeartbeatAt         string   `json:"lastHeartbeatAt,omitempty"`
+	LastError               string   `json:"lastError,omitempty"`
+	GatewayGeneration       string   `json:"gatewayGeneration,omitempty"`
+	GatewayBuild            string   `json:"gatewayBuild,omitempty"`
+	GatewayExecutableSHA256 string   `json:"gatewayExecutableSha256,omitempty"`
+	Enabled                 bool     `json:"enabled"`
+	SupersededBy            string   `json:"supersededBy,omitempty"`
+	ArchivedAt              string   `json:"archivedAt,omitempty"`
+	CreatedAt               string   `json:"createdAt"`
+	UpdatedAt               string   `json:"updatedAt"`
 }
 
 var loomCLIPath = resolveLoomCLIPath()
@@ -252,11 +259,12 @@ type OutboxDeliveryReceipt struct {
 }
 
 type integrationConfig struct {
-	Connections            map[string]*PlatformConnection        `json:"connections"`
-	Addresses              map[string]*AgentAddress              `json:"addresses"`
-	Memberships            map[string]*ConversationMembership    `json:"memberships,omitempty"`
-	ConversationCandidates map[string]*ConversationCandidate     `json:"conversationCandidates,omitempty"`
-	AddressOperations      map[string]*AddressLifecycleOperation `json:"addressOperations,omitempty"`
+	Connections               map[string]*PlatformConnection        `json:"connections"`
+	ConnectionControlVersions map[string]int                        `json:"connectionControlVersions,omitempty"`
+	Addresses                 map[string]*AgentAddress              `json:"addresses"`
+	Memberships               map[string]*ConversationMembership    `json:"memberships,omitempty"`
+	ConversationCandidates    map[string]*ConversationCandidate     `json:"conversationCandidates,omitempty"`
+	AddressOperations         map[string]*AddressLifecycleOperation `json:"addressOperations,omitempty"`
 }
 
 type ConnectionParams struct {
@@ -371,10 +379,28 @@ type InboxActionParams struct {
 }
 
 type ConnectionHeartbeatParams struct {
-	Status       string   `json:"status"`
-	Cursor       string   `json:"cursor"`
-	Capabilities []string `json:"capabilities"`
-	Error        string   `json:"error"`
+	Status                  string   `json:"status"`
+	Cursor                  string   `json:"cursor"`
+	Capabilities            []string `json:"capabilities"`
+	Error                   string   `json:"error"`
+	GatewayGeneration       string   `json:"gatewayGeneration"`
+	GatewayBuild            string   `json:"gatewayBuild"`
+	GatewayExecutableSHA256 string   `json:"gatewayExecutableSha256"`
+}
+
+// ConnectionControlSnapshot freezes the non-secret Connection fields that
+// determine credential binding. It is an internal concurrency primitive; it is
+// deliberately not part of the HTTP representation.
+type ConnectionControlSnapshot struct {
+	ID            string
+	Revision      int
+	Provider      string
+	AccountRef    string
+	ScopeRef      string
+	CredentialRef string
+	Enabled       bool
+	SupersededBy  string
+	ArchivedAt    string
 }
 
 type OutboxResultParams struct {
@@ -422,13 +448,16 @@ type ConnectorCommand struct {
 	ProviderOperation *ProviderOperation `json:"providerOperation,omitempty"`
 }
 
-func (h *Hub) loadIntegrations() error {
+func (h *Hub) loadIntegrations(persistNormalization bool) error {
 	var cfg integrationConfig
 	if err := h.st.LoadIntegrations(&cfg); err != nil {
 		return err
 	}
 	if cfg.Connections != nil {
 		h.connections = cfg.Connections
+	}
+	if cfg.ConnectionControlVersions != nil {
+		h.connectionControlVersions = cfg.ConnectionControlVersions
 	}
 	if cfg.Addresses != nil {
 		h.addresses = cfg.Addresses
@@ -442,22 +471,47 @@ func (h *Hub) loadIntegrations() error {
 	if cfg.AddressOperations != nil {
 		h.addressOperations = cfg.AddressOperations
 	}
-	changed := h.normalizeAddressLifecycleLocked()
+	changed := false
+	if h.connectionControlVersions == nil {
+		h.connectionControlVersions = map[string]int{}
+	}
+	for id := range h.connections {
+		if h.connectionControlVersions[id] < 1 {
+			h.connectionControlVersions[id] = 1
+			changed = true
+		}
+	}
+	for id := range h.connectionControlVersions {
+		if h.connections[id] == nil {
+			delete(h.connectionControlVersions, id)
+			changed = true
+		}
+	}
+	changed = h.normalizeAddressLifecycleLocked() || changed
 	changed = h.migrateAllowedConversationsLocked() || changed
-	if changed {
+	if changed && persistNormalization {
 		return h.persistIntegrationsLocked()
 	}
 	return nil
 }
 
 func (h *Hub) persistIntegrationsLocked() error {
-	return h.st.SaveIntegrations(integrationConfig{
-		Connections: h.connections, Addresses: h.addresses, Memberships: h.memberships,
+	config := integrationConfig{
+		Connections: h.connections, ConnectionControlVersions: h.connectionControlVersions,
+		Addresses: h.addresses, Memberships: h.memberships,
 		ConversationCandidates: h.conversationCandidates, AddressOperations: h.addressOperations,
-	})
+	}
+	if h.saveIntegrations != nil {
+		return h.saveIntegrations(config)
+	}
+	return h.st.SaveIntegrations(config)
 }
 
 func (h *Hub) loadInboxState() error {
+	return h.loadInboxStateWithPersistence(true)
+}
+
+func (h *Hub) loadInboxStateWithPersistence(persistRecovery bool) error {
 	staleInbox := map[string]bool{}
 	staleAttempts := map[string]bool{}
 	staleOutbox := map[string]bool{}
@@ -519,8 +573,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendInbox(item); err != nil {
-				return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendInbox(item); err != nil {
+					return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.inbox[id] = &copy
@@ -558,8 +614,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendAttempt(attempt); err != nil {
-				return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendAttempt(attempt); err != nil {
+					return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+				}
 			}
 			copy := attempt
 			h.attempts[id] = &copy
@@ -586,8 +644,10 @@ func (h *Hub) loadInboxState() error {
 		item := *current
 		if staleOutbox[id] {
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -599,8 +659,10 @@ func (h *Hub) loadInboxState() error {
 			item.ClaimExpiresAt = ""
 			item.LastError = "recovered legacy delivery claim after CodexLoom restart"
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -624,9 +686,11 @@ func (h *Hub) loadInboxState() error {
 			reconciledInbox = append(reconciledInbox, *item)
 		}
 	}
-	for _, item := range reconciledInbox {
-		if err := h.st.AppendInbox(item); err != nil {
-			return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+	if persistRecovery {
+		for _, item := range reconciledInbox {
+			if err := h.st.AppendInbox(item); err != nil {
+				return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+			}
 		}
 	}
 	return nil
@@ -655,8 +719,12 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 		return PlatformConnection{}, errf(400, "provider is required")
 	}
 	credentialRef := strings.TrimSpace(p.CredentialRef)
-	if credentialRef != "" && !strings.HasPrefix(credentialRef, "env:") && !strings.HasPrefix(credentialRef, "keychain:") {
-		return PlatformConnection{}, errf(400, "credentialRef must use env: or keychain:")
+	credentialMetadata, err := h.validateCredentialReference(credentialRef)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
+	if credentialMetadata != nil && !credentialProviderMatches(provider, credentialMetadata.Provider) {
+		return PlatformConnection{}, errf(400, "managed credential provider does not match connection provider")
 	}
 	enabled := true
 	if p.Enabled != nil {
@@ -671,8 +739,10 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.connections[connection.ID] = &connection
+	h.connectionControlVersions[connection.ID] = 1
 	if err := h.persistIntegrationsLocked(); err != nil {
 		delete(h.connections, connection.ID)
+		delete(h.connectionControlVersions, connection.ID)
 		return PlatformConnection{}, errf(500, "save integration: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": connection})
@@ -696,6 +766,16 @@ func (h *Hub) ListConnections() []PlatformConnection {
 func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	for _, id := range connectionIDs {
+		if h.activeCredentialMigrationLocked(strings.TrimSpace(id)) != nil {
+			return credentialMigrationInProgressError()
+		}
+	}
+	for _, id := range addressIDs {
+		if address := h.addresses[strings.TrimSpace(id)]; address != nil && h.activeCredentialMigrationLocked(address.ConnectionID) != nil {
+			return credentialMigrationInProgressError()
+		}
+	}
 	nextConnections := cloneConnections(h.connections)
 	nextAddresses := cloneAddresses(h.addresses)
 	nextMemberships := cloneMemberships(h.memberships)
@@ -735,12 +815,17 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 		}
 		delete(nextConnections, id)
 	}
+	nextControlVersions := cloneConnectionControlVersions(h.connectionControlVersions)
+	for _, id := range connectionIDs {
+		delete(nextControlVersions, strings.TrimSpace(id))
+	}
 	previousConnections, previousAddresses := h.connections, h.addresses
+	previousControlVersions := h.connectionControlVersions
 	previousMemberships, previousCandidates := h.memberships, h.conversationCandidates
-	h.connections, h.addresses = nextConnections, nextAddresses
+	h.connections, h.connectionControlVersions, h.addresses = nextConnections, nextControlVersions, nextAddresses
 	h.memberships, h.conversationCandidates = nextMemberships, nextCandidates
 	if err := h.persistIntegrationsLocked(); err != nil {
-		h.connections, h.addresses = previousConnections, previousAddresses
+		h.connections, h.connectionControlVersions, h.addresses = previousConnections, previousControlVersions, previousAddresses
 		h.memberships, h.conversationCandidates = previousMemberships, previousCandidates
 		return errf(500, "save integration rollback: %s", err)
 	}
@@ -753,13 +838,27 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addresses []AgentAddress) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	for _, connection := range connections {
+		if h.activeCredentialMigrationLocked(connection.ID) != nil {
+			return credentialMigrationInProgressError()
+		}
+	}
+	for _, address := range addresses {
+		if h.activeCredentialMigrationLocked(address.ConnectionID) != nil {
+			return credentialMigrationInProgressError()
+		}
+	}
 	nextConnections := cloneConnections(h.connections)
 	nextAddresses := cloneAddresses(h.addresses)
+	nextControlVersions := cloneConnectionControlVersions(h.connectionControlVersions)
 	for i := range connections {
 		connection := connections[i]
-		if _, exists := nextConnections[connection.ID]; exists {
+		if previous, exists := nextConnections[connection.ID]; exists {
 			copy := connection
 			nextConnections[connection.ID] = &copy
+			if connectionControlChanged(*previous, copy) {
+				nextControlVersions[connection.ID]++
+			}
 		}
 	}
 	for i := range addresses {
@@ -770,9 +869,10 @@ func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addr
 		}
 	}
 	previousConnections, previousAddresses := h.connections, h.addresses
-	h.connections, h.addresses = nextConnections, nextAddresses
+	previousControlVersions := h.connectionControlVersions
+	h.connections, h.connectionControlVersions, h.addresses = nextConnections, nextControlVersions, nextAddresses
 	if err := h.persistIntegrationsLocked(); err != nil {
-		h.connections, h.addresses = previousConnections, previousAddresses
+		h.connections, h.connectionControlVersions, h.addresses = previousConnections, previousControlVersions, previousAddresses
 		return errf(500, "save integration restore: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-restored", map[string]any{"connections": connections, "addresses": addresses})
@@ -796,6 +896,9 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 	if connection.ArchivedAt != "" || address.ArchivedAt != "" {
 		return IntegrationConsolidationResult{}, errf(409, "canonical integration identity is archived")
 	}
+	if h.activeCredentialMigrationLocked(connection.ID) != nil {
+		return IntegrationConsolidationResult{}, credentialMigrationInProgressError()
+	}
 
 	connectionIDs := normalizeOrderedStrings(duplicateConnectionIDs)
 	addressIDs := normalizeOrderedStrings(duplicateAddressIDs)
@@ -808,6 +911,9 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 		candidate := h.connections[id]
 		if candidate == nil || candidate.Provider != connection.Provider {
 			return IntegrationConsolidationResult{}, errf(409, "duplicate connection %s is incompatible", id)
+		}
+		if h.activeCredentialMigrationLocked(candidate.ID) != nil {
+			return IntegrationConsolidationResult{}, credentialMigrationInProgressError()
 		}
 		retiredConnections[id] = true
 	}
@@ -823,6 +929,9 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 		if candidateConnection == nil || candidateConnection.Provider != connection.Provider {
 			return IntegrationConsolidationResult{}, errf(409, "duplicate address %s uses an incompatible connection", id)
 		}
+		if h.activeCredentialMigrationLocked(candidateConnection.ID) != nil {
+			return IntegrationConsolidationResult{}, credentialMigrationInProgressError()
+		}
 		retiredAddresses[id] = true
 		if candidate.ConnectionID != connection.ID {
 			retiredConnections[candidate.ConnectionID] = true
@@ -837,6 +946,7 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 	}
 
 	connections := cloneConnections(h.connections)
+	controlVersions := cloneConnectionControlVersions(h.connectionControlVersions)
 	addresses := cloneAddresses(h.addresses)
 	memberships := cloneMemberships(h.memberships)
 	candidates := cloneConversationCandidates(h.conversationCandidates)
@@ -927,20 +1037,25 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 	}
 	for id := range retiredConnections {
 		candidate := connections[id]
+		previous := *candidate
 		candidate.Enabled = false
 		candidate.Status = "disconnected"
 		candidate.SupersededBy = connection.ID
 		candidate.ArchivedAt = ts
 		candidate.UpdatedAt = ts
+		if connectionControlChanged(previous, *candidate) {
+			controlVersions[id]++
+		}
 		result.ArchivedConnectionIDs = append(result.ArchivedConnectionIDs, id)
 	}
 
 	oldConnections, oldAddresses := h.connections, h.addresses
+	oldControlVersions := h.connectionControlVersions
 	oldMemberships, oldCandidates := h.memberships, h.conversationCandidates
-	h.connections, h.addresses = connections, addresses
+	h.connections, h.connectionControlVersions, h.addresses = connections, controlVersions, addresses
 	h.memberships, h.conversationCandidates = memberships, candidates
 	if err := h.persistIntegrationsLocked(); err != nil {
-		h.connections, h.addresses = oldConnections, oldAddresses
+		h.connections, h.connectionControlVersions, h.addresses = oldConnections, oldControlVersions, oldAddresses
 		h.memberships, h.conversationCandidates = oldMemberships, oldCandidates
 		return IntegrationConsolidationResult{}, errf(500, "save integration consolidation: %s", err)
 	}
@@ -1042,6 +1157,11 @@ func maxInt(left, right int) int {
 }
 
 func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnection, error) {
+	credentialRef := strings.TrimSpace(p.CredentialRef)
+	credentialMetadata, err := h.validateCredentialReference(credentialRef)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[strings.TrimSpace(id)]
@@ -1063,11 +1183,7 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 		next.ScopeRef = strings.TrimSpace(p.ScopeRef)
 	}
 	if p.CredentialRef != "" {
-		value := strings.TrimSpace(p.CredentialRef)
-		if !strings.HasPrefix(value, "env:") && !strings.HasPrefix(value, "keychain:") {
-			return PlatformConnection{}, errf(400, "credentialRef must use env: or keychain:")
-		}
-		next.CredentialRef = value
+		next.CredentialRef = credentialRef
 	}
 	if p.Capabilities != nil {
 		next.Capabilities = normalizeCapabilities(p.Capabilities)
@@ -1078,17 +1194,205 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 			next.Status = "disconnected"
 		}
 	}
+	controlChanged := connectionControlChanged(*connection, next)
+	if controlChanged && h.activeCredentialMigrationLocked(connection.ID) != nil {
+		return PlatformConnection{}, credentialMigrationInProgressError()
+	}
+	finalMetadata := credentialMetadata
+	if p.CredentialRef == "" && strings.HasPrefix(next.CredentialRef, credentialstore.ManagedReferencePrefix) {
+		finalMetadata, err = h.validateCredentialReference(next.CredentialRef)
+		if err != nil {
+			return PlatformConnection{}, err
+		}
+	}
+	if finalMetadata != nil && !credentialProviderMatches(next.Provider, finalMetadata.Provider) {
+		return PlatformConnection{}, errf(400, "managed credential provider does not match connection provider")
+	}
 	next.UpdatedAt = now()
+	previousControlVersion := h.connectionControlVersions[next.ID]
+	if controlChanged {
+		h.incrementConnectionControlVersionLocked(next.ID)
+	}
 	h.connections[next.ID] = &next
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections[next.ID] = connection
+		h.connectionControlVersions[next.ID] = previousControlVersion
 		return PlatformConnection{}, errf(500, "save integration: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
 	return next, nil
 }
 
+// CompareAndSwapConnectionCredential changes only the canonical credential
+// reference. It is used by the per-Connection migration transaction so a
+// concurrent operator update cannot be overwritten.
+func (h *Hub) CompareAndSwapConnectionCredential(id, expectedReference, targetReference string) (PlatformConnection, error) {
+	targetReference = strings.TrimSpace(targetReference)
+	metadata, err := h.validateCredentialReference(targetReference)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(id)]
+	if connection == nil {
+		return PlatformConnection{}, errf(404, "connection not found: %s", id)
+	}
+	if connection.ArchivedAt != "" {
+		return PlatformConnection{}, errf(409, "archived connection is superseded by %s", connection.SupersededBy)
+	}
+	if connection.CredentialRef != strings.TrimSpace(expectedReference) {
+		return PlatformConnection{}, errf(409, "connection credential reference changed; migration stopped")
+	}
+	if metadata != nil && !credentialProviderMatches(connection.Provider, metadata.Provider) {
+		return PlatformConnection{}, errf(400, "managed credential provider does not match connection provider")
+	}
+	previous := *connection
+	previousControlVersion := h.connectionControlVersions[connection.ID]
+	next := previous
+	next.CredentialRef = targetReference
+	next.UpdatedAt = now()
+	h.incrementConnectionControlVersionLocked(next.ID)
+	h.connections[next.ID] = &next
+	if err := h.persistIntegrationsLocked(); err != nil {
+		h.connections[next.ID] = connection
+		h.connectionControlVersions[next.ID] = previousControlVersion
+		return PlatformConnection{}, errf(500, "save integration: %s", err)
+	}
+	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
+	return next, nil
+}
+
+// CompareAndSwapConnectionCredentialForMigration performs the migration-owned
+// canonical reference transition while holding the same Hub lock that protects
+// the durable reservation and frozen Connection/Address identity. Every
+// canonical transition advances the monotonic control revision, including a
+// rollback to the previous business value. The receipt revision is persisted
+// first so a crash or partial write leaves an active, fail-closed reservation
+// that cannot accidentally match the old control snapshot.
+func (h *Hub) CompareAndSwapConnectionCredentialForMigration(receiptID, expectedReference, targetReference string) (PlatformConnection, CredentialMigrationReceipt, error) {
+	targetReference = strings.TrimSpace(targetReference)
+	metadata, err := h.validateCredentialReference(targetReference)
+	if err != nil {
+		return PlatformConnection{}, CredentialMigrationReceipt{}, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	receipt := h.credentialMigrations[strings.TrimSpace(receiptID)]
+	if receipt == nil {
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(404, "credential migration receipt not found")
+	}
+	if !credentialMigrationActiveState(receipt.State) {
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(409, "credential migration is not active")
+	}
+	connection := h.connections[receipt.ConnectionID]
+	if connection == nil {
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(404, "connection not found: %s", receipt.ConnectionID)
+	}
+	expectedReference = strings.TrimSpace(expectedReference)
+	if connection.CredentialRef != expectedReference {
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(409, "connection credential reference changed; migration stopped")
+	}
+	if err := h.matchCredentialMigrationIdentityLocked(*receipt, expectedReference); err != nil {
+		return PlatformConnection{}, CredentialMigrationReceipt{}, err
+	}
+	if metadata != nil && !credentialProviderMatches(connection.Provider, metadata.Provider) {
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(400, "managed credential provider does not match connection provider")
+	}
+	previous := *connection
+	previousControlVersion := h.connectionControlVersions[connection.ID]
+	previousReceipt := cloneCredentialMigrationReceipt(*receipt)
+	next := previous
+	next.CredentialRef = targetReference
+	timestamp := now()
+	next.UpdatedAt = timestamp
+	h.incrementConnectionControlVersionLocked(next.ID)
+	nextReceipt := cloneCredentialMigrationReceipt(previousReceipt)
+	nextReceipt.ConnectionRevision = h.connectionControlVersions[next.ID]
+	nextReceipt.Version = previousReceipt.Version + 1
+	nextReceipt.UpdatedAt = timestamp
+	h.credentialMigrations[nextReceipt.ID] = &nextReceipt
+	if err := h.persistCredentialMigrationsLocked(); err != nil {
+		h.credentialMigrations[previousReceipt.ID] = &previousReceipt
+		h.connectionControlVersions[next.ID] = previousControlVersion
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "persist credential migration control epoch: %s", err)
+	}
+	h.connections[next.ID] = &next
+	if err := h.persistIntegrationsLocked(); err != nil {
+		// The receipt epoch is already durable and can never be given back. A
+		// compensation may restore the prior business credential reference, but
+		// it deliberately keeps the bumped control version so every snapshot
+		// taken before this attempt remains stale.
+		h.connections[next.ID] = &previous
+		h.connectionControlVersions[next.ID] = nextReceipt.ConnectionRevision
+		if restoreErr := h.persistIntegrationsLocked(); restoreErr != nil {
+			// The integrations effect is indeterminate. Advance the in-memory
+			// fence once more without changing the durable receipt so neither the
+			// pre-attempt snapshot nor the active receipt can authorize another
+			// effect in this process. Reopen observes the durable receipt/control
+			// mismatch and remains fail closed as well.
+			h.connectionControlVersions[next.ID] = nextReceipt.ConnectionRevision + 1
+			return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration after persisting control epoch: %v; restore integration snapshot: %v", err, restoreErr)
+		}
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration: %s", err)
+	}
+	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
+	h.emitGlobalLocked("loom/credential-migration", map[string]any{"receipt": credentialMigrationPublicView(nextReceipt)})
+	return next, cloneCredentialMigrationReceipt(nextReceipt), nil
+}
+
+func (h *Hub) validateCredentialReference(value string) (*credentialstore.Metadata, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(value, "env:") || strings.HasPrefix(value, "keychain:") {
+		parts := strings.SplitN(value, ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+			return nil, errf(400, "credentialRef suffix is required")
+		}
+		return nil, nil
+	}
+	if !strings.HasPrefix(value, credentialstore.ManagedReferencePrefix) {
+		return nil, errf(400, "credentialRef must use env:, keychain:, or managed:")
+	}
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		return nil, errf(409, "managed credential store is unavailable: %s", err)
+	}
+	id, err := credentialstore.ParseReference(value)
+	if err != nil {
+		return nil, errf(400, "%s", err)
+	}
+	metadata, err := credentials.Inspect(id)
+	if err != nil {
+		return nil, errf(409, "%s", err)
+	}
+	return &metadata, nil
+}
+
+func credentialProviderMatches(connectionProvider, credentialProvider string) bool {
+	connectionProvider = strings.ToLower(strings.TrimSpace(connectionProvider))
+	credentialProvider = strings.ToLower(strings.TrimSpace(credentialProvider))
+	if connectionProvider == "feishu" {
+		connectionProvider = "lark"
+	}
+	if credentialProvider == "feishu" {
+		credentialProvider = "lark"
+	}
+	return connectionProvider == credentialProvider
+}
+
 func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (PlatformConnection, error) {
+	generation := strings.TrimSpace(p.GatewayGeneration)
+	build := strings.TrimSpace(p.GatewayBuild)
+	digest := strings.TrimSpace(p.GatewayExecutableSHA256)
+	if !validGatewayGeneration(generation) || len(build) > 128 || (build != "" && !buildinfo.ValidBuildIdentity(build)) {
+		return PlatformConnection{}, errf(400, "invalid gateway process evidence")
+	}
+	if digest != "" && !buildinfo.ValidExecutableSHA256(digest) {
+		return PlatformConnection{}, errf(400, "invalid gateway executable digest")
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[id]
@@ -1108,7 +1412,12 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 		return PlatformConnection{}, errf(400, "invalid connection status %q", status)
 	}
 	ts := now()
-	next.Status = status
+	latched := ConnectionManualRecoveryRequired(*connection)
+	if latched {
+		next.Status = "disconnected"
+	} else {
+		next.Status = status
+	}
 	next.LastHeartbeatAt = ts
 	next.UpdatedAt = ts
 	if p.Cursor != "" {
@@ -1117,7 +1426,16 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 	if p.Capabilities != nil {
 		next.Capabilities = normalizeCapabilities(p.Capabilities)
 	}
-	next.LastError = strings.TrimSpace(p.Error)
+	if latched {
+		next.LastError = connection.LastError
+	} else {
+		next.LastError = strings.TrimSpace(p.Error)
+	}
+	// A fresh legacy heartbeat clears prior optional process evidence rather
+	// than allowing an old generation or executable digest to look current.
+	next.GatewayGeneration = generation
+	next.GatewayBuild = build
+	next.GatewayExecutableSHA256 = digest
 	h.connections[next.ID] = &next
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections[next.ID] = connection
@@ -1127,23 +1445,133 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 	return next, nil
 }
 
+func validGatewayGeneration(value string) bool {
+	if len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x21 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// SnapshotConnectionControl returns the current credential-binding identity.
+// Provider-specific migration code can persist this snapshot before side
+// effects and compare it again under the Hub lock at each control boundary.
+func (h *Hub) SnapshotConnectionControl(id string) (ConnectionControlSnapshot, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(id)]
+	if connection == nil {
+		return ConnectionControlSnapshot{}, errf(404, "connection not found: %s", id)
+	}
+	snapshot := connectionControlSnapshot(*connection)
+	snapshot.Revision = h.connectionControlVersions[connection.ID]
+	return snapshot, nil
+}
+
+// MatchConnectionControl proves that credential-binding identity has not
+// drifted. Heartbeat/status/cursor updates intentionally do not invalidate it.
+func (h *Hub) MatchConnectionControl(expected ConnectionControlSnapshot) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(expected.ID)]
+	if connection == nil {
+		return errf(404, "connection not found: %s", expected.ID)
+	}
+	current := connectionControlSnapshot(*connection)
+	current.Revision = h.connectionControlVersions[connection.ID]
+	if current != expected {
+		return errf(409, "credential migration connection identity changed")
+	}
+	return nil
+}
+
+func connectionControlSnapshot(connection PlatformConnection) ConnectionControlSnapshot {
+	return ConnectionControlSnapshot{
+		ID: connection.ID, Provider: connection.Provider, AccountRef: connection.AccountRef,
+		ScopeRef: connection.ScopeRef, CredentialRef: connection.CredentialRef, Enabled: connection.Enabled,
+		SupersededBy: connection.SupersededBy, ArchivedAt: connection.ArchivedAt,
+	}
+}
+
 func (h *Hub) MarkConnectionDisconnected(id, reason string) {
+	if err := h.markConnectionDisconnected(id, strings.TrimSpace(reason)); err != nil {
+		log.Printf("[codex-loom] persist disconnected connection %s: %v", id, err)
+	}
+}
+
+// MarkConnectionManualRecovery persists a process-lifecycle failure on the
+// existing Connection instead of leaving an automatic restart failure only in
+// transient logs.
+func (h *Hub) MarkConnectionManualRecovery(id, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if !strings.HasPrefix(reason, "manual_recovery_required") {
+		reason = "manual_recovery_required: " + reason
+	}
+	return h.markConnectionDisconnected(id, reason)
+}
+
+func (h *Hub) markConnectionDisconnected(id, reason string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[id]
 	if connection == nil {
-		return
+		return errf(404, "connection not found: %s", id)
 	}
 	previous := *connection
 	connection.Status = "disconnected"
-	connection.LastError = strings.TrimSpace(reason)
+	connection.LastError = reason
 	connection.UpdatedAt = now()
 	if err := h.persistIntegrationsLocked(); err != nil {
 		*connection = previous
-		log.Printf("[codex-loom] persist disconnected connection %s: %v", id, err)
-		return
+		return errf(500, "persist connection manual recovery: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": *connection})
+	return nil
+}
+
+// ConnectionManualRecoveryRequired reports the durable process-control latch.
+// Ordinary status and heartbeat updates may contribute observed proof while
+// this latch is set, but they cannot clear it.
+func ConnectionManualRecoveryRequired(connection PlatformConnection) bool {
+	return strings.HasPrefix(strings.TrimSpace(connection.LastError), "manual_recovery_required")
+}
+
+// ClearConnectionManualRecovery verifies the exact fresh process attempt and
+// atomically clears its durable latch. It is intentionally an internal Hub
+// primitive rather than a public operator surface.
+func (h *Hub) ClearConnectionManualRecovery(id string, after time.Time, expected CredentialMigrationGatewayReceipt) (PlatformConnection, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(id)]
+	if connection == nil {
+		return PlatformConnection{}, errf(404, "connection not found: %s", id)
+	}
+	if connection.GatewayGeneration != expected.Generation || connection.GatewayBuild != expected.Build || connection.GatewayExecutableSHA256 != expected.ExecutableSHA256 {
+		return PlatformConnection{}, errf(409, "gateway process proof does not match recovery attempt")
+	}
+	heartbeat, err := time.Parse(time.RFC3339Nano, connection.LastHeartbeatAt)
+	if err != nil || heartbeat.Before(after) {
+		return PlatformConnection{}, errf(409, "gateway process proof is not fresh")
+	}
+	if !ConnectionManualRecoveryRequired(*connection) {
+		return *connection, nil
+	}
+	previous := *connection
+	next := previous
+	next.Status = "connected"
+	next.LastError = ""
+	next.UpdatedAt = now()
+	h.connections[next.ID] = &next
+	if err := h.persistIntegrationsLocked(); err != nil {
+		h.connections[previous.ID] = connection
+		return PlatformConnection{}, errf(500, "persist reconciled connection recovery: %s", err)
+	}
+	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
+	return next, nil
 }
 
 func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
@@ -1187,6 +1615,9 @@ func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
 	}
 	if connection.ArchivedAt != "" {
 		return AgentAddress{}, errf(409, "connection is archived and superseded by %s", connection.SupersededBy)
+	}
+	if h.activeCredentialMigrationLocked(connection.ID) != nil {
+		return AgentAddress{}, credentialMigrationInProgressError()
 	}
 	agent := h.resolveLocked(p.Agent)
 	if agent == nil {
@@ -1255,6 +1686,9 @@ func (h *Hub) UpdateAddress(id string, p AddressParams) (AgentAddress, error) {
 	}
 	if address.ArchivedAt != "" {
 		return AgentAddress{}, errf(409, "archived address requires an explicit managed restore")
+	}
+	if h.activeCredentialMigrationLocked(address.ConnectionID) != nil {
+		return AgentAddress{}, credentialMigrationInProgressError()
 	}
 	next := *address
 	next.AllowActors = append([]string(nil), address.AllowActors...)

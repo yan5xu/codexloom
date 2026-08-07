@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/yan5xu/codex-loom/internal/codex"
+	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/rollout"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
@@ -274,69 +275,100 @@ func (s *subscriber) close() {
 }
 
 type Hub struct {
-	st *store.Store
+	st      *store.Store
+	passive bool
+	// saveIntegrations is an internal persistence seam used to make partial
+	// durable-effect recovery deterministic in tests. Production leaves it nil.
+	saveIntegrations func(integrationConfig) error
 
-	mu                      sync.Mutex
-	contextCoverageMu       sync.Mutex
-	modelProviderMu         sync.Mutex
-	agents                  map[string]*Agent
-	agentSkillConfigs       map[string]*AgentSkillConfig
-	comms                   map[string]*AgentMessage
-	commOrder               []string
-	schedules               map[string]*Schedule
-	triggers                map[string]*Trigger
-	topics                  map[string]*Topic
-	profiles                map[string]*AgentProfile
-	teamLinks               map[string]*TeamRelationship
-	loomAgentPrompt         *LoomAgentPrompt
-	collaborationGroups     map[string]*CollaborationGroup
-	organizationLinks       map[string]*OrganizationRelationship
-	connections             map[string]*PlatformConnection
-	addresses               map[string]*AgentAddress
-	addressOperations       map[string]*AddressLifecycleOperation
-	memberships             map[string]*ConversationMembership
-	conversationCandidates  map[string]*ConversationCandidate
-	messages                map[string]*InboxMessage
-	messageOrder            []string
-	externalMessages        map[string]string
-	inbox                   map[string]*InboxItem
-	inboxOrder              []string
-	attempts                map[string]*HandlingAttempt
-	outbox                  map[string]*OutboxItem
-	outboxOrder             []string
-	providerOperations      map[string]*ProviderOperation
-	providerOperationOrder  []string
-	humanRequests           map[string]*HumanRequest
-	humanRequestOrder       []string
-	goals                   map[string]*ThreadGoal
-	seqs                    map[string]int64
-	globalSeq               int64
-	runtimes                map[string]*runtime
-	subs                    map[string]map[*subscriber]struct{}
-	globalSubs              map[*subscriber]struct{}
-	remoteConfig            RemoteConfig
-	remoteStatus            RemoteStatus
-	remotePairing           *RemotePairing
-	remoteRuntime           *remoteRuntime
-	remoteGeneration        uint64
-	remoteStartMu           sync.Mutex
-	remoteEnabledGeneration uint64
-	codexHost               *codexHostRuntime
-	codexHostGeneration     uint64
-	stop                    chan struct{}
-	stopOnce                sync.Once
-	stopping                bool
-	draining                bool
-	providerSwitching       bool
-	triggerObservations     map[string]struct{}
-	background              sync.WaitGroup
-	workers                 sync.WaitGroup
-	steerTurn               func(threadID, expectedTurnID, input string, timeout time.Duration) (string, error)
-	dispatchHumanAnswer     func(key, text string) (SendResult, error)
-	observeTrigger          triggerObserver
-	contextHistoryProbe     contextHistoryProbeFunc
-	threadResumeTimeout     time.Duration
-	developerContextTimeout time.Duration
+	credentialStoreMu         sync.Mutex
+	credentialStore           *credentialstore.Store
+	mu                        sync.Mutex
+	contextCoverageMu         sync.Mutex
+	modelProviderMu           sync.Mutex
+	agents                    map[string]*Agent
+	agentSkillConfigs         map[string]*AgentSkillConfig
+	comms                     map[string]*AgentMessage
+	commOrder                 []string
+	schedules                 map[string]*Schedule
+	triggers                  map[string]*Trigger
+	topics                    map[string]*Topic
+	profiles                  map[string]*AgentProfile
+	teamLinks                 map[string]*TeamRelationship
+	loomAgentPrompt           *LoomAgentPrompt
+	collaborationGroups       map[string]*CollaborationGroup
+	organizationLinks         map[string]*OrganizationRelationship
+	connections               map[string]*PlatformConnection
+	connectionControlVersions map[string]int
+	credentialMigrations      map[string]*CredentialMigrationReceipt
+	addresses                 map[string]*AgentAddress
+	addressOperations         map[string]*AddressLifecycleOperation
+	memberships               map[string]*ConversationMembership
+	conversationCandidates    map[string]*ConversationCandidate
+	messages                  map[string]*InboxMessage
+	messageOrder              []string
+	externalMessages          map[string]string
+	inbox                     map[string]*InboxItem
+	inboxOrder                []string
+	attempts                  map[string]*HandlingAttempt
+	outbox                    map[string]*OutboxItem
+	outboxOrder               []string
+	providerOperations        map[string]*ProviderOperation
+	providerOperationOrder    []string
+	humanRequests             map[string]*HumanRequest
+	humanRequestOrder         []string
+	goals                     map[string]*ThreadGoal
+	seqs                      map[string]int64
+	globalSeq                 int64
+	runtimes                  map[string]*runtime
+	subs                      map[string]map[*subscriber]struct{}
+	globalSubs                map[*subscriber]struct{}
+	remoteConfig              RemoteConfig
+	remoteStatus              RemoteStatus
+	remotePairing             *RemotePairing
+	remoteRuntime             *remoteRuntime
+	remoteGeneration          uint64
+	remoteStartMu             sync.Mutex
+	remoteEnabledGeneration   uint64
+	codexHost                 *codexHostRuntime
+	codexHostGeneration       uint64
+	stop                      chan struct{}
+	stopOnce                  sync.Once
+	stopping                  bool
+	draining                  bool
+	providerSwitching         bool
+	triggerObservations       map[string]struct{}
+	background                sync.WaitGroup
+	workers                   sync.WaitGroup
+	steerTurn                 func(threadID, expectedTurnID, input string, timeout time.Duration) (string, error)
+	dispatchHumanAnswer       func(key, text string) (SendResult, error)
+	observeTrigger            triggerObserver
+	contextHistoryProbe       contextHistoryProbeFunc
+	threadResumeTimeout       time.Duration
+	developerContextTimeout   time.Duration
+}
+
+// CredentialStore opens the owner-only managed credential backend lazily.
+// Read-only projections and Hub features unrelated to credentials therefore do
+// not create or depend on secret-bearing local state.
+func (h *Hub) CredentialStore() (*credentialstore.Store, error) {
+	if h == nil || h.st == nil {
+		return nil, fmt.Errorf("managed credential store is unavailable")
+	}
+	if h.st.ReadOnly() {
+		return nil, fmt.Errorf("managed credential store is unavailable in read-only mode")
+	}
+	h.credentialStoreMu.Lock()
+	defer h.credentialStoreMu.Unlock()
+	if h.credentialStore != nil {
+		return h.credentialStore, nil
+	}
+	credentials, err := credentialstore.Open(h.st.Dir())
+	if err != nil {
+		return nil, err
+	}
+	h.credentialStore = credentials
+	return credentials, nil
 }
 
 // New is retained for in-process callers that cannot recover from an invalid
@@ -365,36 +397,39 @@ func Open(st *store.Store) (*Hub, error) {
 
 func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	h := &Hub{
-		st:                     st,
-		agents:                 map[string]*Agent{},
-		agentSkillConfigs:      map[string]*AgentSkillConfig{},
-		comms:                  map[string]*AgentMessage{},
-		schedules:              map[string]*Schedule{},
-		triggers:               map[string]*Trigger{},
-		topics:                 map[string]*Topic{},
-		profiles:               map[string]*AgentProfile{},
-		teamLinks:              map[string]*TeamRelationship{},
-		collaborationGroups:    map[string]*CollaborationGroup{},
-		organizationLinks:      map[string]*OrganizationRelationship{},
-		connections:            map[string]*PlatformConnection{},
-		addresses:              map[string]*AgentAddress{},
-		addressOperations:      map[string]*AddressLifecycleOperation{},
-		memberships:            map[string]*ConversationMembership{},
-		conversationCandidates: map[string]*ConversationCandidate{},
-		messages:               map[string]*InboxMessage{},
-		externalMessages:       map[string]string{},
-		inbox:                  map[string]*InboxItem{},
-		attempts:               map[string]*HandlingAttempt{},
-		outbox:                 map[string]*OutboxItem{},
-		providerOperations:     map[string]*ProviderOperation{},
-		humanRequests:          map[string]*HumanRequest{},
-		goals:                  map[string]*ThreadGoal{},
-		seqs:                   map[string]int64{},
-		runtimes:               map[string]*runtime{},
-		subs:                   map[string]map[*subscriber]struct{}{},
-		globalSubs:             map[*subscriber]struct{}{},
-		triggerObservations:    map[string]struct{}{},
-		stop:                   make(chan struct{}),
+		st:                        st,
+		passive:                   options.Passive,
+		agents:                    map[string]*Agent{},
+		agentSkillConfigs:         map[string]*AgentSkillConfig{},
+		comms:                     map[string]*AgentMessage{},
+		schedules:                 map[string]*Schedule{},
+		triggers:                  map[string]*Trigger{},
+		topics:                    map[string]*Topic{},
+		profiles:                  map[string]*AgentProfile{},
+		teamLinks:                 map[string]*TeamRelationship{},
+		collaborationGroups:       map[string]*CollaborationGroup{},
+		organizationLinks:         map[string]*OrganizationRelationship{},
+		connections:               map[string]*PlatformConnection{},
+		connectionControlVersions: map[string]int{},
+		credentialMigrations:      map[string]*CredentialMigrationReceipt{},
+		addresses:                 map[string]*AgentAddress{},
+		addressOperations:         map[string]*AddressLifecycleOperation{},
+		memberships:               map[string]*ConversationMembership{},
+		conversationCandidates:    map[string]*ConversationCandidate{},
+		messages:                  map[string]*InboxMessage{},
+		externalMessages:          map[string]string{},
+		inbox:                     map[string]*InboxItem{},
+		attempts:                  map[string]*HandlingAttempt{},
+		outbox:                    map[string]*OutboxItem{},
+		providerOperations:        map[string]*ProviderOperation{},
+		humanRequests:             map[string]*HumanRequest{},
+		goals:                     map[string]*ThreadGoal{},
+		seqs:                      map[string]int64{},
+		runtimes:                  map[string]*runtime{},
+		subs:                      map[string]map[*subscriber]struct{}{},
+		globalSubs:                map[*subscriber]struct{}{},
+		triggerObservations:       map[string]struct{}{},
+		stop:                      make(chan struct{}),
 	}
 	h.globalSeq = st.LastSeq(globalEventLogID)
 	if err := st.LoadAgents(&h.agents); err != nil {
@@ -454,16 +489,19 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if err := h.validateLoadedCollaborationGroupsLocked(); err != nil {
 		return nil, fmt.Errorf("validate collaboration groups: %w", err)
 	}
-	if err := h.loadIntegrations(); err != nil {
+	if err := h.loadIntegrations(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load integrations: %w", err)
 	}
-	if err := h.loadInboxState(); err != nil {
+	if err := h.loadCredentialMigrations(!options.Passive); err != nil {
+		return nil, fmt.Errorf("load credential migrations: %w", err)
+	}
+	if err := h.loadInboxStateWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load inbox state: %w", err)
 	}
-	if err := h.loadProviderOperations(); err != nil {
+	if err := h.loadProviderOperationsWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load provider operations: %w", err)
 	}
-	if err := h.loadComms(); err != nil {
+	if err := h.loadCommsWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load communications: %w", err)
 	}
 	if err := h.loadHumanRequests(); err != nil {
@@ -487,7 +525,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if h.topics == nil {
 		h.topics = map[string]*Topic{}
 	}
-	if h.normalizeTopicsLocked() {
+	if h.normalizeTopicsLocked() && !options.Passive {
 		if err := h.persistTopicsLocked(); err != nil {
 			return nil, fmt.Errorf("persist normalized Topics: %w", err)
 		}
@@ -500,10 +538,10 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		// (read-only) and their rollout history is immediately viewable.
 		h.importEdgeLocked()
 	}
-	if err := h.migrateCommAgentIDsLocked(); err != nil {
+	if err := h.migrateCommAgentIDsLockedWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("migrate communication agent ids: %w", err)
 	}
-	if err := h.reconcileTriggersLocked(); err != nil {
+	if err := h.reconcileTriggersLockedWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("reconcile triggers: %w", err)
 	}
 	for _, meta := range h.agents {
@@ -582,6 +620,10 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func (h *Hub) loadComms() error {
+	return h.loadCommsWithPersistence(true)
+}
+
+func (h *Hub) loadCommsWithPersistence(persistRecovery bool) error {
 	repairLatest := map[string]bool{}
 	if err := h.st.ReadComms(func(raw json.RawMessage) {
 		var rec commRecord
@@ -603,8 +645,10 @@ func (h *Hub) loadComms() error {
 			continue
 		}
 		msg := h.comms[id]
-		if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
-			return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+		if persistRecovery {
+			if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
+				return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+			}
 		}
 	}
 	return nil

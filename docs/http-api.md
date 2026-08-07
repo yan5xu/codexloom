@@ -237,6 +237,37 @@ Origin 嵌入，其他类型保持 `same-origin`。
 Transfer rollback 使用原 transfer receipt ID：dry-run 时只传 `dryRun=true`；实际写入必须传当前 Address
 version，并让 `confirm` 精确等于 `aop_*` ID。成功结果包含变更后的 Address 和持久 operation receipt。
 
+### Credential Migration Routes
+
+| Method | Route | Meaning |
+|---|---|---|
+| GET | `/api/integrations/credentials/preflight?connectionId=...` | Inspect one Connection, or enumerate all eligible Keychain Connections when omitted |
+| POST | `/api/integrations/connections/{id}/credential-migration` | Dry-run or migrate one Connection |
+| GET | `/api/integrations/credential-migrations/{id}` | Read the non-secret durable receipt |
+| POST | `/api/integrations/credential-migrations/{id}/rollback` | Dry-run or restore the receipt's previous reference/gateway anchor |
+
+Migration and rollback bodies use `{"dryRun":true}` for preflight. Actual migration requires `confirm` equal to the
+Connection ID; actual rollback requires `confirm` equal to the receipt ID. Responses never read/list/export secret
+values and keep the existing Connection/Address/Membership wire shape. They always report
+`credentialsIncluded=false`, `runnableRestore=false`, and `backupStatus=credentials_excluded`, because ordinary
+backup excludes `credentials/**`. `manual_recovery_required` is a terminal fail-closed state, not a successful restore.
+
+Credential preflight, migrate, receipt, rollback, onboarding, import, setup, and repair routes always require the
+explicit `X-Codex-Loom-Admin-Token`, including on loopback. The request Origin must match the request scheme and
+host; cross-site browser requests and read-only canaries fail before body parsing, credential resolution, provider
+access, or service mutation. While a receipt owns a Connection, writes that would change its provider/account/scope,
+canonical credential reference, enabled/archive state, or Address identity return HTTP `409`
+`credential_migration_in_progress`.
+
+Before the first managed credential write, the current accepted build must have a bounded, verified ordinary backup
+manifest at the current format floor, explicitly excluding `credentials/**`; otherwise the operation returns HTTP
+`409 credential_rollback_build_floor_unavailable`. Backup archives with legacy, corrupt, ambiguous, or
+credential-bearing manifests are `unknown_unverified`, not proof of exclusion. Rollback dry-run and execution share
+the same read-only validator and report a non-secret `rollbackStatus`/`rollbackReason`; only `ready` may proceed.
+Gateway migration success requires a fresh heartbeat matching the prepared generation, observed executable digest,
+and build. An HTTP success still means only that an operation reached its stated durable phase, not that an unrelated
+or later heartbeat has recovered the Connection.
+
 ### Provider Setup Routes
 
 | Provider | Exact route |
@@ -259,6 +290,13 @@ version，并让 `confirm` 精确等于 `aop_*` ID。成功结果包含变更后
 | Parall | `POST /api/integrations/providers/parall/setup` |
 | Parall | `POST /api/integrations/providers/parall/gateway` |
 | Parall | `POST /api/integrations/providers/parall/operations` |
+
+Parall gateway repair accepts only an enabled, non-archived Connection with an active Address and a valid
+Hub-issued `managed:` credential reference. A legacy `keychain:` or `env:` reference fails before credential
+resolution, provider access, or service mutation with HTTP `409` and `{"error":"migration_required"}`; migrate
+that Connection through the managed credential operation first. A successful repair response means that the
+managed repair/restart was initiated after credential binding, provider identity/status, and WebSocket readiness
+checks. It does not assert that a subsequent gateway heartbeat has arrived.
 
 `GET /api/integrations/provider-operations/{id}` 用于读取异步 Provider
 Operation 状态。

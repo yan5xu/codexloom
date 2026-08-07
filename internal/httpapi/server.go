@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/yan5xu/codex-loom/internal/backup"
@@ -28,17 +27,23 @@ import (
 )
 
 type Server struct {
-	hub              *hub.Hub
-	st               *store.Store
-	web              fs.FS
-	restartMu        sync.Mutex
-	restart          restartState
-	connectorMu      sync.Mutex
-	activeConnectors map[string]struct{}
-	githubMu         sync.Mutex
-	githubDevices    map[string]*githubDeviceFlow
-	build            buildinfo.Info
-	readOnly         bool
+	hub                               *hub.Hub
+	st                                *store.Store
+	web                               fs.FS
+	restartMu                         sync.Mutex
+	restart                           restartState
+	connectorMu                       sync.Mutex
+	activeConnectors                  map[string]struct{}
+	githubMu                          sync.Mutex
+	githubDevices                     map[string]*githubDeviceFlow
+	credentialMu                      sync.Mutex
+	credentialLocks                   map[string]*sync.Mutex
+	managedGatewayMu                  sync.Mutex
+	managedGatewayAttempts            map[string]struct{}
+	credentialMigrationSave           func(hub.CredentialMigrationReceipt, int) (hub.CredentialMigrationReceipt, error)
+	credentialMigrationControlledSave func(hub.CredentialMigrationReceipt, int, ...string) (hub.CredentialMigrationReceipt, error)
+	build                             buildinfo.Info
+	readOnly                          bool
 }
 
 func New(h *hub.Hub, st *store.Store, web fs.FS) *Server {
@@ -56,15 +61,20 @@ func NewWithOptions(h *hub.Hub, st *store.Store, web fs.FS, options Options) *Se
 	if st != nil {
 		dataDir = st.Dir()
 	}
-	return &Server{
+	server := &Server{
 		hub: h, st: st, web: web, restart: restartState{State: "idle"},
-		activeConnectors: map[string]struct{}{},
-		githubDevices:    map[string]*githubDeviceFlow{},
+		activeConnectors:       map[string]struct{}{},
+		githubDevices:          map[string]*githubDeviceFlow{},
+		credentialLocks:        map[string]*sync.Mutex{},
+		managedGatewayAttempts: map[string]struct{}{},
 		build: buildinfo.Current(web, buildinfo.Runtime{
 			StartedAt: options.StartedAt, DataDir: dataDir, Mode: options.Mode, ReadOnly: options.ReadOnly,
 		}),
 		readOnly: options.ReadOnly,
 	}
+	server.credentialMigrationSave = h.SaveCredentialMigration
+	server.credentialMigrationControlledSave = h.SaveCredentialMigrationControlled
+	return server
 }
 
 type restartState struct {
@@ -539,7 +549,7 @@ func (s *Server) startReloader() (restartState, error) {
 	cmd := exec.Command(reloader, args...)
 	cmd.Env = os.Environ()
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureReloaderProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return restartState{}, &hub.HubError{Status: 500, Message: "start reloader: " + err.Error()}
@@ -826,6 +836,8 @@ func readOnly(next http.Handler) http.Handler {
 
 func readOnlyExternalRead(path string) bool {
 	return strings.HasPrefix(path, "/api/integrations/providers/") ||
+		strings.HasPrefix(path, "/api/integrations/credentials") ||
+		strings.HasPrefix(path, "/api/integrations/credential-migrations") ||
 		strings.HasSuffix(path, "/commands") ||
 		path == "/api/remote/pairing" ||
 		path == "/api/remote/devices"

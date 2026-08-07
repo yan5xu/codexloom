@@ -237,7 +237,7 @@ func cmdConnectGitHub(a args) {
 		}
 		connection, _ := resp["connection"].(map[string]any)
 		fmt.Printf("%s %s (%s)\n", green("GitHub connected"), bold(str(resp, "login")), str(connection, "id"))
-		fmt.Println(dim("  Credential remains in the configured environment or Keychain reference."))
+		fmt.Println(dim("  Credential remains behind the configured managed, environment, or legacy Keychain reference."))
 		return
 	}
 	if path := strings.TrimSpace(a.flags["token-file"]); path != "" {
@@ -258,7 +258,7 @@ func cmdConnectGitHub(a args) {
 		}
 		connection, _ := resp["connection"].(map[string]any)
 		fmt.Printf("%s %s (%s)\n", green("GitHub connected"), bold(str(resp, "login")), str(connection, "id"))
-		fmt.Println(dim("  Token stored in Keychain; source file was not modified."))
+		fmt.Println(dim("  Token stored in the owner-only managed store; source file was not modified."))
 		return
 	}
 	publicOnly := strings.EqualFold(a.flags["public-only"], "true")

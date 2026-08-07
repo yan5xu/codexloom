@@ -29,6 +29,14 @@ var retireManagedParallGateways = func(s *Server, connectionIDs []string) error 
 }
 
 func (s *Server) installParallGateway(connection hub.PlatformConnection, address hub.AgentAddress, orgID, agentID, hubURL string) (managedParallGateway, error) {
+	return s.installParallGatewayMode(connection, address, orgID, agentID, hubURL, true)
+}
+
+func (s *Server) installParallGatewayForMigration(connection hub.PlatformConnection, address hub.AgentAddress, orgID, agentID, hubURL string) (managedParallGateway, error) {
+	return s.installParallGatewayMode(connection, address, orgID, agentID, hubURL, false)
+}
+
+func (s *Server) installParallGatewayMode(connection hub.PlatformConnection, address hub.AgentAddress, orgID, agentID, hubURL string, retireLegacy bool) (managedParallGateway, error) {
 	wrapper, err := siblingExecutable("loom-parall-gateway")
 	if err != nil {
 		return managedParallGateway{}, err
@@ -48,11 +56,15 @@ func (s *Server) installParallGateway(connection hub.PlatformConnection, address
 	logPath := filepath.Join(logDir, "parall-"+connection.ID+".log")
 	arguments := []string{
 		wrapper, "--hub", hubURL, "--connection", connection.ID, "--address", address.ID,
-		"--org-id", orgID, "--agent-id", agentID, "--node", node, "--script", script,
+		"--org-id", orgID, "--agent-id", agentID, "--credential-ref", connection.CredentialRef,
+		"--node", node, "--script", script,
+	}
+	if connection.GatewayGeneration != "" {
+		arguments = append(arguments, "--generation", connection.GatewayGeneration)
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return s.installParallLaunchAgent(connection.ID, arguments, logPath)
+		return s.installParallLaunchAgent(connection.ID, arguments, logPath, retireLegacy)
 	case "linux":
 		return s.installParallSystemdUnit(connection.ID, arguments, logPath)
 	default:
@@ -114,7 +126,7 @@ func removeIfPresent(path string) error {
 	return err
 }
 
-func (s *Server) installParallLaunchAgent(connectionID string, arguments []string, logPath string) (managedParallGateway, error) {
+func (s *Server) installParallLaunchAgent(connectionID string, arguments []string, logPath string, retireLegacy bool) (managedParallGateway, error) {
 	label := "com.codexloom.parall." + safeServicePart(connectionID)
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -152,7 +164,10 @@ func (s *Server) installParallLaunchAgent(connectionID string, arguments []strin
 	uid := fmt.Sprint(os.Getuid())
 	target := "gui/" + uid + "/" + label
 	_ = exec.Command("launchctl", "bootout", target).Run()
-	legacyUnits := stopLegacyParallGateways(connectionID)
+	legacyUnits := []string{}
+	if retireLegacy {
+		legacyUnits = stopLegacyParallGateways(connectionID)
+	}
 	if output, err := exec.Command("launchctl", "bootstrap", "gui/"+uid, unitPath).CombinedOutput(); err != nil {
 		restoreLaunchAgents(uid, legacyUnits)
 		_ = os.Remove(unitPath)
@@ -164,9 +179,11 @@ func (s *Server) installParallLaunchAgent(connectionID string, arguments []strin
 		_ = os.Remove(unitPath)
 		return managedParallGateway{}, fmt.Errorf("launchctl kickstart: %s", strings.TrimSpace(string(output)))
 	}
-	for _, path := range legacyUnits {
-		if filepath.Clean(path) != filepath.Clean(unitPath) {
-			_ = os.Remove(path)
+	if retireLegacy {
+		for _, path := range legacyUnits {
+			if filepath.Clean(path) != filepath.Clean(unitPath) {
+				_ = os.Remove(path)
+			}
 		}
 	}
 	return managedParallGateway{Managed: true, Manager: "launchd", Service: label, LogPath: logPath, UnitPath: unitPath}, nil

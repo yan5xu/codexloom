@@ -26,6 +26,14 @@ var installManagedSlackGateway = func(s *Server, connection hub.PlatformConnecti
 }
 
 func (s *Server) installSlackGateway(connection hub.PlatformConnection, address hub.AgentAddress, appID, teamID, botUserID, hubURL string) (managedSlackGateway, error) {
+	return s.installSlackGatewayMode(connection, address, appID, teamID, botUserID, hubURL, true)
+}
+
+func (s *Server) installSlackGatewayForMigration(connection hub.PlatformConnection, address hub.AgentAddress, appID, teamID, botUserID, hubURL string) (managedSlackGateway, error) {
+	return s.installSlackGatewayMode(connection, address, appID, teamID, botUserID, hubURL, false)
+}
+
+func (s *Server) installSlackGatewayMode(connection hub.PlatformConnection, address hub.AgentAddress, appID, teamID, botUserID, hubURL string, retireLegacy bool) (managedSlackGateway, error) {
 	wrapper, err := siblingExecutable("loom-slack-gateway")
 	if err != nil {
 		return managedSlackGateway{}, err
@@ -46,11 +54,14 @@ func (s *Server) installSlackGateway(connection hub.PlatformConnection, address 
 	arguments := []string{
 		wrapper, "--hub", hubURL, "--connection", connection.ID, "--address", address.ID,
 		"--app-id", appID, "--team-id", teamID, "--bot-user-id", botUserID,
-		"--node", node, "--script", script,
+		"--credential-ref", connection.CredentialRef, "--node", node, "--script", script,
+	}
+	if connection.GatewayGeneration != "" {
+		arguments = append(arguments, "--generation", connection.GatewayGeneration)
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return s.installSlackLaunchAgent(connection.ID, arguments, logPath)
+		return s.installSlackLaunchAgent(connection.ID, arguments, logPath, retireLegacy)
 	case "linux":
 		return s.installSlackSystemdUnit(connection.ID, arguments, logPath)
 	default:
@@ -58,7 +69,7 @@ func (s *Server) installSlackGateway(connection hub.PlatformConnection, address 
 	}
 }
 
-func (s *Server) installSlackLaunchAgent(connectionID string, arguments []string, logPath string) (managedSlackGateway, error) {
+func (s *Server) installSlackLaunchAgent(connectionID string, arguments []string, logPath string, retireLegacy bool) (managedSlackGateway, error) {
 	label := "com.codexloom.slack." + safeServicePart(connectionID)
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -96,7 +107,10 @@ func (s *Server) installSlackLaunchAgent(connectionID string, arguments []string
 	uid := fmt.Sprint(os.Getuid())
 	target := "gui/" + uid + "/" + label
 	_ = exec.Command("launchctl", "bootout", target).Run()
-	legacyUnits := stopLegacySlackGateways(connectionID)
+	legacyUnits := []string{}
+	if retireLegacy {
+		legacyUnits = stopLegacySlackGateways(connectionID)
+	}
 	if output, err := exec.Command("launchctl", "bootstrap", "gui/"+uid, unitPath).CombinedOutput(); err != nil {
 		restoreLaunchAgents(uid, legacyUnits)
 		return managedSlackGateway{}, fmt.Errorf("launchctl bootstrap: %s", strings.TrimSpace(string(output)))

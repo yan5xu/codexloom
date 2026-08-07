@@ -447,7 +447,7 @@ type ConnectorCommand struct {
 	ProviderOperation *ProviderOperation `json:"providerOperation,omitempty"`
 }
 
-func (h *Hub) loadIntegrations() error {
+func (h *Hub) loadIntegrations(persistNormalization bool) error {
 	var cfg integrationConfig
 	if err := h.st.LoadIntegrations(&cfg); err != nil {
 		return err
@@ -488,7 +488,7 @@ func (h *Hub) loadIntegrations() error {
 	}
 	changed = h.normalizeAddressLifecycleLocked() || changed
 	changed = h.migrateAllowedConversationsLocked() || changed
-	if changed {
+	if changed && persistNormalization {
 		return h.persistIntegrationsLocked()
 	}
 	return nil
@@ -1246,47 +1246,82 @@ func (h *Hub) CompareAndSwapConnectionCredential(id, expectedReference, targetRe
 
 // CompareAndSwapConnectionCredentialForMigration performs the migration-owned
 // canonical reference transition while holding the same Hub lock that protects
-// the durable reservation and frozen Connection/Address identity.
-func (h *Hub) CompareAndSwapConnectionCredentialForMigration(receiptID, expectedReference, targetReference string) (PlatformConnection, error) {
+// the durable reservation and frozen Connection/Address identity. Every
+// canonical transition advances the monotonic control revision, including a
+// rollback to the previous business value. The receipt revision is persisted
+// first so a crash or partial write leaves an active, fail-closed reservation
+// that cannot accidentally match the old control snapshot.
+func (h *Hub) CompareAndSwapConnectionCredentialForMigration(receiptID, expectedReference, targetReference string) (PlatformConnection, CredentialMigrationReceipt, error) {
 	targetReference = strings.TrimSpace(targetReference)
 	metadata, err := h.validateCredentialReference(targetReference)
 	if err != nil {
-		return PlatformConnection{}, err
+		return PlatformConnection{}, CredentialMigrationReceipt{}, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	receipt := h.credentialMigrations[strings.TrimSpace(receiptID)]
 	if receipt == nil {
-		return PlatformConnection{}, errf(404, "credential migration receipt not found")
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(404, "credential migration receipt not found")
 	}
 	if !credentialMigrationActiveState(receipt.State) {
-		return PlatformConnection{}, errf(409, "credential migration is not active")
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(409, "credential migration is not active")
 	}
 	connection := h.connections[receipt.ConnectionID]
 	if connection == nil {
-		return PlatformConnection{}, errf(404, "connection not found: %s", receipt.ConnectionID)
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(404, "connection not found: %s", receipt.ConnectionID)
 	}
 	expectedReference = strings.TrimSpace(expectedReference)
 	if connection.CredentialRef != expectedReference {
-		return PlatformConnection{}, errf(409, "connection credential reference changed; migration stopped")
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(409, "connection credential reference changed; migration stopped")
 	}
 	if err := h.matchCredentialMigrationIdentityLocked(*receipt, expectedReference); err != nil {
-		return PlatformConnection{}, err
+		return PlatformConnection{}, CredentialMigrationReceipt{}, err
 	}
 	if metadata != nil && !credentialProviderMatches(connection.Provider, metadata.Provider) {
-		return PlatformConnection{}, errf(400, "managed credential provider does not match connection provider")
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(400, "managed credential provider does not match connection provider")
 	}
 	previous := *connection
+	previousControlVersion := h.connectionControlVersions[connection.ID]
+	previousReceipt := cloneCredentialMigrationReceipt(*receipt)
 	next := previous
 	next.CredentialRef = targetReference
-	next.UpdatedAt = now()
+	timestamp := now()
+	next.UpdatedAt = timestamp
+	h.incrementConnectionControlVersionLocked(next.ID)
+	nextReceipt := cloneCredentialMigrationReceipt(previousReceipt)
+	nextReceipt.ConnectionRevision = h.connectionControlVersions[next.ID]
+	nextReceipt.Version = previousReceipt.Version + 1
+	nextReceipt.UpdatedAt = timestamp
+	h.credentialMigrations[nextReceipt.ID] = &nextReceipt
+	if err := h.persistCredentialMigrationsLocked(); err != nil {
+		h.credentialMigrations[previousReceipt.ID] = &previousReceipt
+		h.connectionControlVersions[next.ID] = previousControlVersion
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "persist credential migration control epoch: %s", err)
+	}
 	h.connections[next.ID] = &next
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections[next.ID] = connection
-		return PlatformConnection{}, errf(500, "save integration: %s", err)
+		h.connectionControlVersions[next.ID] = previousControlVersion
+		if restoreErr := h.persistIntegrationsLocked(); restoreErr != nil {
+			// The newer receipt epoch is already durable. Keep it active and
+			// mismatched with the restored in-memory control snapshot so every
+			// operation stops for explicit reconciliation after an indeterminate
+			// integrations-file write.
+			return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration after persisting control epoch: %v; restore integration snapshot: %v", err, restoreErr)
+		}
+		h.credentialMigrations[previousReceipt.ID] = &previousReceipt
+		if rollbackErr := h.persistCredentialMigrationsLocked(); rollbackErr != nil {
+			// The newer receipt epoch may already be durable. Preserve that
+			// active mismatch in memory as well so every resume path stops for
+			// reconciliation instead of matching the old snapshot.
+			h.credentialMigrations[nextReceipt.ID] = &nextReceipt
+			return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration after persisting control epoch: %v; restore receipt epoch: %v", err, rollbackErr)
+		}
+		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
-	return next, nil
+	h.emitGlobalLocked("loom/credential-migration", map[string]any{"receipt": credentialMigrationPublicView(nextReceipt)})
+	return next, cloneCredentialMigrationReceipt(nextReceipt), nil
 }
 
 func (h *Hub) validateCredentialReference(value string) (*credentialstore.Metadata, error) {

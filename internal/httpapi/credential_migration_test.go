@@ -227,7 +227,7 @@ func TestCredentialMigrationRecoversCanonicalSwitchWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, fixture.connection.CredentialRef, targetRef); err != nil {
+	if _, _, err := fixture.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, fixture.connection.CredentialRef, targetRef); err != nil {
 		t.Fatal(err)
 	}
 
@@ -627,10 +627,13 @@ func TestCredentialRoutesRequireExplicitTokenAndRejectCrossOriginBeforeHooks(t *
 		{name: "github credential without token", method: http.MethodPost, path: "/api/integrations/providers/github/credential"},
 		{name: "github device start without token", method: http.MethodPost, path: "/api/integrations/providers/github/device"},
 		{name: "github device poll without token", method: http.MethodGet, path: "/api/integrations/providers/github/device/device_unknown"},
+		{name: "lark discovery without token", method: http.MethodGet, path: "/api/integrations/providers/lark/discovery?appId=app-auth"},
 		{name: "lark credentials without token", method: http.MethodPost, path: "/api/integrations/providers/lark/credentials"},
 		{name: "lark setup without token", method: http.MethodPost, path: "/api/integrations/providers/lark/setup"},
+		{name: "slack discovery without token", method: http.MethodGet, path: "/api/integrations/providers/slack/discovery?appId=app-auth"},
 		{name: "slack credentials without token", method: http.MethodPost, path: "/api/integrations/providers/slack/credentials"},
 		{name: "slack setup without token", method: http.MethodPost, path: "/api/integrations/providers/slack/setup"},
+		{name: "parall discovery without token", method: http.MethodGet, path: "/api/integrations/providers/parall/discovery?orgId=org-auth&agentId=agent-auth"},
 		{name: "parall credentials without token", method: http.MethodPost, path: "/api/integrations/providers/parall/credentials"},
 		{name: "parall agent credentials without token", method: http.MethodPost, path: "/api/integrations/providers/parall/agent-credentials"},
 		{name: "parall import without token", method: http.MethodPost, path: "/api/integrations/providers/parall/import"},
@@ -638,6 +641,12 @@ func TestCredentialRoutesRequireExplicitTokenAndRejectCrossOriginBeforeHooks(t *
 		{name: "parall gateway without token", method: http.MethodPost, path: "/api/integrations/providers/parall/gateway"},
 		{name: "cross origin with token", method: http.MethodGet, path: "/api/integrations/credentials/preflight", token: "credential-test-admin-token", origin: "https://attacker.example"},
 		{name: "cross scheme with token", method: http.MethodGet, path: "/api/integrations/credentials/preflight", token: "credential-test-admin-token", origin: "https://loom.test"},
+		{name: "lark discovery cross origin", method: http.MethodGet, path: "/api/integrations/providers/lark/discovery?appId=app-auth", token: "credential-test-admin-token", origin: "https://attacker.example"},
+		{name: "lark discovery cross scheme", method: http.MethodGet, path: "/api/integrations/providers/lark/discovery?appId=app-auth", token: "credential-test-admin-token", origin: "https://loom.test"},
+		{name: "slack discovery cross origin", method: http.MethodGet, path: "/api/integrations/providers/slack/discovery?appId=app-auth", token: "credential-test-admin-token", origin: "https://attacker.example"},
+		{name: "slack discovery cross scheme", method: http.MethodGet, path: "/api/integrations/providers/slack/discovery?appId=app-auth", token: "credential-test-admin-token", origin: "https://loom.test"},
+		{name: "parall discovery cross origin", method: http.MethodGet, path: "/api/integrations/providers/parall/discovery?orgId=org-auth&agentId=agent-auth", token: "credential-test-admin-token", origin: "https://attacker.example"},
+		{name: "parall discovery cross scheme", method: http.MethodGet, path: "/api/integrations/providers/parall/discovery?orgId=org-auth&agentId=agent-auth", token: "credential-test-admin-token", origin: "https://loom.test"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -681,6 +690,9 @@ func TestCredentialRoutesFailClosedInCanaryBeforeHooks(t *testing.T) {
 		{method: http.MethodGet, path: "/api/integrations/credentials/preflight"},
 		{method: http.MethodGet, path: "/api/integrations/credential-migrations/cmig_unknown"},
 		{method: http.MethodGet, path: "/api/integrations/providers/github/device/device_unknown"},
+		{method: http.MethodGet, path: "/api/integrations/providers/lark/discovery?appId=app-auth"},
+		{method: http.MethodGet, path: "/api/integrations/providers/slack/discovery?appId=app-auth"},
+		{method: http.MethodGet, path: "/api/integrations/providers/parall/discovery?orgId=org-auth&agentId=agent-auth"},
 		{method: http.MethodPost, path: "/api/integrations/providers/lark/credentials"},
 		{method: http.MethodPost, path: "/api/integrations/providers/slack/setup"},
 		{method: http.MethodPost, path: "/api/integrations/providers/parall/gateway"},
@@ -695,6 +707,93 @@ func TestCredentialRoutesFailClosedInCanaryBeforeHooks(t *testing.T) {
 	}
 	if fake.sourceCalls != 0 || fake.providerCalls != 0 || fake.activateCalls != 0 || fake.rollbackCalls != 0 || len(fixture.hub.ListCredentialMigrations()) != 0 {
 		t.Fatalf("canary credential request reached hooks: fake=%#v receipts=%d", fake, len(fixture.hub.ListCredentialMigrations()))
+	}
+}
+
+func TestCredentialBackedDiscoveryDenialHasZeroStoreAndProviderHooks(t *testing.T) {
+	t.Setenv("CODEX_LOOM_ADMIN_TOKEN", "credential-test-admin-token")
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	server := New(h, st, nil)
+
+	oldFeishu, oldSlack, oldParall := discoverFeishu, discoverSlackClient, newParallClient
+	defer func() {
+		discoverFeishu, discoverSlackClient, newParallClient = oldFeishu, oldSlack, oldParall
+	}()
+	providerHooks := 0
+	discoverFeishu = func(context.Context, string, string) (feishu.Discovery, error) {
+		providerHooks++
+		return feishu.Discovery{}, nil
+	}
+	discoverSlackClient = func(context.Context, string, string) (loomslack.Discovery, error) {
+		providerHooks++
+		return loomslack.Discovery{}, nil
+	}
+	newParallClient = func(string, string) parallAPI {
+		providerHooks++
+		return nil
+	}
+
+	routes := []string{
+		"/api/integrations/providers/lark/discovery?appId=app-auth",
+		"/api/integrations/providers/slack/discovery?appId=app-auth",
+		"/api/integrations/providers/parall/discovery?orgId=org-auth&agentId=agent-auth",
+	}
+	for _, route := range routes {
+		for _, variant := range []struct {
+			name         string
+			token        string
+			origin       string
+			secFetchSite string
+		}{
+			{name: "no-token"},
+			{name: "cross-origin", token: "credential-test-admin-token", origin: "https://attacker.example"},
+			{name: "cross-scheme", token: "credential-test-admin-token", origin: "https://loom.test"},
+			{name: "cross-site", token: "credential-test-admin-token", origin: "http://loom.test", secFetchSite: "cross-site"},
+		} {
+			t.Run(strings.TrimPrefix(strings.Split(route, "?")[0], "/api/integrations/providers/")+"/"+variant.name, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodGet, "http://loom.test"+route, nil)
+				if variant.token != "" {
+					request.Header.Set("X-Codex-Loom-Admin-Token", variant.token)
+				}
+				if variant.origin != "" {
+					request.Header.Set("Origin", variant.origin)
+				}
+				if variant.secFetchSite != "" {
+					request.Header.Set("Sec-Fetch-Site", variant.secFetchSite)
+				}
+				response := httptest.NewRecorder()
+				server.Handler().ServeHTTP(response, request)
+				if response.Code != http.StatusForbidden {
+					t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+				}
+			})
+		}
+	}
+	canary := NewWithOptions(h, st, nil, Options{Mode: "canary", ReadOnly: true})
+	for _, route := range routes {
+		request := httptest.NewRequest(http.MethodGet, "http://loom.test"+route, nil)
+		request.Header.Set("X-Codex-Loom-Admin-Token", "credential-test-admin-token")
+		request.Header.Set("Origin", "http://loom.test")
+		response := httptest.NewRecorder()
+		canary.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("canary %s = %d: %s", route, response.Code, response.Body.String())
+		}
+	}
+	if providerHooks != 0 {
+		t.Fatalf("denied discovery provider hooks = %d, want 0", providerHooks)
+	}
+	if _, err := os.Stat(filepath.Join(dir, credentialstore.DirectoryName)); !os.IsNotExist(err) {
+		t.Fatalf("denied discovery opened managed credential store: %v", err)
 	}
 }
 

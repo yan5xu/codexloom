@@ -359,7 +359,8 @@ func (s *Server) resumeCredentialMigration(ctx context.Context, connection hub.P
 		}
 	}
 	if receipt.State == hub.CredentialMigrationSwitchingReference {
-		if _, err := s.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
+		var err error
+		if _, receipt, err = s.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.PreviousCredentialRef, receipt.TargetCredentialRef); err != nil {
 			return s.rollbackFailedCredentialMigration(ctx, receipt, "reference", "credential_reference_conflict", "Canonical credential reference changed concurrently")
 		}
 		receipt.State = hub.CredentialMigrationCompleted
@@ -489,7 +490,8 @@ func (s *Server) continueCredentialMigrationRollback(ctx context.Context, receip
 		return s.manualCredentialRecovery(receipt, "rollback", "migration_identity_changed", "Credential migration identity changed during rollback")
 	}
 	if current.CredentialRef == receipt.TargetCredentialRef {
-		if _, err := s.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.TargetCredentialRef, receipt.PreviousCredentialRef); err != nil {
+		var err error
+		if _, receipt, err = s.hub.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.TargetCredentialRef, receipt.PreviousCredentialRef); err != nil {
 			return s.manualCredentialRecovery(receipt, "rollback", "reference_restore_failed", "Canonical credential reference could not be restored")
 		}
 	} else if current.CredentialRef != receipt.PreviousCredentialRef {

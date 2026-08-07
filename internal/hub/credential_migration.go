@@ -76,7 +76,7 @@ type CredentialMigrationReceipt struct {
 	Version                int                                  `json:"version"`
 }
 
-func (h *Hub) loadCredentialMigrations() error {
+func (h *Hub) loadCredentialMigrations(persistRecovery bool) error {
 	if err := h.st.LoadCredentialMigrations(&h.credentialMigrations); err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func (h *Hub) loadCredentialMigrations() error {
 		}
 		connections[receipt.ConnectionID] = id
 	}
-	if changed {
+	if changed && persistRecovery {
 		return h.persistCredentialMigrationsLocked()
 	}
 	return nil

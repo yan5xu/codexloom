@@ -1,8 +1,12 @@
 package hub
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -250,6 +254,205 @@ func TestConnectionControlSnapshotIgnoresHeartbeatButDetectsIdentityDrift(t *tes
 	}
 	if err := h.MatchConnectionControl(snapshot); err == nil {
 		t.Fatal("identity drift matched the frozen control snapshot")
+	}
+}
+
+func TestMigrationCredentialCASAdvancesControlEpochAcrossRollback(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", AccountRef: "app-epoch", CredentialRef: "keychain:epoch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.SnapshotConnectionControl(connection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := h.BeginCredentialMigration(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRef, _, err := credentials.PutBound("lark/app-secret/app-epoch", credentialstore.Payload{
+		Provider: "lark", Kind: "app-secret", Values: map[string]string{"appID": "app-epoch", "appSecret": randomHubCredential(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.TargetCredentialRef = targetRef
+	receipt.State = CredentialMigrationSwitchingReference
+	receipt, err = h.SaveCredentialMigrationControlled(receipt, receipt.Version, receipt.PreviousCredentialRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, afterMigration, err := h.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.PreviousCredentialRef, targetRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterMigration.ConnectionRevision <= before.Revision {
+		t.Fatalf("migration revision = %d, before=%d", afterMigration.ConnectionRevision, before.Revision)
+	}
+	_, afterRollback, err := h.CompareAndSwapConnectionCredentialForMigration(receipt.ID, targetRef, receipt.PreviousCredentialRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRollback.ConnectionRevision <= afterMigration.ConnectionRevision {
+		t.Fatalf("rollback revision = %d, migration=%d", afterRollback.ConnectionRevision, afterMigration.ConnectionRevision)
+	}
+	if err := h.MatchConnectionControl(before); err == nil {
+		t.Fatal("pre-migration snapshot matched after migrate and rollback ABA")
+	}
+	current, err := h.SnapshotConnectionControl(connection.ID)
+	if err != nil || current.CredentialRef != receipt.PreviousCredentialRef || current.Revision != afterRollback.ConnectionRevision {
+		t.Fatalf("rollback control = %#v, receipt=%#v, err=%v", current, afterRollback, err)
+	}
+}
+
+func TestMigrationCredentialCASFailsClosedWhenIntegrationPersistCannotRecover(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", AccountRef: "app-persist", CredentialRef: "keychain:persist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := h.BeginCredentialMigration(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRef, _, err := credentials.PutBound("lark/app-secret/app-persist", credentialstore.Payload{
+		Provider: "lark", Kind: "app-secret", Values: map[string]string{"appID": "app-persist", "appSecret": randomHubCredential(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.TargetCredentialRef = targetRef
+	receipt.State = CredentialMigrationSwitchingReference
+	receipt, err = h.SaveCredentialMigrationControlled(receipt, receipt.Version, receipt.PreviousCredentialRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.SnapshotConnectionControl(connection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrationsPath := filepath.Join(st.Dir(), "integrations.json")
+	if err := os.Remove(integrationsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(integrationsPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.PreviousCredentialRef, targetRef); err == nil {
+		t.Fatal("migration CAS succeeded despite integration persistence failure")
+	}
+	after, err := h.SnapshotConnectionControl(connection.ID)
+	if err != nil || after != before {
+		t.Fatalf("control after failed persist = %#v, want %#v, err=%v", after, before, err)
+	}
+	currentReceipt, err := h.GetCredentialMigration(receipt.ID)
+	if err != nil || currentReceipt.ConnectionRevision <= receipt.ConnectionRevision || currentReceipt.Version <= receipt.Version {
+		t.Fatalf("fail-closed receipt after persist failure = %#v, prior revision=%d version=%d, err=%v", currentReceipt, receipt.ConnectionRevision, receipt.Version, err)
+	}
+	if err := h.MatchCredentialMigrationIdentity(currentReceipt, receipt.PreviousCredentialRef); err == nil {
+		t.Fatal("indeterminate persisted epoch matched the restored control snapshot")
+	}
+	if err := h.RequireCredentialMigrationsIdle(connection.ID); err == nil {
+		t.Fatal("indeterminate persisted epoch released the active migration reservation")
+	}
+}
+
+func TestPassiveOpenProjectsLegacyCredentialStateWithoutWritingFiles(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrationsPath := filepath.Join(dir, "integrations.json")
+	integrations := []byte(`{
+  "connections": {
+    "conn_legacy": {
+      "id": "conn_legacy",
+      "provider": "lark",
+      "accountRef": "app-legacy",
+      "credentialRef": "keychain:legacy",
+      "status": "disconnected",
+      "enabled": true,
+      "createdAt": "2026-08-07T00:00:00Z",
+      "updatedAt": "2026-08-07T00:00:00Z"
+    }
+  }
+}`)
+	if err := os.WriteFile(integrationsPath, integrations, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	migrationsPath := filepath.Join(dir, "credential-migrations.json")
+	migrations := []byte(`{
+  "cmig_legacy_passive": {
+    "id": "cmig_legacy_passive",
+    "connectionId": "conn_legacy",
+    "provider": "lark",
+    "state": "gateway_activating",
+    "previousCredentialRef": "keychain:legacy",
+    "gatewayEffectId": "geff_legacy_passive",
+    "gatewayEffectState": "activation_prepared",
+    "credentialsIncluded": false,
+    "runnableRestore": false,
+    "createdAt": "2026-08-07T00:00:00Z",
+    "updatedAt": "2026-08-07T00:00:00Z",
+    "version": 1
+  }
+}`)
+	if err := os.WriteFile(migrationsPath, migrations, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	integrationsHash, migrationsHash := sha256.Sum256(integrations), sha256.Sum256(migrations)
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := h.SnapshotConnectionControl("conn_legacy")
+	if err != nil || snapshot.Revision != 1 {
+		t.Fatalf("passive integration projection = %#v, err=%v", snapshot, err)
+	}
+	receipt, err := h.GetCredentialMigration("cmig_legacy_passive")
+	if err != nil || receipt.State != CredentialMigrationManualRecoveryRequired || receipt.GatewayEffectAttempt != 1 {
+		t.Fatalf("passive migration projection = %#v, err=%v", receipt, err)
+	}
+	h.Shutdown()
+	afterIntegrations, err := os.ReadFile(integrationsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterMigrations, err := os.ReadFile(migrationsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterIntegrations, integrations) || sha256.Sum256(afterIntegrations) != integrationsHash {
+		t.Fatal("passive open rewrote legacy integrations bytes")
+	}
+	if !bytes.Equal(afterMigrations, migrations) || sha256.Sum256(afterMigrations) != migrationsHash {
+		t.Fatal("passive open rewrote legacy migration receipt bytes")
 	}
 }
 

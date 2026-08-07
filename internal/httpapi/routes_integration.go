@@ -147,6 +147,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"device": flow})
 	})
 	mux.HandleFunc("GET /api/integrations/providers/lark/discovery", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		writeJSON(w, 200, map[string]any{"discovery": s.discoverLark(r.Context(), r.URL.Query().Get("appId"))})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/lark/credentials", func(w http.ResponseWriter, r *http.Request) {
@@ -182,6 +185,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("GET /api/integrations/providers/slack/discovery", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		writeJSON(w, 200, map[string]any{"discovery": s.discoverSlack(r.Context(), r.URL.Query().Get("connectionId"), r.URL.Query().Get("appId"))})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/slack/credentials", func(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +223,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("GET /api/integrations/providers/parall/discovery", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		writeJSON(w, 200, map[string]any{"discovery": s.discoverParall(r.Context(), r.URL.Query().Get("connectionId"), r.URL.Query().Get("orgId"), r.URL.Query().Get("agentId"))})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/parall/credentials", func(w http.ResponseWriter, r *http.Request) {
@@ -351,12 +360,15 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 201, map[string]any{"connection": connection})
 	})
 	mux.HandleFunc("PATCH /api/integrations/connections/{id}", func(w http.ResponseWriter, r *http.Request) {
+		connectionID := r.PathValue("id")
+		unlock := s.lockCredentialMigration("connection:" + connectionID)
+		defer unlock()
 		var body hub.ConnectionParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
 			return
 		}
-		connection, err := s.hub.UpdateConnection(r.PathValue("id"), body)
+		connection, err := s.hub.UpdateConnection(connectionID, body)
 		if err != nil {
 			writeErr(w, err)
 			return

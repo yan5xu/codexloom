@@ -481,10 +481,10 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if err := h.validateLoadedCollaborationGroupsLocked(); err != nil {
 		return nil, fmt.Errorf("validate collaboration groups: %w", err)
 	}
-	if err := h.loadIntegrations(); err != nil {
+	if err := h.loadIntegrations(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load integrations: %w", err)
 	}
-	if err := h.loadCredentialMigrations(); err != nil {
+	if err := h.loadCredentialMigrations(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load credential migrations: %w", err)
 	}
 	if err := h.loadInboxState(); err != nil {

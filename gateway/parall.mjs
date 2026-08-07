@@ -50,6 +50,8 @@ state.dispatchMonitors ||= {};
 let stateWrite = Promise.resolve();
 const activeDispatchMonitors = new Set();
 const chatTypes = new Map();
+let socketStatus = 'disconnected';
+let heartbeatWrite = Promise.resolve();
 let ownAgentID = config.agentId;
 if (!ownAgentID) {
   try {
@@ -86,6 +88,7 @@ async function runParallLoop() {
       await catchUpDispatches();
       await connectWebSocket();
     } catch (error) {
+      setSocketStatus('disconnected');
       if (!controller.signal.aborted) console.error(`[parall] ${errorText(error)}; reconnecting`);
     }
     await delay(1000, controller.signal);
@@ -99,18 +102,24 @@ async function connectWebSocket() {
   if (state.lastSeq > 0) target.searchParams.set('last_seq', String(state.lastSeq));
 
   await new Promise((resolve, reject) => {
+    setSocketStatus('connecting');
     const ws = new WebSocket(target);
     let heartbeat;
     let socketError;
     let settled = false;
     const abort = () => ws.close();
     controller.signal.addEventListener('abort', abort, { once: true });
-    ws.onopen = () => console.error(`[parall] connected ${target.origin}`);
+    ws.onopen = () => {
+      setSocketStatus('connected');
+      console.error(`[parall] connected ${target.origin}`);
+    };
     ws.onerror = (event) => {
+      setSocketStatus('disconnected');
       socketError = new Error('WebSocket error');
       try { ws.close(); } catch {}
     };
     ws.onclose = (event) => {
+      setSocketStatus('disconnected');
       clearInterval(heartbeat);
       controller.signal.removeEventListener('abort', abort);
       if (settled) return;
@@ -425,29 +434,44 @@ async function reportProviderOperation(id, result) {
 
 async function runHeartbeatLoop() {
   while (!controller.signal.aborted) {
-    await hub(`/api/integrations/connections/${config.connectionId}/heartbeat`, {
-      method: 'POST',
-      body: {
-        status: 'connected',
-        cursor: String(state.lastSeq || ''),
-        capabilities: [
-          'receive_events',
-          'explicit_dispatch',
-          'threads',
-          'thread_context',
-          'attachments',
-          'reading',
-          'ack',
-          'proactive_send',
-          'provider_native_read',
-        ],
-        gatewayGeneration: config.gatewayGeneration,
-        gatewayBuild: config.gatewayBuild,
-        gatewayExecutableSha256: config.gatewayExecutableSha256,
-      },
-    }).catch((error) => console.error(`[hub] heartbeat: ${errorText(error)}`));
+    await reportConnectionHeartbeat().catch((error) => console.error(`[hub] heartbeat: ${errorText(error)}`));
     await delay(10000, controller.signal);
   }
+}
+
+function setSocketStatus(status) {
+  if (socketStatus === status) return;
+  socketStatus = status;
+  if (!controller.signal.aborted) {
+    void reportConnectionHeartbeat().catch((error) => console.error(`[hub] heartbeat: ${errorText(error)}`));
+  }
+}
+
+function reportConnectionHeartbeat() {
+  const status = socketStatus;
+  const body = {
+    status,
+    cursor: String(state.lastSeq || ''),
+    capabilities: [
+      'receive_events',
+      'explicit_dispatch',
+      'threads',
+      'thread_context',
+      'attachments',
+      'reading',
+      'ack',
+      'proactive_send',
+      'provider_native_read',
+    ],
+    gatewayGeneration: config.gatewayGeneration,
+    gatewayBuild: config.gatewayBuild,
+    gatewayExecutableSha256: config.gatewayExecutableSha256,
+  };
+  heartbeatWrite = heartbeatWrite.catch(() => {}).then(() => hub(
+    `/api/integrations/connections/${config.connectionId}/heartbeat`,
+    { method: 'POST', body },
+  ));
+  return heartbeatWrite;
 }
 
 async function runConversationDiscoveryLoop() {

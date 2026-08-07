@@ -41,11 +41,20 @@ func (s *Server) lockCredentialIdentityMutation(connectionIDs ...string) (func()
 }
 
 func providerConnectionIDs(connections []hub.PlatformConnection, provider string, match func(hub.PlatformConnection) bool) []string {
+	provider = credentialProviderFamily(provider)
 	result := []string{}
 	for _, connection := range connections {
-		if connection.Provider == provider && connection.ArchivedAt == "" && match(connection) {
+		if credentialProviderFamily(connection.Provider) == provider && connection.ArchivedAt == "" && match(connection) {
 			result = append(result, connection.ID)
 		}
 	}
 	return result
+}
+
+func credentialProviderFamily(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "feishu" {
+		return "lark"
+	}
+	return provider
 }

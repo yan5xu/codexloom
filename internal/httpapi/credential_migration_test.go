@@ -571,6 +571,74 @@ func TestProviderSetupSharesMigrationReservationBeforeCredentialOrProviderHooks(
 	}
 }
 
+func TestLarkCredentialFlowsFenceActiveFeishuAliasMigrationBeforeProviderHooks(t *testing.T) {
+	for _, action := range []string{"save", "setup"} {
+		t.Run(action, func(t *testing.T) {
+			fixture := newCredentialMigrationFixture(t)
+			credentials, err := fixture.hub.CredentialStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialSecret := randomTestCredential(t)
+			initialReference, err := feishu.SaveManagedAppSecret(credentials, fixture.connection.AccountRef, initialSecret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			connection, err := fixture.hub.UpdateConnection(fixture.connection.ID, hub.ConnectionParams{Provider: "feishu"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := fixture.hub.BeginCredentialMigration(connection); err != nil {
+				t.Fatal(err)
+			}
+
+			oldDiscover, oldFloor := discoverFeishu, verifyManagedCredentialWriteFloor
+			providerCalls := 0
+			discoverFeishu = func(_ context.Context, appID, _ string) (feishu.Discovery, error) {
+				providerCalls++
+				return feishu.Discovery{
+					Bot:   feishu.Bot{AppID: appID, OpenID: "ou_alias_bot", Name: "Alias Bot", ActivateStatus: 2},
+					Chats: []feishu.Chat{{ID: "oc_alias", Name: "Alias Chat"}},
+				}, nil
+			}
+			verifyManagedCredentialWriteFloor = func(*Server) error { return nil }
+			t.Cleanup(func() {
+				discoverFeishu, verifyManagedCredentialWriteFloor = oldDiscover, oldFloor
+			})
+
+			var operationErr error
+			switch action {
+			case "save":
+				_, operationErr = fixture.server.saveLarkCredentials(t.Context(), larkCredentialParams{
+					AppID: connection.AccountRef, AppSecret: randomTestCredential(t),
+				})
+			case "setup":
+				_, operationErr = fixture.server.setupLark(t.Context(), larkSetupParams{
+					Agent: "migration-agent", AppID: connection.AccountRef, ChatID: "oc_alias",
+				}, "http://127.0.0.1")
+			}
+			var hubErr *hub.HubError
+			if !errors.As(operationErr, &hubErr) || hubErr.Status != http.StatusConflict || hubErr.Message != "credential_migration_in_progress" {
+				t.Fatalf("%s feishu-alias migration fence = %v", action, operationErr)
+			}
+			if providerCalls != 0 {
+				t.Fatalf("%s crossed feishu-alias migration fence: provider calls=%d", action, providerCalls)
+			}
+			afterReference, err := feishu.ManagedAppSecretReference(credentials, connection.AccountRef)
+			if err != nil || afterReference != initialReference {
+				t.Fatalf("%s changed the managed credential binding", action)
+			}
+			payload, err := credentials.Resolve(afterReference)
+			if err != nil || payload.Values["appSecret"] != initialSecret {
+				t.Fatalf("%s changed managed credential material across the fence", action)
+			}
+			if connections := fixture.hub.ListConnections(); len(connections) != 1 || connections[0].ID != connection.ID {
+				t.Fatalf("%s changed Connection identity across the fence: %#v", action, connections)
+			}
+		})
+	}
+}
+
 func TestCredentialMigrationRollbackDryRunSharesFailClosedValidator(t *testing.T) {
 	t.Run("receipt phase", func(t *testing.T) {
 		fixture := newCredentialMigrationFixture(t)

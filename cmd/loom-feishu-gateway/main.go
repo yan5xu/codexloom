@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -32,22 +33,9 @@ func main() {
 		log.Fatalf("observe Feishu gateway executable: %v", err)
 	}
 
-	secret := strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET"))
-	if secret == "" && strings.TrimSpace(*appID) != "" {
-		if strings.TrimSpace(*credentialRef) == "" {
-			*credentialRef = "keychain:" + feishu.CredentialService(*appID)
-		}
-		var credentials *credentialstore.Store
-		if strings.HasPrefix(strings.TrimSpace(*credentialRef), credentialstore.ManagedReferencePrefix) {
-			credentials, err = credentialstore.Open(dataDir())
-			if err != nil {
-				log.Fatalf("open managed Feishu credential store: %v", err)
-			}
-		}
-		secret, err = feishu.LoadAppSecretReference(credentials, *credentialRef, *appID)
-		if err != nil {
-			log.Fatalf("read Feishu credential: %v", err)
-		}
+	secret, err := resolveFeishuGatewaySecret(*appID, *credentialRef)
+	if err != nil {
+		log.Fatalf("read Feishu credential: %v", err)
 	}
 	if *stateFile == "" && *connectionID != "" {
 		*stateFile = filepath.Join(dataDir(), "gateway", "feishu-"+*connectionID+".json")
@@ -67,6 +55,33 @@ func main() {
 	if err := gateway.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func resolveFeishuGatewaySecret(appID, credentialRef string) (string, error) {
+	appID = strings.TrimSpace(appID)
+	credentialRef = strings.TrimSpace(credentialRef)
+	if credentialRef != "" {
+		return loadFeishuGatewaySecretReference(appID, credentialRef)
+	}
+	if secret := strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET")); secret != "" || appID == "" {
+		return secret, nil
+	}
+	return loadFeishuGatewaySecretReference(appID, "keychain:"+feishu.CredentialService(appID))
+}
+
+func loadFeishuGatewaySecretReference(appID, credentialRef string) (string, error) {
+	if credentialRef == "" {
+		credentialRef = "keychain:" + feishu.CredentialService(appID)
+	}
+	var credentials *credentialstore.Store
+	if strings.HasPrefix(credentialRef, credentialstore.ManagedReferencePrefix) {
+		var err error
+		credentials, err = credentialstore.Open(dataDir())
+		if err != nil {
+			return "", fmt.Errorf("open managed Feishu credential store: %w", err)
+		}
+	}
+	return feishu.LoadAppSecretReference(credentials, credentialRef, appID)
 }
 
 func envFirst(names ...string) string {

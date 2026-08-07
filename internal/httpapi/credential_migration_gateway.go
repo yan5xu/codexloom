@@ -700,11 +700,17 @@ func (s *Server) waitForMigrationGatewayHeartbeat(ctx context.Context, connectio
 	defer ticker.Stop()
 	for {
 		for _, connection := range s.hub.ListConnections() {
-			if connection.ID != connectionID || connection.Status != "connected" || connection.LastHeartbeatAt == "" || expected != nil && !gatewayProcessEvidenceMatches(connection, *expected) {
+			latched := hub.ConnectionManualRecoveryRequired(connection)
+			if connection.ID != connectionID || connection.Status != "connected" && !latched || connection.LastHeartbeatAt == "" || expected != nil && !gatewayProcessEvidenceMatches(connection, *expected) || expected == nil && latched {
 				continue
 			}
 			heartbeat, err := time.Parse(time.RFC3339Nano, connection.LastHeartbeatAt)
 			if err == nil && !heartbeat.Before(after) {
+				if expected != nil {
+					if _, err := s.hub.ClearConnectionManualRecovery(connectionID, after, *expected); err != nil {
+						return "", err
+					}
+				}
 				return connection.LastHeartbeatAt, nil
 			}
 		}

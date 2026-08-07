@@ -51,10 +51,15 @@ type Event struct {
 
 type Store struct {
 	dir                string
+	readOnly           bool
 	eventMu            sync.Mutex
 	eventMaintenanceMu sync.Mutex
 	eventPolicy        EventLogPolicy
 	eventLastSeq       map[string]int64
+}
+
+type OpenOptions struct {
+	ReadOnly bool
 }
 
 func DefaultDir() string {
@@ -72,14 +77,31 @@ func DefaultDir() string {
 }
 
 func Open(dir string) (*Store, error) {
-	if err := migrateLegacyDefaultDir(dir); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "events"), 0o755); err != nil {
-		return nil, err
+	return OpenWithOptions(dir, OpenOptions{})
+}
+
+// OpenWithOptions keeps passive canaries observational from their first store
+// access: it neither migrates legacy directories nor creates missing paths.
+func OpenWithOptions(dir string, options OpenOptions) (*Store, error) {
+	if options.ReadOnly {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("store path is not a directory: %s", dir)
+		}
+	} else {
+		if err := migrateLegacyDefaultDir(dir); err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "events"), 0o755); err != nil {
+			return nil, err
+		}
 	}
 	return &Store{
 		dir:          dir,
+		readOnly:     options.ReadOnly,
 		eventPolicy:  EventLogPolicyFromEnv(),
 		eventLastSeq: map[string]int64{},
 	}, nil
@@ -119,6 +141,29 @@ func migrateLegacyDefaultDir(dir string) error {
 }
 
 func (s *Store) Dir() string { return s.dir }
+
+func (s *Store) ReadOnly() bool { return s != nil && s.readOnly }
+
+func (s *Store) ensureWritable() error {
+	if s != nil && s.readOnly {
+		return fmt.Errorf("store is read-only")
+	}
+	return nil
+}
+
+func (s *Store) saveJSON(path string, value any) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
+	return saveJSON(path, value)
+}
+
+func (s *Store) appendNDJSON(path string, value any) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
+	return appendNDJSON(path, value)
+}
 
 // EdgeAgent is one entry from pinix-edge's registry (~/.pinix/code_agents/names.json).
 type EdgeAgent struct {
@@ -246,6 +291,9 @@ func (s *Store) LoadAgents(v any) error {
 
 // SaveAgents writes agents.json and a compatibility sessions.json mirror.
 func (s *Store) SaveAgents(v any) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
 	// The compatibility mirror is written first. If its write fails, the
 	// canonical registry is untouched; if the canonical write fails, startup
 	// still reads the previous agents.json and the caller receives the error.
@@ -260,7 +308,7 @@ func (s *Store) LoadAgentSkillConfigs(v any) error {
 }
 
 func (s *Store) SaveAgentSkillConfigs(v any) error {
-	return saveJSON(s.agentSkillConfigFile(), v)
+	return s.saveJSON(s.agentSkillConfigFile(), v)
 }
 
 func (s *Store) LoadCredentialMigrations(v any) error {
@@ -268,7 +316,7 @@ func (s *Store) LoadCredentialMigrations(v any) error {
 }
 
 func (s *Store) SaveCredentialMigrations(v any) error {
-	return saveJSON(s.credentialMigrationsFile(), v)
+	return s.saveJSON(s.credentialMigrationsFile(), v)
 }
 
 // Deprecated compatibility names.
@@ -288,44 +336,44 @@ func (s *Store) LoadSchedules(v any) error {
 }
 
 func (s *Store) SaveSchedules(v any) error {
-	return saveJSON(s.schedulesFile(), v)
+	return s.saveJSON(s.schedulesFile(), v)
 }
 
 func (s *Store) LoadTriggers(v any) error { return loadJSON(s.triggersFile(), v) }
 
-func (s *Store) SaveTriggers(v any) error { return saveJSON(s.triggersFile(), v) }
+func (s *Store) SaveTriggers(v any) error { return s.saveJSON(s.triggersFile(), v) }
 
 func (s *Store) LoadTopics(v any) error { return loadJSON(s.topicsFile(), v) }
 
-func (s *Store) SaveTopics(v any) error { return saveJSON(s.topicsFile(), v) }
+func (s *Store) SaveTopics(v any) error { return s.saveJSON(s.topicsFile(), v) }
 
 func (s *Store) LoadProfiles(v any) error { return loadJSON(s.profilesFile(), v) }
 
-func (s *Store) SaveProfiles(v any) error { return saveJSON(s.profilesFile(), v) }
+func (s *Store) SaveProfiles(v any) error { return s.saveJSON(s.profilesFile(), v) }
 
 func (s *Store) LoadTeamLinks(v any) error { return loadJSON(s.teamLinksFile(), v) }
 
-func (s *Store) SaveTeamLinks(v any) error { return saveJSON(s.teamLinksFile(), v) }
+func (s *Store) SaveTeamLinks(v any) error { return s.saveJSON(s.teamLinksFile(), v) }
 
 func (s *Store) LoadCollaborationGroups(v any) error {
 	return loadJSON(s.collaborationGroupsFile(), v)
 }
 
 func (s *Store) SaveCollaborationGroups(v any) error {
-	return saveJSON(s.collaborationGroupsFile(), v)
+	return s.saveJSON(s.collaborationGroupsFile(), v)
 }
 
 func (s *Store) LoadOrganizationLinks(v any) error { return loadJSON(s.organizationLinksFile(), v) }
 
-func (s *Store) SaveOrganizationLinks(v any) error { return saveJSON(s.organizationLinksFile(), v) }
+func (s *Store) SaveOrganizationLinks(v any) error { return s.saveJSON(s.organizationLinksFile(), v) }
 
 func (s *Store) LoadIntegrations(v any) error { return loadJSON(s.integrationsFile(), v) }
 
-func (s *Store) SaveIntegrations(v any) error { return saveJSON(s.integrationsFile(), v) }
+func (s *Store) SaveIntegrations(v any) error { return s.saveJSON(s.integrationsFile(), v) }
 
 func (s *Store) LoadRemote(v any) error { return loadJSON(s.remoteFile(), v) }
 
-func (s *Store) SaveRemote(v any) error { return saveJSON(s.remoteFile(), v) }
+func (s *Store) SaveRemote(v any) error { return s.saveJSON(s.remoteFile(), v) }
 
 func loadJSON(path string, v any) error {
 	data, err := os.ReadFile(path)
@@ -385,42 +433,42 @@ func replaceFile(path string, data []byte, mode os.FileMode) error {
 }
 
 func (s *Store) AppendComm(v any) error {
-	return appendNDJSON(s.commsFile(), v)
+	return s.appendNDJSON(s.commsFile(), v)
 }
 
 func (s *Store) ReadComms(fn func(json.RawMessage)) error {
 	return readNDJSON(s.commsFile(), fn)
 }
 
-func (s *Store) AppendMessage(v any) error { return appendNDJSON(s.messagesFile(), v) }
+func (s *Store) AppendMessage(v any) error { return s.appendNDJSON(s.messagesFile(), v) }
 
 func (s *Store) ReadMessages(fn func(json.RawMessage)) error {
 	return readNDJSON(s.messagesFile(), fn)
 }
 
-func (s *Store) AppendInbox(v any) error { return appendNDJSON(s.inboxFile(), v) }
+func (s *Store) AppendInbox(v any) error { return s.appendNDJSON(s.inboxFile(), v) }
 
 func (s *Store) ReadInbox(fn func(json.RawMessage)) error { return readNDJSON(s.inboxFile(), fn) }
 
-func (s *Store) AppendAttempt(v any) error { return appendNDJSON(s.attemptsFile(), v) }
+func (s *Store) AppendAttempt(v any) error { return s.appendNDJSON(s.attemptsFile(), v) }
 
 func (s *Store) ReadAttempts(fn func(json.RawMessage)) error {
 	return readNDJSON(s.attemptsFile(), fn)
 }
 
-func (s *Store) AppendOutbox(v any) error { return appendNDJSON(s.outboxFile(), v) }
+func (s *Store) AppendOutbox(v any) error { return s.appendNDJSON(s.outboxFile(), v) }
 
 func (s *Store) ReadOutbox(fn func(json.RawMessage)) error { return readNDJSON(s.outboxFile(), fn) }
 
 func (s *Store) AppendProviderOperation(v any) error {
-	return appendNDJSON(s.providerOperationsFile(), v)
+	return s.appendNDJSON(s.providerOperationsFile(), v)
 }
 
 func (s *Store) ReadProviderOperations(fn func(json.RawMessage)) error {
 	return readNDJSON(s.providerOperationsFile(), fn)
 }
 
-func (s *Store) AppendHumanRequest(v any) error { return appendNDJSON(s.humanRequestsFile(), v) }
+func (s *Store) AppendHumanRequest(v any) error { return s.appendNDJSON(s.humanRequestsFile(), v) }
 
 func (s *Store) ReadHumanRequests(fn func(json.RawMessage)) error {
 	return readNDJSON(s.humanRequestsFile(), fn)
@@ -498,6 +546,9 @@ func readNDJSON(path string, fn func(json.RawMessage)) error {
 // ReplaceComms atomically compacts the communication index to one current
 // snapshot per message. Codex Thread rollout history is intentionally untouched.
 func (s *Store) ReplaceComms(records []json.RawMessage) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
 	if original, err := os.ReadFile(s.commsFile()); err == nil && len(original) > 0 {
 		backup := filepath.Join(s.dir, "comms.v1-name-addressed.ndjson")
 		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {

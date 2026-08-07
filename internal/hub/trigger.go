@@ -849,6 +849,10 @@ func (h *Hub) ensureTriggerMessageLocked(trigger *Trigger, event TriggerEvent) (
 }
 
 func (h *Hub) reconcileTriggersLocked() error {
+	return h.reconcileTriggersLockedWithPersistence(true)
+}
+
+func (h *Hub) reconcileTriggersLockedWithPersistence(persist bool) error {
 	messages := map[string]*AgentMessage{}
 	for _, id := range h.commOrder {
 		message := h.comms[id]
@@ -877,6 +881,9 @@ func (h *Hub) reconcileTriggersLocked() error {
 		changed = true
 	}
 	if !changed {
+		return nil
+	}
+	if !persist {
 		return nil
 	}
 	if err := h.persistTriggersLocked(); err != nil {

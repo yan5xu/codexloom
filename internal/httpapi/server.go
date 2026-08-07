@@ -38,6 +38,8 @@ type Server struct {
 	githubDevices                     map[string]*githubDeviceFlow
 	credentialMu                      sync.Mutex
 	credentialLocks                   map[string]*sync.Mutex
+	managedGatewayMu                  sync.Mutex
+	managedGatewayAttempts            map[string]struct{}
 	credentialMigrationSave           func(hub.CredentialMigrationReceipt, int) (hub.CredentialMigrationReceipt, error)
 	credentialMigrationControlledSave func(hub.CredentialMigrationReceipt, int, ...string) (hub.CredentialMigrationReceipt, error)
 	build                             buildinfo.Info
@@ -61,9 +63,10 @@ func NewWithOptions(h *hub.Hub, st *store.Store, web fs.FS, options Options) *Se
 	}
 	server := &Server{
 		hub: h, st: st, web: web, restart: restartState{State: "idle"},
-		activeConnectors: map[string]struct{}{},
-		githubDevices:    map[string]*githubDeviceFlow{},
-		credentialLocks:  map[string]*sync.Mutex{},
+		activeConnectors:       map[string]struct{}{},
+		githubDevices:          map[string]*githubDeviceFlow{},
+		credentialLocks:        map[string]*sync.Mutex{},
+		managedGatewayAttempts: map[string]struct{}{},
 		build: buildinfo.Current(web, buildinfo.Runtime{
 			StartedAt: options.StartedAt, DataDir: dataDir, Mode: options.Mode, ReadOnly: options.ReadOnly,
 		}),

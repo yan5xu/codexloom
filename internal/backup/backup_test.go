@@ -243,6 +243,76 @@ func TestVerifyClassifiesLegacyAndCorruptSnapshotsWithoutTrustingFilename(t *tes
 	}
 }
 
+func TestVerifyRejectsIncompleteOrAmbiguousCompressedStreams(t *testing.T) {
+	dir := t.TempDir()
+	manifestValue := map[string]any{
+		"version": CurrentManifestVersion, "credentialsIncluded": false, "runnableRestore": false,
+		"backupStatus": "credentials_excluded", "build": "accepted-build",
+		"excluded": []string{"codex-loom/credentials/** (secret-bearing managed credentials; ordinary backup is not a complete runnable restore)"},
+	}
+	validPath := filepath.Join(dir, "valid.tar.gz")
+	writeSnapshotFixture(t, validPath, manifestValue, map[string][]byte{"codex-loom/agents.json": []byte("{}")})
+	valid, err := os.ReadFile(validPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		write func(string)
+	}{
+		{
+			name: "truncated gzip trailer",
+			write: func(path string) {
+				if err := os.WriteFile(path, valid[:len(valid)-4], 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "raw payload after gzip member",
+			write: func(path string) {
+				if err := os.WriteFile(path, append(append([]byte(nil), valid...), []byte("unexpected-tail")...), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "second gzip member containing credentials",
+			write: func(path string) {
+				secondPath := filepath.Join(dir, "second.tar.gz")
+				writeSnapshotFixture(t, secondPath, manifestValue, map[string][]byte{"codex-loom/credentials/fixture.json": []byte("fixture")})
+				second, err := os.ReadFile(secondPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, append(append([]byte(nil), valid...), second...), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "decoded payload after tar end",
+			write: func(path string) {
+				writeSnapshotWithDecodedTail(t, path, manifestValue, []byte("unexpected-decoded-tail"))
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(test.name, " ", "-")+".tar.gz")
+			test.write(path)
+			verification := Verify(path)
+			if verification.Status != "corrupt_unverified" {
+				t.Fatalf("Verify() = %#v, want corrupt_unverified", verification)
+			}
+			if err := verification.ValidateRollbackFloor(CurrentManifestVersion, "accepted-build"); err == nil {
+				t.Fatal("ambiguous archive satisfied managed credential rollback floor")
+			}
+		})
+	}
+}
+
 func writeSnapshotFixture(t *testing.T, path string, manifestValue map[string]any, files map[string][]byte) {
 	t.Helper()
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -270,6 +340,38 @@ func writeSnapshotFixture(t *testing.T, path string, manifestValue map[string]an
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSnapshotWithDecodedTail(t *testing.T, path string, manifestValue map[string]any, tail []byte) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	data, err := json.Marshal(manifestValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(data))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gz.Write(tail); err != nil {
 		t.Fatal(err)
 	}
 	if err := gz.Close(); err != nil {

@@ -1,11 +1,40 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestReadOnlyOpenDoesNotCreateOrMutateStore(t *testing.T) {
+	dir := t.TempDir()
+	agents := []byte(`{"agent":{"id":"agent"}}`)
+	if err := os.WriteFile(filepath.Join(dir, "agents.json"), agents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := OpenWithOptions(dir, OpenOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.ReadOnly() {
+		t.Fatal("read-only Store did not retain its mode")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "events")); !os.IsNotExist(err) {
+		t.Fatalf("read-only open created events directory: %v", err)
+	}
+	if err := st.SaveAgents(map[string]any{}); err == nil {
+		t.Fatal("read-only Store accepted a durable write")
+	}
+	after, err := os.ReadFile(filepath.Join(dir, "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, agents) {
+		t.Fatal("read-only Store changed agents.json")
+	}
+}
 
 func TestOpenMigratesLegacyCodexHubDirectory(t *testing.T) {
 	home := t.TempDir()

@@ -21,6 +21,17 @@ type CredentialMigrationAddressSnapshot struct {
 	Version          int    `json:"version"`
 }
 
+// ConnectionBindingSnapshot freezes both Connection control identity and all
+// Address bindings for one process-control boundary. It is internal
+// coordination state and is not part of the public wire representation.
+type ConnectionBindingSnapshot struct {
+	Control                 ConnectionControlSnapshot
+	GatewayGeneration       string
+	GatewayBuild            string
+	GatewayExecutableSHA256 string
+	Addresses               []CredentialMigrationAddressSnapshot
+}
+
 func credentialMigrationActiveState(state string) bool {
 	switch state {
 	case CredentialMigrationPreparing, CredentialMigrationCredentialStored,
@@ -77,6 +88,89 @@ func (h *Hub) credentialMigrationAddressSnapshotsLocked(connectionID string) []C
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
+}
+
+func addressBindingSnapshot(address AgentAddress) CredentialMigrationAddressSnapshot {
+	return CredentialMigrationAddressSnapshot{
+		ID: address.ID, AgentID: address.AgentID, ConnectionID: address.ConnectionID,
+		ExternalIdentity: address.ExternalIdentity, Enabled: address.Enabled,
+		SupersededBy: address.SupersededBy, ArchivedAt: address.ArchivedAt,
+		DeletedAt: address.DeletedAt, Version: address.Version,
+	}
+}
+
+// SnapshotConnectionBinding captures the complete Connection/Address identity
+// used by automatic restart and migration/control effects.
+func (h *Hub) SnapshotConnectionBinding(id string) (ConnectionBindingSnapshot, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(id)]
+	if connection == nil {
+		return ConnectionBindingSnapshot{}, errf(404, "connection not found: %s", id)
+	}
+	control := connectionControlSnapshot(*connection)
+	control.Revision = h.connectionControlVersions[connection.ID]
+	return ConnectionBindingSnapshot{
+		Control: control, GatewayGeneration: connection.GatewayGeneration, GatewayBuild: connection.GatewayBuild,
+		GatewayExecutableSHA256: connection.GatewayExecutableSHA256,
+		Addresses:               h.credentialMigrationAddressSnapshotsLocked(connection.ID),
+	}, nil
+}
+
+// MatchConnectionBinding rejects any Connection control or Address identity
+// drift since SnapshotConnectionBinding.
+func (h *Hub) MatchConnectionBinding(expected ConnectionBindingSnapshot) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(expected.Control.ID)]
+	if connection == nil {
+		return errf(404, "connection not found: %s", expected.Control.ID)
+	}
+	currentControl := connectionControlSnapshot(*connection)
+	currentControl.Revision = h.connectionControlVersions[connection.ID]
+	if currentControl != expected.Control {
+		return errf(409, "connection control identity changed")
+	}
+	if connection.GatewayGeneration != expected.GatewayGeneration || connection.GatewayBuild != expected.GatewayBuild ||
+		connection.GatewayExecutableSHA256 != expected.GatewayExecutableSHA256 {
+		return errf(409, "connection process identity changed")
+	}
+	currentAddresses := h.credentialMigrationAddressSnapshotsLocked(connection.ID)
+	if len(currentAddresses) != len(expected.Addresses) {
+		return errf(409, "connection Address binding changed")
+	}
+	for index := range currentAddresses {
+		if currentAddresses[index] != expected.Addresses[index] {
+			return errf(409, "connection Address binding changed")
+		}
+	}
+	return nil
+}
+
+// SnapshotAddressBinding and MatchAddressBinding form the optimistic half of
+// an Address mutation fence. The HTTP layer takes all affected Connection
+// locks, then repeats this comparison before committing the mutation.
+func (h *Hub) SnapshotAddressBinding(id string) (CredentialMigrationAddressSnapshot, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	address := h.addresses[strings.TrimSpace(id)]
+	if address == nil {
+		return CredentialMigrationAddressSnapshot{}, errf(404, "agent address not found: %s", id)
+	}
+	return addressBindingSnapshot(*address), nil
+}
+
+func (h *Hub) MatchAddressBinding(expected CredentialMigrationAddressSnapshot) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	address := h.addresses[strings.TrimSpace(expected.ID)]
+	if address == nil {
+		return errf(404, "agent address not found: %s", expected.ID)
+	}
+	if addressBindingSnapshot(*address) != expected {
+		return errf(409, "Address identity changed")
+	}
+	return nil
 }
 
 func (h *Hub) initializeCredentialMigrationIdentityLocked(receipt *CredentialMigrationReceipt, connection *PlatformConnection) {

@@ -450,6 +450,12 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 			return
 		}
 		body.Agent = r.PathValue("agent")
+		unlock, err := s.lockConnectionMutation(body.ConnectionID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		defer unlock()
 		address, err := s.hub.CreateAddress(body)
 		if err != nil {
 			writeErr(w, err)
@@ -463,6 +469,12 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 			writeErr(w, err)
 			return
 		}
+		unlock, err := s.lockAddressBindingMutation(r.PathValue("id"), body.ConnectionID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		defer unlock()
 		address, err := s.hub.UpdateAddress(r.PathValue("id"), body)
 		if err != nil {
 			writeErr(w, err)
@@ -476,6 +488,12 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 			writeErr(w, err)
 			return
 		}
+		unlock, err := s.lockAddressBindingMutation(r.PathValue("id"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		defer unlock()
 		result, err := s.hub.ApplyAddressLifecycle(r.PathValue("id"), body)
 		if err != nil {
 			writeErr(w, err)
@@ -500,6 +518,17 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 			writeErr(w, err)
 			return
 		}
+		operation, err := s.hub.GetAddressLifecycleOperation(r.PathValue("id"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		unlock, err := s.lockAddressBindingMutation(operation.AddressID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		defer unlock()
 		result, err := s.hub.RollbackAddressTransfer(r.PathValue("id"), body)
 		if err != nil {
 			writeErr(w, err)

@@ -426,7 +426,69 @@ func TestRestartManagedGatewaysDropsStaleInitialSnapshotBeforeServiceEffect(t *t
 	}
 }
 
+func TestConcurrentManagedRestartScansProduceAtMostOneServiceEffect(t *testing.T) {
+	_, h, server, connection, _ := newAddressRestartFenceFixture(t)
+	defer h.Shutdown()
+	previousBefore := beforeManagedConnectorRestartLock
+	previousRestart := restartManagedConnector
+	previousCredential := preflightManagedConnectorCredential
+	previousProcess := preflightManagedConnectorProcess
+	defer func() {
+		beforeManagedConnectorRestartLock = previousBefore
+		restartManagedConnector = previousRestart
+		preflightManagedConnectorCredential = previousCredential
+		preflightManagedConnectorProcess = previousProcess
+	}()
+	bothSnapshots := make(chan struct{})
+	release := make(chan struct{})
+	var scans atomic.Int32
+	beforeManagedConnectorRestartLock = func(id string) {
+		if id != connection.ID {
+			t.Errorf("restart connection = %s, want %s", id, connection.ID)
+		}
+		if scans.Add(1) == 2 {
+			close(bothSnapshots)
+		}
+		<-release
+	}
+	preflightManagedConnectorCredential = func(*Server, hub.PlatformConnection) error { return nil }
+	preflightManagedConnectorProcess = func(*Server, hub.PlatformConnection) error { return nil }
+	var effects atomic.Int32
+	restartManagedConnector = func(_ context.Context, _ *Server, candidate hub.PlatformConnection) (bool, error) {
+		effects.Add(1)
+		_, err := h.HeartbeatConnection(candidate.ID, hub.ConnectionHeartbeatParams{
+			Status: "connected", GatewayGeneration: "ggen_concurrent_restart", GatewayBuild: "build-test",
+			GatewayExecutableSHA256: strings.Repeat("7", 64),
+		})
+		return err == nil, err
+	}
+	done := make(chan struct{}, 2)
+	for index := 0; index < 2; index++ {
+		go func() { server.RestartManagedGateways(); done <- struct{}{} }()
+	}
+	<-bothSnapshots
+	close(release)
+	<-done
+	<-done
+	if effects.Load() != 1 {
+		t.Fatalf("concurrent stale restart scans produced %d service effects, want 1", effects.Load())
+	}
+}
+
 func TestVerifiedManagedGatewayRestartRecoversPreviousRegistrationAfterMissingHeartbeat(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(hub.ConnectionParams{Provider: "lark", CredentialRef: "keychain:fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	previousPrepare := prepareManagedConnectorRestart
 	previousWrite := writeManagedConnectorRestartUnit
 	previousService := restartManagedConnectorService
@@ -439,9 +501,10 @@ func TestVerifiedManagedGatewayRestartRecoversPreviousRegistrationAfterMissingHe
 	}()
 	digest := strings.Repeat("a", 64)
 	plan := managedGatewayRestartPlan{
-		Applicable: true, UnitPath: "/fixture/unit", OriginalUnit: []byte("old"), TargetUnit: []byte("new"),
+		Applicable: true, UnitPath: "/fixture/unit", OriginalUnit: []byte("old"), TargetUnit: []byte("new"), RecoveryUnit: []byte("recovery"),
 		Previous: hub.CredentialMigrationGatewayReceipt{Build: "build-test", ExecutableSHA256: digest, Generation: "ggen-old"},
 		Target:   hub.CredentialMigrationGatewayReceipt{Build: "build-test", ExecutableSHA256: digest, Generation: "ggen-new"},
+		Recovery: hub.CredentialMigrationGatewayReceipt{Build: "build-test", ExecutableSHA256: digest, Generation: "ggen-recovery"},
 	}
 	prepareManagedConnectorRestart = func(*Server, hub.PlatformConnection) (managedGatewayRestartPlan, error) { return plan, nil }
 	writes := []string{}
@@ -455,21 +518,89 @@ func TestVerifiedManagedGatewayRestartRecoversPreviousRegistrationAfterMissingHe
 		return true, nil
 	}
 	waits := 0
+	waitedGenerations := []string{}
 	waitManagedConnectorRestartHeartbeat = func(_ context.Context, _ *Server, _ string, _ time.Time, expected hub.CredentialMigrationGatewayReceipt) (string, error) {
 		waits++
+		waitedGenerations = append(waitedGenerations, expected.Generation)
 		if expected.Generation == plan.Target.Generation {
 			return "", errors.New("replacement heartbeat missing")
 		}
 		return time.Now().UTC().Format(time.RFC3339Nano), nil
 	}
-	server := &Server{}
-	restarted, err := server.restartManagedGatewayVerified(context.Background(), hub.PlatformConnection{ID: "conn-test", Provider: "lark"})
+	server := New(h, st, nil)
+	restarted, err := server.restartManagedGatewayVerified(context.Background(), connection)
 	var failure *managedGatewayRestartFailure
 	if restarted || !errors.As(err, &failure) || !failure.Recovered {
 		t.Fatalf("verified restart = %v, err=%v, failure=%#v", restarted, err, failure)
 	}
-	if fmt.Sprint(writes) != fmt.Sprint([]string{"new", "old"}) || restarts != 2 || waits != 2 {
+	if fmt.Sprint(writes) != fmt.Sprint([]string{"new", "recovery"}) || restarts != 2 || waits != 2 {
 		t.Fatalf("recovery writes=%v restarts=%d waits=%d", writes, restarts, waits)
+	}
+	if waitedGenerations[1] == plan.Previous.Generation || waitedGenerations[1] == plan.Target.Generation {
+		t.Fatalf("registration recovery reused stale generation %q; replacement=%q previous=%q", waitedGenerations[1], plan.Target.Generation, plan.Previous.Generation)
+	}
+}
+
+func TestVerifiedManagedGatewayRestartStopsBeforeEffectWhenRecoveryLatchCannotPersist(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := h.CreateConnection(hub.ConnectionParams{Provider: "lark", CredentialRef: "keychain:fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(h, st, nil)
+	previousPrepare := prepareManagedConnectorRestart
+	previousWrite := writeManagedConnectorRestartUnit
+	previousService := restartManagedConnectorService
+	previousWait := waitManagedConnectorRestartHeartbeat
+	defer func() {
+		prepareManagedConnectorRestart = previousPrepare
+		writeManagedConnectorRestartUnit = previousWrite
+		restartManagedConnectorService = previousService
+		waitManagedConnectorRestartHeartbeat = previousWait
+	}()
+	digest := strings.Repeat("e", 64)
+	prepareManagedConnectorRestart = func(*Server, hub.PlatformConnection) (managedGatewayRestartPlan, error) {
+		return managedGatewayRestartPlan{
+			Applicable: true, UnitPath: "/fixture/unit", OriginalUnit: []byte("old"), TargetUnit: []byte("new"), RecoveryUnit: []byte("recovery"),
+			Previous: hub.CredentialMigrationGatewayReceipt{Build: "build-test", ExecutableSHA256: digest, Generation: "ggen-old"},
+			Target:   hub.CredentialMigrationGatewayReceipt{Build: "build-test", ExecutableSHA256: digest, Generation: "ggen-new"},
+			Recovery: hub.CredentialMigrationGatewayReceipt{Build: "build-test", ExecutableSHA256: digest, Generation: "ggen-recovery"},
+		}, nil
+	}
+	var writes, effects atomic.Int32
+	writeManagedConnectorRestartUnit = func(string, []byte) error { writes.Add(1); return nil }
+	restartManagedConnectorService = func(string, string) (bool, error) { effects.Add(1); return true, nil }
+	waitManagedConnectorRestartHeartbeat = func(context.Context, *Server, string, time.Time, hub.CredentialMigrationGatewayReceipt) (string, error) {
+		return time.Now().UTC().Format(time.RFC3339Nano), nil
+	}
+	integrationsPath := filepath.Join(st.Dir(), "integrations.json")
+	backupPath := integrationsPath + ".fixture"
+	if err := os.Rename(integrationsPath, backupPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(integrationsPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restarted, restartErr := server.restartManagedGatewayVerified(context.Background(), connection)
+	if err := os.Remove(integrationsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(backupPath, integrationsPath); err != nil {
+		t.Fatal(err)
+	}
+	h.Shutdown()
+	if restartErr == nil || restarted {
+		t.Fatalf("restart = %v, err=%v; want fail-closed latch persistence error", restarted, restartErr)
+	}
+	if writes.Load() != 0 || effects.Load() != 0 {
+		t.Fatalf("latch persistence failure reached write/service effects: writes=%d effects=%d", writes.Load(), effects.Load())
 	}
 }
 

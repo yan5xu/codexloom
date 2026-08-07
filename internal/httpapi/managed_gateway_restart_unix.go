@@ -46,20 +46,27 @@ func (s *Server) prepareManagedGatewayRestart(connection hub.PlatformConnection)
 	if !validOptionalGatewayGeneration(previousGeneration) {
 		return managedGatewayRestartPlan{}, errors.New("previous gateway generation is invalid")
 	}
-	targetGeneration := migrationGatewayGeneration("restart/"+connection.ID+"/"+previousGeneration+"/"+time.Now().UTC().Format(time.RFC3339Nano), build)
+	attemptSeed := time.Now().UTC().Format(time.RFC3339Nano)
+	targetGeneration := migrationGatewayGeneration("restart/replacement/"+connection.ID+"/"+previousGeneration+"/"+attemptSeed, build)
+	recoveryGeneration := migrationGatewayGeneration("restart/recovery/"+connection.ID+"/"+previousGeneration+"/"+attemptSeed, build)
 	targetUnit, err := setGatewayUnitGeneration(string(unit), service.Manager, previousGeneration, targetGeneration)
+	if err != nil {
+		return managedGatewayRestartPlan{}, err
+	}
+	recoveryUnit, err := setGatewayUnitGeneration(string(unit), service.Manager, previousGeneration, recoveryGeneration)
 	if err != nil {
 		return managedGatewayRestartPlan{}, err
 	}
 	base := hub.CredentialMigrationGatewayReceipt{
 		Manager: service.Manager, Service: service.Service, Build: build, ExecutableSHA256: observed.SHA256,
 	}
-	previous, target := base, base
+	previous, target, recovery := base, base, base
 	previous.Status, previous.Generation = "restart_recovery_prepared", previousGeneration
 	target.Status, target.Generation = "restart_prepared", targetGeneration
+	recovery.Status, recovery.Generation = "restart_recovery_prepared", recoveryGeneration
 	return managedGatewayRestartPlan{
-		Applicable: true, UnitPath: service.UnitPath, OriginalUnit: append([]byte(nil), unit...), TargetUnit: []byte(targetUnit),
-		Previous: previous, Target: target,
+		Applicable: true, UnitPath: service.UnitPath, OriginalUnit: append([]byte(nil), unit...), TargetUnit: []byte(targetUnit), RecoveryUnit: []byte(recoveryUnit),
+		Previous: previous, Target: target, Recovery: recovery,
 	}, nil
 }
 

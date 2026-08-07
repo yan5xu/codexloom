@@ -55,8 +55,10 @@ type managedGatewayRestartPlan struct {
 	UnitPath     string
 	OriginalUnit []byte
 	TargetUnit   []byte
+	RecoveryUnit []byte
 	Previous     hub.CredentialMigrationGatewayReceipt
 	Target       hub.CredentialMigrationGatewayReceipt
+	Recovery     hub.CredentialMigrationGatewayReceipt
 }
 
 // RestartManagedGateways makes a Hub restart an atomic backend update: every
@@ -75,7 +77,11 @@ func (s *Server) RestartManagedGateways() {
 			log.Printf("[codex-loom] keep %s gateway %s on its current executable: credential is not migrated", provider, initial.ID)
 			continue
 		}
-		snapshot, err := s.hub.SnapshotConnectionControl(initial.ID)
+		if hub.ConnectionManualRecoveryRequired(initial) {
+			log.Printf("[codex-loom] keep managed gateway %s in manual recovery until explicit reconcile", initial.ID)
+			continue
+		}
+		snapshot, err := s.hub.SnapshotConnectionBinding(initial.ID)
 		if err != nil {
 			log.Printf("[codex-loom] snapshot managed %s gateway %s restart: %v", provider, initial.ID, err)
 			continue
@@ -88,13 +94,13 @@ func (s *Server) RestartManagedGateways() {
 				log.Printf("[codex-loom] keep %s gateway %s on its current registration: %v", provider, initial.ID, err)
 				return
 			}
-			if err := s.hub.MatchConnectionControl(snapshot); err != nil {
+			if err := s.hub.MatchConnectionBinding(snapshot); err != nil {
 				log.Printf("[codex-loom] skip stale managed %s gateway %s restart: %v", provider, initial.ID, err)
 				return
 			}
 			connection, err := s.migrationConnection(initial.ID)
 			if err != nil || !connection.Enabled || connection.ArchivedAt != "" || managedGatewayProvider(connection.Provider) != provider ||
-				!strings.HasPrefix(strings.TrimSpace(connection.CredentialRef), credentialstore.ManagedReferencePrefix) {
+				!strings.HasPrefix(strings.TrimSpace(connection.CredentialRef), credentialstore.ManagedReferencePrefix) || hub.ConnectionManualRecoveryRequired(connection) {
 				log.Printf("[codex-loom] skip ineligible managed %s gateway %s restart after lock: %v", provider, initial.ID, err)
 				return
 			}
@@ -113,8 +119,12 @@ func (s *Server) RestartManagedGateways() {
 				log.Printf("[codex-loom] skip managed %s gateway %s restart before effect: %v", provider, connection.ID, err)
 				return
 			}
-			if err := s.hub.MatchConnectionControl(snapshot); err != nil {
+			if err := s.hub.MatchConnectionBinding(snapshot); err != nil {
 				log.Printf("[codex-loom] skip stale managed %s gateway %s restart before effect: %v", provider, connection.ID, err)
+				return
+			}
+			if !s.claimManagedGatewayRestart(connection.ID) {
+				log.Printf("[codex-loom] skip duplicate managed %s gateway %s restart attempt in this Hub generation", provider, connection.ID)
 				return
 			}
 			restarted, err := restartManagedConnector(context.Background(), s, connection)
@@ -135,10 +145,27 @@ func (s *Server) RestartManagedGateways() {
 	}
 }
 
+func (s *Server) claimManagedGatewayRestart(connectionID string) bool {
+	s.managedGatewayMu.Lock()
+	defer s.managedGatewayMu.Unlock()
+	connectionID = strings.TrimSpace(connectionID)
+	if s.managedGatewayAttempts == nil {
+		s.managedGatewayAttempts = map[string]struct{}{}
+	}
+	if _, exists := s.managedGatewayAttempts[connectionID]; exists {
+		return false
+	}
+	s.managedGatewayAttempts[connectionID] = struct{}{}
+	return true
+}
+
 func (s *Server) restartManagedGatewayVerified(ctx context.Context, connection hub.PlatformConnection) (bool, error) {
 	plan, err := prepareManagedConnectorRestart(s, connection)
 	if err != nil || !plan.Applicable {
 		return false, err
+	}
+	if err := s.hub.MarkConnectionManualRecovery(connection.ID, "manual_recovery_required: managed gateway restart effect is not yet reconciled"); err != nil {
+		return false, fmt.Errorf("persist managed gateway restart recovery latch: %w", err)
 	}
 	if err := writeManagedConnectorRestartUnit(plan.UnitPath, plan.TargetUnit); err != nil {
 		recovered := s.restoreManagedGatewayRegistration(ctx, connection, plan)
@@ -161,7 +188,7 @@ func (s *Server) restartManagedGatewayVerified(ctx context.Context, connection h
 }
 
 func (s *Server) restoreManagedGatewayRegistration(ctx context.Context, connection hub.PlatformConnection, plan managedGatewayRestartPlan) error {
-	if err := writeManagedConnectorRestartUnit(plan.UnitPath, plan.OriginalUnit); err != nil {
+	if err := writeManagedConnectorRestartUnit(plan.UnitPath, plan.RecoveryUnit); err != nil {
 		return fmt.Errorf("restore previous gateway unit: %w", err)
 	}
 	started := time.Now().UTC()
@@ -176,7 +203,7 @@ func (s *Server) restoreManagedGatewayRegistration(ctx context.Context, connecti
 	if !restarted {
 		return errors.New("previous gateway registration did not restart")
 	}
-	if _, err := waitManagedConnectorRestartHeartbeat(ctx, s, connection.ID, started, plan.Previous); err != nil {
+	if _, err := waitManagedConnectorRestartHeartbeat(ctx, s, connection.ID, started, plan.Recovery); err != nil {
 		return fmt.Errorf("verify previous gateway registration: %w", err)
 	}
 	return nil
@@ -189,6 +216,9 @@ func (s *Server) waitForManagedGatewayRestartHeartbeat(ctx context.Context, conn
 	defer ticker.Stop()
 	for {
 		if heartbeat, ok := managedGatewayHeartbeat(s.hub.ListConnections(), connectionID, after, expected); ok {
+			if _, err := s.hub.ClearConnectionManualRecovery(connectionID, after, expected); err != nil {
+				return "", err
+			}
 			return heartbeat, nil
 		}
 		select {
@@ -206,7 +236,7 @@ func managedGatewayHeartbeat(connections []hub.PlatformConnection, connectionID 
 		return "", false
 	}
 	for _, connection := range connections {
-		if connection.ID != connectionID || connection.Status != "connected" || connection.GatewayGeneration != expected.Generation ||
+		if connection.ID != connectionID || connection.Status != "connected" && !hub.ConnectionManualRecoveryRequired(connection) || connection.GatewayGeneration != expected.Generation ||
 			connection.GatewayBuild != expected.Build || connection.GatewayExecutableSHA256 != expected.ExecutableSHA256 {
 			continue
 		}

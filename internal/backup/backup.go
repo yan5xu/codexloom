@@ -7,6 +7,7 @@ package backup
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
@@ -354,10 +355,15 @@ func verify(path string, maxDecodedBytes int64) Verification {
 		return unknown
 	}
 	defer file.Close()
-	gz, err := gzip.NewReader(file)
+	compressed := bufio.NewReader(file)
+	gz, err := gzip.NewReader(compressed)
 	if err != nil {
 		return unknown
 	}
+	// Verification is for one exact archive, not for the first valid member of
+	// an ambiguous concatenated stream. Keeping multistream disabled also lets
+	// us prove that no raw bytes follow the verified gzip trailer.
+	gz.Multistream(false)
 	defer gz.Close()
 	if maxDecodedBytes <= 0 {
 		return unknown
@@ -411,7 +417,15 @@ func verify(path string, maxDecodedBytes int64) Verification {
 			return unknown
 		}
 	}
-	if decodedReader.N <= 0 {
+	// tar.Reader reports EOF at the archive terminator. Drain the containing
+	// gzip member to force CRC/trailer validation and reject any decoded bytes
+	// after the tar terminator. Then prove that the compressed stream itself has
+	// no second member or trailing payload.
+	trailingDecoded, err := io.Copy(io.Discard, decodedReader)
+	if err != nil || trailingDecoded != 0 || decodedReader.N <= 0 {
+		return unknown
+	}
+	if _, err := compressed.Peek(1); err != io.EOF {
 		return unknown
 	}
 	if !manifestSeen {

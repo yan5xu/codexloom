@@ -64,7 +64,8 @@ func TestPrepareManagedGatewayRestartGeneratesExactTargetProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !plan.Applicable || plan.UnitPath != service.UnitPath || plan.Previous.Generation != "" ||
-		plan.Target.Generation == "" || plan.Target.Build != server.build.Commit || !buildinfo.ValidExecutableSHA256(plan.Target.ExecutableSHA256) {
+		plan.Target.Generation == "" || plan.Recovery.Generation == "" || plan.Target.Generation == plan.Recovery.Generation ||
+		plan.Target.Build != server.build.Commit || plan.Recovery.Build != server.build.Commit || !buildinfo.ValidExecutableSHA256(plan.Target.ExecutableSHA256) {
 		t.Fatalf("restart plan = %#v", plan)
 	}
 	arguments, err := gatewayUnitArguments(string(plan.TargetUnit), service.Manager)
@@ -73,5 +74,12 @@ func TestPrepareManagedGatewayRestartGeneratesExactTargetProof(t *testing.T) {
 	}
 	if got := findArgumentValue(arguments, "--generation"); got != plan.Target.Generation {
 		t.Fatalf("target unit generation = %q, want %q; unit=%s", got, plan.Target.Generation, strings.TrimSpace(string(plan.TargetUnit)))
+	}
+	recoveryArguments, err := gatewayUnitArguments(string(plan.RecoveryUnit), service.Manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findArgumentValue(recoveryArguments, "--generation"); got != plan.Recovery.Generation {
+		t.Fatalf("recovery unit generation = %q, want %q; unit=%s", got, plan.Recovery.Generation, strings.TrimSpace(string(plan.RecoveryUnit)))
 	}
 }

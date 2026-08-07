@@ -40,7 +40,7 @@ func main() {
 	canary := flag.Bool("canary", false, "run a passive, read-only development canary")
 	flag.Parse()
 
-	st, err := store.Open(*dataDir)
+	st, err := store.OpenWithOptions(*dataDir, store.OpenOptions{ReadOnly: *canary})
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}

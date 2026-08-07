@@ -23,7 +23,9 @@ func (h *Hub) Shutdown() {
 	host := h.codexHost
 	h.codexHost = nil
 	h.remoteRuntime = nil
-	h.persistRuntimeProjectionLocked()
+	if !h.passive {
+		h.persistRuntimeProjectionLocked()
+	}
 	h.mu.Unlock()
 	if host != nil {
 		host.client.Close()

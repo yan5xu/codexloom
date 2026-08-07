@@ -99,6 +99,9 @@ func (s *Store) SetEventLogPolicy(policy EventLogPolicy) {
 }
 
 func (s *Store) AppendEvent(agentID string, ev Event) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(ev)
 	if err != nil {
 		return err
@@ -166,6 +169,9 @@ func (s *Store) LastSeq(agentID string) int64 {
 // MaintainEventLogs rotates oversized active logs, compresses immutable
 // segments, and prunes old diagnostic archives. It is safe to run repeatedly.
 func (s *Store) MaintainEventLogs() (EventMaintenanceReport, error) {
+	if err := s.ensureWritable(); err != nil {
+		return EventMaintenanceReport{}, err
+	}
 	s.eventMaintenanceMu.Lock()
 	defer s.eventMaintenanceMu.Unlock()
 

@@ -275,7 +275,11 @@ func (s *subscriber) close() {
 }
 
 type Hub struct {
-	st *store.Store
+	st      *store.Store
+	passive bool
+	// saveIntegrations is an internal persistence seam used to make partial
+	// durable-effect recovery deterministic in tests. Production leaves it nil.
+	saveIntegrations func(integrationConfig) error
 
 	credentialStoreMu         sync.Mutex
 	credentialStore           *credentialstore.Store
@@ -351,6 +355,9 @@ func (h *Hub) CredentialStore() (*credentialstore.Store, error) {
 	if h == nil || h.st == nil {
 		return nil, fmt.Errorf("managed credential store is unavailable")
 	}
+	if h.st.ReadOnly() {
+		return nil, fmt.Errorf("managed credential store is unavailable in read-only mode")
+	}
 	h.credentialStoreMu.Lock()
 	defer h.credentialStoreMu.Unlock()
 	if h.credentialStore != nil {
@@ -391,6 +398,7 @@ func Open(st *store.Store) (*Hub, error) {
 func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	h := &Hub{
 		st:                        st,
+		passive:                   options.Passive,
 		agents:                    map[string]*Agent{},
 		agentSkillConfigs:         map[string]*AgentSkillConfig{},
 		comms:                     map[string]*AgentMessage{},
@@ -487,13 +495,13 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if err := h.loadCredentialMigrations(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load credential migrations: %w", err)
 	}
-	if err := h.loadInboxState(); err != nil {
+	if err := h.loadInboxStateWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load inbox state: %w", err)
 	}
-	if err := h.loadProviderOperations(); err != nil {
+	if err := h.loadProviderOperationsWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load provider operations: %w", err)
 	}
-	if err := h.loadComms(); err != nil {
+	if err := h.loadCommsWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load communications: %w", err)
 	}
 	if err := h.loadHumanRequests(); err != nil {
@@ -517,7 +525,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if h.topics == nil {
 		h.topics = map[string]*Topic{}
 	}
-	if h.normalizeTopicsLocked() {
+	if h.normalizeTopicsLocked() && !options.Passive {
 		if err := h.persistTopicsLocked(); err != nil {
 			return nil, fmt.Errorf("persist normalized Topics: %w", err)
 		}
@@ -530,10 +538,10 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		// (read-only) and their rollout history is immediately viewable.
 		h.importEdgeLocked()
 	}
-	if err := h.migrateCommAgentIDsLocked(); err != nil {
+	if err := h.migrateCommAgentIDsLockedWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("migrate communication agent ids: %w", err)
 	}
-	if err := h.reconcileTriggersLocked(); err != nil {
+	if err := h.reconcileTriggersLockedWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("reconcile triggers: %w", err)
 	}
 	for _, meta := range h.agents {
@@ -612,6 +620,10 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func (h *Hub) loadComms() error {
+	return h.loadCommsWithPersistence(true)
+}
+
+func (h *Hub) loadCommsWithPersistence(persistRecovery bool) error {
 	repairLatest := map[string]bool{}
 	if err := h.st.ReadComms(func(raw json.RawMessage) {
 		var rec commRecord
@@ -633,8 +645,10 @@ func (h *Hub) loadComms() error {
 			continue
 		}
 		msg := h.comms[id]
-		if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
-			return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+		if persistRecovery {
+			if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
+				return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+			}
 		}
 	}
 	return nil

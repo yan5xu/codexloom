@@ -5,14 +5,77 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
+
+func TestMigrationControlEpochDoesNotRevertAfterCompensatedPersistFailure(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", CredentialRef: "keychain:previous"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := h.BeginCredentialMigration(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.State = CredentialMigrationSwitchingReference
+	receipt, err = h.SaveCredentialMigrationControlled(receipt, receipt.Version, receipt.PreviousCredentialRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.SnapshotConnectionControl(connection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	h.saveIntegrations = func(config integrationConfig) error {
+		calls++
+		if calls == 1 {
+			return errors.New("fixture one-shot integrations persist failure")
+		}
+		return st.SaveIntegrations(config)
+	}
+	if _, _, err := h.CompareAndSwapConnectionCredentialForMigration(receipt.ID, receipt.PreviousCredentialRef, "keychain:target"); err == nil {
+		t.Fatal("migration CAS succeeded despite one-shot integrations persist failure")
+	}
+	h.saveIntegrations = nil
+	after, err := h.SnapshotConnectionControl(connection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CredentialRef != before.CredentialRef || after.Revision <= before.Revision {
+		t.Fatalf("compensated control = %#v, want previous business value with epoch > %d", after, before.Revision)
+	}
+	if err := h.MatchConnectionControl(before); err == nil {
+		t.Fatal("pre-migration snapshot matched after a durable epoch was allocated")
+	}
+	currentReceipt, err := h.GetCredentialMigration(receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentReceipt.ConnectionRevision != after.Revision || currentReceipt.Version <= receipt.Version {
+		t.Fatalf("active reconcile receipt = %#v, control=%#v", currentReceipt, after)
+	}
+	if err := h.MatchCredentialMigrationIdentity(currentReceipt, receipt.PreviousCredentialRef); err != nil {
+		t.Fatalf("compensated active reconcile identity does not match: %v", err)
+	}
+}
 
 func TestCredentialMigrationReceiptPersistsAndFencesOnePerConnection(t *testing.T) {
 	st, err := store.Open(t.TempDir())
@@ -367,8 +430,11 @@ func TestMigrationCredentialCASFailsClosedWhenIntegrationPersistCannotRecover(t 
 		t.Fatal("migration CAS succeeded despite integration persistence failure")
 	}
 	after, err := h.SnapshotConnectionControl(connection.ID)
-	if err != nil || after != before {
-		t.Fatalf("control after failed persist = %#v, want %#v, err=%v", after, before, err)
+	if err != nil || after.CredentialRef != before.CredentialRef || after.Revision <= before.Revision {
+		t.Fatalf("control after failed persist = %#v, want previous business value with epoch > %d, err=%v", after, before.Revision, err)
+	}
+	if err := h.MatchConnectionControl(before); err == nil {
+		t.Fatal("indeterminate integration persistence allowed the old control snapshot to match")
 	}
 	currentReceipt, err := h.GetCredentialMigration(receipt.ID)
 	if err != nil || currentReceipt.ConnectionRevision <= receipt.ConnectionRevision || currentReceipt.Version <= receipt.Version {
@@ -533,6 +599,124 @@ func TestConnectionHeartbeatPersistsAndClearsOptionalGatewayEvidence(t *testing.
 	}
 	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{GatewayGeneration: "bad\ngeneration"}); err == nil {
 		t.Fatal("control character in gateway generation accepted")
+	}
+}
+
+func TestConnectionManualRecoveryLatchSurvivesOrdinaryHeartbeat(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", CredentialRef: "keychain:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.MarkConnectionManualRecovery(connection.ID, "manual_recovery_required: fixture"); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("d", 64)
+	started := time.Now().UTC().Add(-time.Second)
+	observed, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{
+		Status: "connected", GatewayGeneration: "ggen_late", GatewayBuild: "build-test",
+		GatewayExecutableSHA256: digest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status != "disconnected" || observed.LastError != "manual_recovery_required: fixture" {
+		t.Fatalf("ordinary heartbeat cleared durable manual recovery latch: %#v", observed)
+	}
+	if observed.GatewayGeneration != "ggen_late" || observed.GatewayBuild != "build-test" || observed.GatewayExecutableSHA256 != digest {
+		t.Fatalf("latched heartbeat did not retain reconciliation proof: %#v", observed)
+	}
+	reconciled, err := h.ClearConnectionManualRecovery(connection.ID, started, CredentialMigrationGatewayReceipt{
+		Generation: "ggen_late", Build: "build-test", ExecutableSHA256: digest,
+	})
+	if err != nil || reconciled.Status != "connected" || reconciled.LastError != "" {
+		t.Fatalf("explicit exact recovery proof did not clear latch: %#v, err=%v", reconciled, err)
+	}
+}
+
+func TestConnectionManualRecoveryClearPersistFailureStaysLatched(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", CredentialRef: "keychain:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.MarkConnectionManualRecovery(connection.ID, "manual_recovery_required: fixture"); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("f", 64)
+	started := time.Now().UTC().Add(-time.Second)
+	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{
+		Status: "connected", GatewayGeneration: "ggen_reconcile", GatewayBuild: "build-test", GatewayExecutableSHA256: digest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	integrationsPath := filepath.Join(st.Dir(), "integrations.json")
+	backupPath := integrationsPath + ".fixture"
+	if err := os.Rename(integrationsPath, backupPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(integrationsPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ClearConnectionManualRecovery(connection.ID, started, CredentialMigrationGatewayReceipt{
+		Generation: "ggen_reconcile", Build: "build-test", ExecutableSHA256: digest,
+	}); err == nil {
+		t.Fatal("manual recovery latch cleared despite persistence failure")
+	}
+	if err := os.Remove(integrationsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(backupPath, integrationsPath); err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	var current PlatformConnection
+	for _, candidate := range h.ListConnections() {
+		if candidate.ID == connection.ID {
+			current = candidate
+		}
+	}
+	if !ConnectionManualRecoveryRequired(current) || current.Status != "disconnected" {
+		t.Fatalf("latch persistence failure left connection clear: %#v", current)
+	}
+}
+
+func TestTransientConnectionDisconnectStillClearsOnHeartbeat(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", CredentialRef: "keychain:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.MarkConnectionDisconnected(connection.ID, "connector command stream closed")
+	observed, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{Status: "connected"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status != "connected" || observed.LastError != "" || ConnectionManualRecoveryRequired(observed) {
+		t.Fatalf("ordinary reconnect remained latched: %#v", observed)
 	}
 }
 

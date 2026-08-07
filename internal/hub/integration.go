@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/yan5xu/codex-loom/internal/buildinfo"
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
@@ -495,14 +496,22 @@ func (h *Hub) loadIntegrations(persistNormalization bool) error {
 }
 
 func (h *Hub) persistIntegrationsLocked() error {
-	return h.st.SaveIntegrations(integrationConfig{
+	config := integrationConfig{
 		Connections: h.connections, ConnectionControlVersions: h.connectionControlVersions,
 		Addresses: h.addresses, Memberships: h.memberships,
 		ConversationCandidates: h.conversationCandidates, AddressOperations: h.addressOperations,
-	})
+	}
+	if h.saveIntegrations != nil {
+		return h.saveIntegrations(config)
+	}
+	return h.st.SaveIntegrations(config)
 }
 
 func (h *Hub) loadInboxState() error {
+	return h.loadInboxStateWithPersistence(true)
+}
+
+func (h *Hub) loadInboxStateWithPersistence(persistRecovery bool) error {
 	staleInbox := map[string]bool{}
 	staleAttempts := map[string]bool{}
 	staleOutbox := map[string]bool{}
@@ -564,8 +573,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendInbox(item); err != nil {
-				return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendInbox(item); err != nil {
+					return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.inbox[id] = &copy
@@ -603,8 +614,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendAttempt(attempt); err != nil {
-				return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendAttempt(attempt); err != nil {
+					return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+				}
 			}
 			copy := attempt
 			h.attempts[id] = &copy
@@ -631,8 +644,10 @@ func (h *Hub) loadInboxState() error {
 		item := *current
 		if staleOutbox[id] {
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -644,8 +659,10 @@ func (h *Hub) loadInboxState() error {
 			item.ClaimExpiresAt = ""
 			item.LastError = "recovered legacy delivery claim after CodexLoom restart"
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -669,9 +686,11 @@ func (h *Hub) loadInboxState() error {
 			reconciledInbox = append(reconciledInbox, *item)
 		}
 	}
-	for _, item := range reconciledInbox {
-		if err := h.st.AppendInbox(item); err != nil {
-			return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+	if persistRecovery {
+		for _, item := range reconciledInbox {
+			if err := h.st.AppendInbox(item); err != nil {
+				return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+			}
 		}
 	}
 	return nil
@@ -1300,22 +1319,20 @@ func (h *Hub) CompareAndSwapConnectionCredentialForMigration(receiptID, expected
 	}
 	h.connections[next.ID] = &next
 	if err := h.persistIntegrationsLocked(); err != nil {
-		h.connections[next.ID] = connection
-		h.connectionControlVersions[next.ID] = previousControlVersion
+		// The receipt epoch is already durable and can never be given back. A
+		// compensation may restore the prior business credential reference, but
+		// it deliberately keeps the bumped control version so every snapshot
+		// taken before this attempt remains stale.
+		h.connections[next.ID] = &previous
+		h.connectionControlVersions[next.ID] = nextReceipt.ConnectionRevision
 		if restoreErr := h.persistIntegrationsLocked(); restoreErr != nil {
-			// The newer receipt epoch is already durable. Keep it active and
-			// mismatched with the restored in-memory control snapshot so every
-			// operation stops for explicit reconciliation after an indeterminate
-			// integrations-file write.
+			// The integrations effect is indeterminate. Advance the in-memory
+			// fence once more without changing the durable receipt so neither the
+			// pre-attempt snapshot nor the active receipt can authorize another
+			// effect in this process. Reopen observes the durable receipt/control
+			// mismatch and remains fail closed as well.
+			h.connectionControlVersions[next.ID] = nextReceipt.ConnectionRevision + 1
 			return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration after persisting control epoch: %v; restore integration snapshot: %v", err, restoreErr)
-		}
-		h.credentialMigrations[previousReceipt.ID] = &previousReceipt
-		if rollbackErr := h.persistCredentialMigrationsLocked(); rollbackErr != nil {
-			// The newer receipt epoch may already be durable. Preserve that
-			// active mismatch in memory as well so every resume path stops for
-			// reconciliation instead of matching the old snapshot.
-			h.credentialMigrations[nextReceipt.ID] = &nextReceipt
-			return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration after persisting control epoch: %v; restore receipt epoch: %v", err, rollbackErr)
 		}
 		return PlatformConnection{}, CredentialMigrationReceipt{}, errf(500, "save integration: %s", err)
 	}
@@ -1395,7 +1412,12 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 		return PlatformConnection{}, errf(400, "invalid connection status %q", status)
 	}
 	ts := now()
-	next.Status = status
+	latched := ConnectionManualRecoveryRequired(*connection)
+	if latched {
+		next.Status = "disconnected"
+	} else {
+		next.Status = status
+	}
 	next.LastHeartbeatAt = ts
 	next.UpdatedAt = ts
 	if p.Cursor != "" {
@@ -1404,7 +1426,11 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 	if p.Capabilities != nil {
 		next.Capabilities = normalizeCapabilities(p.Capabilities)
 	}
-	next.LastError = strings.TrimSpace(p.Error)
+	if latched {
+		next.LastError = connection.LastError
+	} else {
+		next.LastError = strings.TrimSpace(p.Error)
+	}
 	// A fresh legacy heartbeat clears prior optional process evidence rather
 	// than allowing an old generation or executable digest to look current.
 	next.GatewayGeneration = generation
@@ -1472,7 +1498,7 @@ func connectionControlSnapshot(connection PlatformConnection) ConnectionControlS
 }
 
 func (h *Hub) MarkConnectionDisconnected(id, reason string) {
-	if err := h.MarkConnectionManualRecovery(id, reason); err != nil {
+	if err := h.markConnectionDisconnected(id, strings.TrimSpace(reason)); err != nil {
 		log.Printf("[codex-loom] persist disconnected connection %s: %v", id, err)
 	}
 }
@@ -1481,6 +1507,14 @@ func (h *Hub) MarkConnectionDisconnected(id, reason string) {
 // existing Connection instead of leaving an automatic restart failure only in
 // transient logs.
 func (h *Hub) MarkConnectionManualRecovery(id, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if !strings.HasPrefix(reason, "manual_recovery_required") {
+		reason = "manual_recovery_required: " + reason
+	}
+	return h.markConnectionDisconnected(id, reason)
+}
+
+func (h *Hub) markConnectionDisconnected(id, reason string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[id]
@@ -1489,7 +1523,7 @@ func (h *Hub) MarkConnectionManualRecovery(id, reason string) error {
 	}
 	previous := *connection
 	connection.Status = "disconnected"
-	connection.LastError = strings.TrimSpace(reason)
+	connection.LastError = reason
 	connection.UpdatedAt = now()
 	if err := h.persistIntegrationsLocked(); err != nil {
 		*connection = previous
@@ -1497,6 +1531,47 @@ func (h *Hub) MarkConnectionManualRecovery(id, reason string) error {
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": *connection})
 	return nil
+}
+
+// ConnectionManualRecoveryRequired reports the durable process-control latch.
+// Ordinary status and heartbeat updates may contribute observed proof while
+// this latch is set, but they cannot clear it.
+func ConnectionManualRecoveryRequired(connection PlatformConnection) bool {
+	return strings.HasPrefix(strings.TrimSpace(connection.LastError), "manual_recovery_required")
+}
+
+// ClearConnectionManualRecovery verifies the exact fresh process attempt and
+// atomically clears its durable latch. It is intentionally an internal Hub
+// primitive rather than a public operator surface.
+func (h *Hub) ClearConnectionManualRecovery(id string, after time.Time, expected CredentialMigrationGatewayReceipt) (PlatformConnection, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(id)]
+	if connection == nil {
+		return PlatformConnection{}, errf(404, "connection not found: %s", id)
+	}
+	if connection.GatewayGeneration != expected.Generation || connection.GatewayBuild != expected.Build || connection.GatewayExecutableSHA256 != expected.ExecutableSHA256 {
+		return PlatformConnection{}, errf(409, "gateway process proof does not match recovery attempt")
+	}
+	heartbeat, err := time.Parse(time.RFC3339Nano, connection.LastHeartbeatAt)
+	if err != nil || heartbeat.Before(after) {
+		return PlatformConnection{}, errf(409, "gateway process proof is not fresh")
+	}
+	if !ConnectionManualRecoveryRequired(*connection) {
+		return *connection, nil
+	}
+	previous := *connection
+	next := previous
+	next.Status = "connected"
+	next.LastError = ""
+	next.UpdatedAt = now()
+	h.connections[next.ID] = &next
+	if err := h.persistIntegrationsLocked(); err != nil {
+		h.connections[previous.ID] = connection
+		return PlatformConnection{}, errf(500, "persist reconciled connection recovery: %s", err)
+	}
+	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
+	return next, nil
 }
 
 func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {

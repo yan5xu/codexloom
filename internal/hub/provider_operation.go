@@ -48,6 +48,10 @@ type ProviderOperationResultParams struct {
 }
 
 func (h *Hub) loadProviderOperations() error {
+	return h.loadProviderOperationsWithPersistence(true)
+}
+
+func (h *Hub) loadProviderOperationsWithPersistence(persistRecovery bool) error {
 	stale := map[string]bool{}
 	if err := h.st.ReadProviderOperations(func(raw json.RawMessage) {
 		var operation ProviderOperation
@@ -78,8 +82,10 @@ func (h *Hub) loadProviderOperations() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendProviderOperation(operation); err != nil {
-				return err
+			if persistRecovery {
+				if err := h.st.AppendProviderOperation(operation); err != nil {
+					return err
+				}
 			}
 			copy := operation
 			h.providerOperations[id] = &copy

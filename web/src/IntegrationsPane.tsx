@@ -1,5 +1,6 @@
 import { Bot, Cable, Check, ChevronDown, CircleCheck, Copy, Link2, LoaderCircle, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, ShieldCheck, Terminal, Unplug, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { canRepairParallGateway, credentialSourceKind, credentialSourcePresentation, externalIdentityID, gatewayCommand, isLegacyCredentialRef, isNativeFeishuConnection } from "./external-credentials";
 import { api, type AgentAddress, type PlatformConnection, type Agent, type ConversationCandidate, type ConversationMembership, type InboxEntry, type LarkDiscovery, type SlackDiscovery, type ParallDiscovery } from "./types";
 import { subscribeGlobalEvents } from "./global-events";
 
@@ -11,6 +12,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
   const [inboxEntries, setInboxEntries] = useState<InboxEntry[]>([]);
   const [selectedID, setSelectedID] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [advancedCreateOpen, setAdvancedCreateOpen] = useState(false);
   const [bindOpen, setBindOpen] = useState(false);
   const [provider, setProvider] = useState("lark");
   const [accountRef, setAccountRef] = useState("");
@@ -45,7 +47,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
   const inboxRefreshTimerRef = useRef<number | null>(null);
   const coreRefreshTimerRef = useRef<number | null>(null);
   const selected = connections.find((connection) => connection.id === selectedID) || null;
-  const selectedAddresses = addresses.filter((address) => address.connectionId === selectedID && (selected?.archivedAt ? true : !address.archivedAt));
+  const selectedAddresses = addresses.filter((address) => address.connectionId === selectedID && (selected?.archivedAt ? true : !address.archivedAt && !address.deletedAt));
   const selectedAddressIDs = selectedAddresses.map((address) => address.id).sort();
   const selectedAddressKey = selectedAddressIDs.join("\u0000");
   selectedAddressIDsRef.current = selectedAddressIDs;
@@ -287,14 +289,14 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
   }, [selected?.id, slackSetupOpen]);
 
   useEffect(() => {
-    if (!parallSetupOpen && selected?.provider === "parall" && !selected.archivedAt && parallDiscovery?.orgId !== selected.accountRef) {
+    if (!parallSetupOpen && selected?.provider === "parall" && !selected.archivedAt) {
       discoverParall(selected.id);
     }
   }, [selected?.id, parallSetupOpen]);
 
   const activeConnections = connections.filter((connection) => !connection.archivedAt).sort((left, right) => {
     const label = (connection: PlatformConnection) => {
-      const address = addresses.find((item) => item.connectionId === connection.id && !item.archivedAt);
+      const address = addresses.find((item) => item.connectionId === connection.id && !item.archivedAt && !item.deletedAt);
       const owner = agents.find((item) => item.id === address?.agentId)?.name || "~unassigned";
       return `${owner}\u0000${address?.displayName || address?.externalIdentity || connection.provider}`;
     };
@@ -334,6 +336,10 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
       onError("provider is required");
       return;
     }
+    if (!isLegacyCredentialRef(credentialRef)) {
+      onError("Legacy credential reference must use env: or keychain:. Managed references are issued by the Hub and cannot be entered here.");
+      return;
+    }
     run(async () => {
       const data = await api("POST", "/api/integrations/connections", {
         provider: provider.trim(),
@@ -343,6 +349,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
       });
       setSelectedID(data.connection.id);
       setCreateOpen(false);
+      setAdvancedCreateOpen(false);
       setAccountRef("");
       setCredentialRef("");
     });
@@ -351,7 +358,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
   const changeProvider = (value: string) => {
     const spec = providerSpec(value);
     setProvider(value);
-    setCredentialRef(spec.defaultCredentialRef);
+    setCredentialRef("");
     setCapabilities(spec.capabilities.join(","));
   };
 
@@ -508,7 +515,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
         <div className="hidden text-[11px] text-muted-foreground sm:block">{addresses.length} identities · {memberships.filter((membership) => !membership.archivedAt).length} conversation roles · {connectedCount} connected</div>
         <div className="ml-auto flex items-center gap-1">
           <button onClick={() => refreshAll().catch((error: Error) => onError(error.message))} title="Refresh" className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"><RefreshCw className="size-3.5" /></button>
-          <button onClick={() => { setCreateOpen((value) => !value); setLarkSetupOpen(false); setSlackSetupOpen(false); setParallSetupOpen(false); }} title="Add integration" className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90"><Plus className="size-3.5" /></button>
+          <button onClick={() => { setCreateOpen((value) => !value); setAdvancedCreateOpen(false); setLarkSetupOpen(false); setSlackSetupOpen(false); setParallSetupOpen(false); }} title="Add integration" className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90"><Plus className="size-3.5" /></button>
         </div>
       </header>
 
@@ -524,7 +531,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
           onRefreshDiscovery={discoverLark}
           onSaveCredentials={saveLarkCredentials}
           onClose={closeLarkSetup}
-          onAdvanced={() => { setLarkSetupOpen(false); setCreateOpen(true); }}
+          onAdvanced={() => { setLarkSetupOpen(false); setCreateOpen(true); setAdvancedCreateOpen(true); }}
           onComplete={async (connectionID) => {
             await refresh();
             setSelectedID(connectionID);
@@ -547,7 +554,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
           onRefreshDiscovery={discoverSlack}
           onSaveCredentials={saveSlackCredentials}
           onClose={closeSlackSetup}
-          onAdvanced={() => { setSlackSetupOpen(false); setCreateOpen(true); }}
+          onAdvanced={() => { setSlackSetupOpen(false); setCreateOpen(true); setAdvancedCreateOpen(true); }}
           onComplete={async (connectionID) => {
             await refresh();
             setSelectedID(connectionID);
@@ -570,7 +577,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
           onRefreshDiscovery={discoverParall}
           onSaveCredentials={saveParallCredentials}
           onClose={closeParallSetup}
-          onAdvanced={() => { setParallSetupOpen(false); setCreateOpen(true); }}
+          onAdvanced={() => { setParallSetupOpen(false); setCreateOpen(true); setAdvancedCreateOpen(true); }}
           onComplete={async (connectionID) => {
             await refresh();
             setSelectedID(connectionID);
@@ -582,10 +589,23 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
       )}
 
       {!larkSetupOpen && !slackSetupOpen && !parallSetupOpen && createOpen && (
-        <section className="grid shrink-0 gap-2 border-b border-border bg-card px-4 py-3 sm:grid-cols-[170px_1fr_auto]">
-          <select value={provider} onChange={(event) => changeProvider(event.target.value)} className={controlClass}>{providerSpecs.map((spec) => <option key={spec.id} value={spec.id}>{spec.label}</option>)}</select>
-          {provider === "lark" || provider === "slack" || provider === "parall" ? <div className="flex min-w-0 items-center text-[11px] text-muted-foreground">Verify credentials, choose an Agent, then add the conversations where it may work.</div> : <div className="grid min-w-0 gap-2 sm:grid-cols-2"><input value={accountRef} onChange={(event) => setAccountRef(event.target.value)} placeholder={createProvider.accountPlaceholder} className={controlClass} /><input value={credentialRef} onChange={(event) => setCredentialRef(event.target.value)} placeholder={createProvider.credentialPlaceholder} className={controlClass} /></div>}
-          <div className="flex items-center gap-1"><button onClick={() => provider === "lark" ? openLarkSetup() : provider === "slack" ? openSlackSetup() : provider === "parall" ? openParallSetup() : createConnection()} disabled={working} className="h-8 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:opacity-50">Continue</button><button onClick={() => setCreateOpen(false)} title="Close" className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"><X className="size-3.5" /></button></div>
+        <section className="shrink-0 border-b border-border bg-card px-4 py-3">
+          <div className="grid gap-2 sm:grid-cols-[170px_1fr_auto]">
+            <select value={provider} onChange={(event) => changeProvider(event.target.value)} className={controlClass}>{providerSpecs.map((spec) => <option key={spec.id} value={spec.id}>{spec.label}</option>)}</select>
+            <div className="flex min-w-0 items-center text-[11px] text-muted-foreground">New onboarding verifies the secret once and stores a Hub-issued CodexLoom managed credential.</div>
+            <div className="flex items-center gap-1"><button onClick={() => provider === "lark" ? openLarkSetup() : provider === "slack" ? openSlackSetup() : openParallSetup()} disabled={working} className="h-8 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:opacity-50">Continue</button><button onClick={() => { setCreateOpen(false); setAdvancedCreateOpen(false); }} title="Close" className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"><X className="size-3.5" /></button></div>
+          </div>
+          <button onClick={() => setAdvancedCreateOpen((value) => !value)} className="mt-2 text-[10.5px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Legacy / advanced compatibility</button>
+          {advancedCreateOpen && <div className="mt-3 border-l-2 border-warning bg-warning/5 px-3 py-3">
+            <div className="text-[11px] font-semibold">Existing compatibility credential only</div>
+            <p className="mt-1 text-[10.5px] leading-4 text-muted-foreground">Bind an existing <span className="font-mono text-foreground">env:</span> or <span className="font-mono text-foreground">keychain:</span> reference without displaying its secret. Managed references are issued and validated by the Hub; they cannot be entered or constructed here.</p>
+            <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1.4fr_1.4fr_auto]">
+              <input value={accountRef} onChange={(event) => setAccountRef(event.target.value)} aria-label="Compatibility account reference" placeholder={createProvider.accountPlaceholder} className={controlClass} />
+              <input value={credentialRef} onChange={(event) => setCredentialRef(event.target.value)} aria-label="Legacy credential reference" placeholder="env:VARIABLE or keychain:service" autoComplete="off" className={controlClass} />
+              <input value={capabilities} onChange={(event) => setCapabilities(event.target.value)} aria-label="Compatibility capabilities" placeholder="capabilities (comma separated)" className={controlClass} />
+              <button onClick={createConnection} disabled={working || !isLegacyCredentialRef(credentialRef)} className="h-8 rounded-md border border-border px-3 text-[11px] font-medium hover:bg-muted disabled:opacity-45">Create compatibility connection</button>
+            </div>
+          </div>}
         </section>
       )}
 
@@ -593,7 +613,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
         <section className={`${selected ? "hidden lg:block" : "block"} min-h-0 overflow-y-auto border-r border-border`}>
           <div className="border-b border-border px-4 py-2 text-[9px] font-semibold uppercase text-muted-foreground">Agents and external identities</div>
           {activeConnections.map((connection) => {
-            const boundAddresses = addresses.filter((address) => address.connectionId === connection.id && !address.archivedAt);
+            const boundAddresses = addresses.filter((address) => address.connectionId === connection.id && !address.archivedAt && !address.deletedAt);
             const identityName = boundAddresses[0]?.displayName || boundAddresses[0]?.externalIdentity;
             const ownerName = agents.find((agent) => agent.id === boundAddresses[0]?.agentId)?.name || "Unassigned";
             const conversationCount = memberships.filter((membership) => boundAddresses.some((address) => address.id === membership.addressId) && !membership.archivedAt).length;
@@ -630,6 +650,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
                 </button>}
               </div>
               {selected.archivedAt && <div className="mt-4 border-l-2 border-border bg-muted/35 px-3 py-2 text-[11px] leading-4 text-muted-foreground">This historical transport is read-only. Messages still reference its stable IDs; current delivery uses <span className="font-mono text-foreground">{selected.supersededBy || "the replacement connection"}</span>.</div>}
+              <CredentialSourceSummary connection={selected} />
               {!selected.archivedAt && selected.provider === "lark" && (
                 <LarkConnectionSummary
                   connection={selected}
@@ -642,7 +663,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
                   onChanged={refresh}
                   onSetup={() => openLarkSetup(
                     selected.accountRef,
-                    larkDiscovery && larkDiscovery.appId === selected.accountRef && larkDiscovery.credentialStored && larkDiscovery.botReady && isNativeFeishuConnection(selected) ? "add-group" : "connect",
+                    larkDiscovery && larkDiscovery.appId === selected.accountRef && larkDiscovery.credentialStored && larkDiscovery.botReady && isNativeFeishuConnection(selected, larkDiscovery) ? "add-group" : "connect",
                   )}
                 />
               )}
@@ -687,17 +708,17 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
                   <summary className="flex cursor-pointer list-none items-center gap-2 py-2.5 text-[11px] font-semibold uppercase text-muted-foreground"><ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />Advanced settings</summary>
                   <div className="border-t border-border/60 pb-3">
                     <dl className="grid gap-x-6 gap-y-3 py-4 text-[11px] sm:grid-cols-2 xl:grid-cols-3">
-                      <Meta label="Status" value={selected.status} /><Meta label="Account" value={selected.accountRef || "-"} /><Meta label="Credential" value={selected.credentialRef || "-"} /><Meta label="Heartbeat" value={formatDate(selected.lastHeartbeatAt)} /><Meta label="Last event" value={formatDate(selected.lastEventAt)} /><Meta label="Cursor" value={selected.cursor || "-"} />
+                      <Meta label="Status" value={selected.status} /><Meta label="Account" value={selected.accountRef || "-"} /><CredentialMeta credentialRef={selected.credentialRef} /><Meta label="Heartbeat" value={formatDate(selected.lastHeartbeatAt)} /><Meta label="Last event" value={formatDate(selected.lastEventAt)} /><Meta label="Cursor" value={selected.cursor || "-"} />
                     </dl>
-                    {!selected.archivedAt && <GatewaySetup connection={selected} addresses={selectedAddresses} />}
+                    {!selected.archivedAt && <GatewaySetup connection={selected} addresses={selectedAddresses} slackAppID={selected.provider === "slack" && slackDiscovery && slackDiscovery.teamId === selected.accountRef ? slackDiscovery.appId : ""} />}
                   </div>
                 </details>
               ) : (
                 <>
                   <dl className="grid gap-x-6 gap-y-3 border-b border-border py-4 text-[11px] sm:grid-cols-2 xl:grid-cols-3">
-                    <Meta label="Status" value={selected.status} /><Meta label="Account" value={selected.accountRef || "-"} /><Meta label="Credential" value={selected.credentialRef || "-"} /><Meta label="Heartbeat" value={formatDate(selected.lastHeartbeatAt)} /><Meta label="Last event" value={formatDate(selected.lastEventAt)} /><Meta label="Cursor" value={selected.cursor || "-"} />
+                    <Meta label="Status" value={selected.status} /><Meta label="Account" value={selected.accountRef || "-"} /><CredentialMeta credentialRef={selected.credentialRef} /><Meta label="Heartbeat" value={formatDate(selected.lastHeartbeatAt)} /><Meta label="Last event" value={formatDate(selected.lastEventAt)} /><Meta label="Cursor" value={selected.cursor || "-"} />
                   </dl>
-                  {!selected.archivedAt && <GatewaySetup connection={selected} addresses={selectedAddresses} />}
+                  {!selected.archivedAt && <GatewaySetup connection={selected} addresses={selectedAddresses} slackAppID={selected.provider === "slack" && slackDiscovery && slackDiscovery.teamId === selected.accountRef ? slackDiscovery.appId : ""} />}
                 </>
               )}
               <details className="group mt-6 border-t border-border">
@@ -798,7 +819,7 @@ function LarkSetup({
   });
   const selectedChat = discovery?.chats.find((chat) => chat.id === chatID);
   const ready = Boolean(discovery?.available && discovery.credentialStored && discovery.botReady && discovery.appId);
-  const nativeConnection = isNativeFeishuConnection(connection);
+  const nativeConnection = isNativeFeishuConnection(connection, discovery);
   const verifyCredentials = async () => {
     if (!appID.trim() || !appSecret.trim()) {
       onError("Enter the Feishu App ID and App Secret");
@@ -849,8 +870,8 @@ function LarkSetup({
             <SetupCheck complete={Boolean(discovery?.botReady)} label={`${discovery?.chats.length || 0} visible groups found`} />
           </div>
           {discovery?.appId && <div className="mt-3 truncate font-mono text-[9.5px] text-muted-foreground">{discovery.appId}</div>}
-          <p className="mt-4 text-[10.5px] leading-4 text-muted-foreground">The App Secret stays in the operating system Keychain and is never written to Loom data files.</p>
-          <button onClick={onAdvanced} className="mt-3 text-[11px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Advanced configuration</button>
+          <p className="mt-4 text-[10.5px] leading-4 text-muted-foreground">The App Secret is stored as a CodexLoom managed credential. Its managed credential material is not exposed here or included in ordinary backups.</p>
+          <button onClick={onAdvanced} className="mt-3 text-[11px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Legacy / advanced compatibility</button>
         </div>
 
         <div className="min-w-0">
@@ -1031,8 +1052,8 @@ function SlackSetup({
           </div>
           {discovery?.teamName && <div className="mt-3 text-[11px] font-medium">{discovery.teamName}</div>}
           {discovery?.appId && <div className="mt-0.5 truncate font-mono text-[9.5px] text-muted-foreground">{discovery.appId} · {discovery.teamId}</div>}
-          <p className="mt-4 text-[10.5px] leading-4 text-muted-foreground">Both tokens stay in the operating system Keychain. Loom stores only the App and Workspace identifiers.</p>
-          <button onClick={onAdvanced} className="mt-3 text-[11px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Advanced configuration</button>
+          <p className="mt-4 text-[10.5px] leading-4 text-muted-foreground">Both tokens are stored as CodexLoom managed credentials. Their managed credential material is not exposed here or included in ordinary backups.</p>
+          <button onClick={onAdvanced} className="mt-3 text-[11px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Legacy / advanced compatibility</button>
         </div>
 
         <div className="min-w-0">
@@ -1113,7 +1134,7 @@ function ParallSetup({
   const connection = connections.find((item) => item.provider === "parall" && item.accountRef === discovery?.orgId);
   const existingAddress = addresses.find((item) => item.connectionId === connection?.id);
   const existingAgent = agents.find((item) => item.id === existingAddress?.agentId)?.name || "";
-  const existingExternalID = existingAddress ? stripIdentity(existingAddress.externalIdentity) : discovery?.selectedAgentId || "";
+  const existingExternalID = existingAddress ? externalIdentityID(existingAddress.externalIdentity) : discovery?.selectedAgentId || "";
   const suggestedAgent = agents.find((item) => item.name === "parall-lead")?.name || agents.find((item) => item.status === "idle")?.name || agents[0]?.name || "";
   const [apiURL, setAPIURL] = useState("https://api.parall.com");
   const [orgID, setOrgID] = useState("");
@@ -1207,8 +1228,8 @@ function ParallSetup({
         </div>
         {discovery?.orgName && <div className="mt-3 text-[11px] font-medium">{discovery.orgName}</div>}
         {discovery?.orgId && <div className="mt-0.5 truncate font-mono text-[9.5px] text-muted-foreground">{discovery.orgId}{existingExternalID ? ` · ${existingExternalID}` : ""}</div>}
-        <p className="mt-4 text-[10.5px] leading-4 text-muted-foreground">Loom uses the Owner key only for identity and membership administration. Each external Agent runs with its own key. Both stay in the operating system Keychain.</p>
-        <button onClick={onAdvanced} className="mt-3 text-[11px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Advanced configuration</button>
+        <p className="mt-4 text-[10.5px] leading-4 text-muted-foreground">Loom uses the Owner key only for identity and membership administration. Each external Agent runs with its own CodexLoom managed credential. That managed credential material is not exposed here or included in ordinary backups.</p>
+        <button onClick={onAdvanced} className="mt-3 text-[11px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Legacy / advanced compatibility</button>
       </div>
 
       <div className="min-w-0">
@@ -1259,9 +1280,12 @@ function LarkConnectionSummary({ connection, addresses, memberships, inboxEntrie
   const agentName = agents.find((agent) => agent.id === address?.agentId)?.name || "an Agent";
   const online = connection.enabled && connection.status === "connected";
   const credentialReady = Boolean(discovery?.credentialStored && discovery.botReady);
-  const nativeConfigured = isNativeFeishuConnection(connection);
+  const nativeConfigured = isNativeFeishuConnection(connection, discovery);
   const nativeReady = credentialReady && nativeConfigured;
   const needsMigration = credentialReady && !nativeConfigured;
+  const credentialSource = credentialSourceKind(connection.credentialRef);
+  const canEnterCredential = credentialSource === "missing";
+  const credentialUnavailable = !credentialReady && !canEnterCredential;
   const groupMemberships = memberships.filter((membership) => membership.conversationType !== "dm");
   const dmMemberships = memberships.filter((membership) => membership.conversationType === "dm");
   return (
@@ -1269,10 +1293,10 @@ function LarkConnectionSummary({ connection, addresses, memberships, inboxEntrie
 	      <div className="grid grid-cols-[36px_minmax(0,1fr)] items-start gap-3 sm:flex sm:flex-wrap">
         <div className={`flex size-9 items-center justify-center rounded-full ${nativeReady && online ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{nativeReady && online ? <Check className="size-4" /> : <Bot className="size-4" />}</div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-[14px] font-semibold">{needsMigration ? "Move to native Feishu gateway" : !credentialReady ? "Complete native Feishu setup" : online ? "Feishu is ready" : "Feishu needs attention"}</h3>
-          <p className="mt-0.5 text-[11.5px] leading-5 text-muted-foreground">{needsMigration ? "The App Secret is already stored. Migrate this connection without changing its Agent, groups, or direct-message policy." : !credentialReady ? "Enter the App Secret once to move this connection to CodexLoom's built-in gateway." : <>Messages are routed to <span className="font-medium text-foreground">{agentName}</span>. Direct-message access follows the policy below; only listed groups may contact it.</>}</p>
+          <h3 className="text-[14px] font-semibold">{credentialUnavailable ? "Feishu credential needs attention" : needsMigration ? "Move to native Feishu gateway" : !credentialReady ? "Complete native Feishu setup" : online ? "Feishu is ready" : "Feishu needs attention"}</h3>
+          <p className="mt-0.5 text-[11.5px] leading-5 text-muted-foreground">{credentialUnavailable ? "The existing credential could not be verified. Secret re-entry is not offered for an existing managed or compatibility reference." : needsMigration ? "The App Secret is already stored. Migrate this connection without changing its Agent, groups, or direct-message policy." : !credentialReady ? "Enter the App Secret once so CodexLoom can create a managed credential for this new connection." : <>Messages are routed to <span className="font-medium text-foreground">{agentName}</span>. Direct-message access follows the policy below; only listed groups may contact it.</>}</p>
         </div>
-	        <button onClick={onSetup} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground">{nativeReady ? <Plus className="size-3.5" /> : <ShieldCheck className="size-3.5" />}{needsMigration ? "Migrate now" : nativeReady ? "Add group" : "Enter App Secret"}</button>
+	        <button onClick={onSetup} disabled={credentialUnavailable || !connection.enabled} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground disabled:opacity-45">{nativeReady ? <Plus className="size-3.5" /> : <ShieldCheck className="size-3.5" />}{credentialUnavailable ? "Recovery unavailable" : needsMigration ? "Migrate now" : nativeReady ? "Add group" : "Enter App Secret"}</button>
       </div>
       <div className="mt-4 space-y-2">
         <DirectMessages address={address} memberships={dmMemberships} inboxEntries={inboxEntries} agentName={agentName} onChanged={onChanged} onError={onError} />
@@ -1285,22 +1309,21 @@ function LarkConnectionSummary({ connection, addresses, memberships, inboxEntrie
   );
 }
 
-function isNativeFeishuConnection(connection?: PlatformConnection) {
-  return Boolean(connection?.credentialRef?.startsWith("keychain:com.codexloom.feishu."));
-}
-
 function SlackConnectionSummary({ connection, addresses, memberships, inboxEntries, agents, discovery, onSetup, onChanged, onError }: { connection: PlatformConnection; addresses: AgentAddress[]; memberships: ConversationMembership[]; inboxEntries: InboxEntry[]; agents: Agent[]; discovery: SlackDiscovery | null; onSetup: () => void; onChanged: () => Promise<void>; onError: (message: string) => void }) {
   const address = addresses[0];
   const agentName = agents.find((agent) => agent.id === address?.agentId)?.name || "an Agent";
   const online = connection.enabled && connection.status === "connected";
   const managedReady = Boolean(discovery?.credentialStored && discovery.botReady && discovery.socketReady);
+  const credentialSource = credentialSourceKind(connection.credentialRef);
+  const canEnterCredential = credentialSource === "missing";
+  const credentialUnavailable = !managedReady && !canEnterCredential;
   const channelMemberships = memberships.filter((membership) => membership.conversationType !== "dm");
   const dmMemberships = memberships.filter((membership) => membership.conversationType === "dm");
   return <section className="py-5">
 	    <div className="grid grid-cols-[36px_minmax(0,1fr)] items-start gap-3 sm:flex sm:flex-wrap">
       <div className={`flex size-9 items-center justify-center rounded-full ${managedReady && online ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{managedReady && online ? <Check className="size-4" /> : <MessageSquare className="size-4" />}</div>
-      <div className="min-w-0 flex-1"><h3 className="text-[14px] font-semibold">{!managedReady ? "Complete managed Slack setup" : online ? "Slack is ready" : "Slack needs attention"}</h3><p className="mt-0.5 text-[11.5px] leading-5 text-muted-foreground">{!managedReady ? "Verify the Slack tokens once so Loom can discover conversations and manage the Socket Mode gateway." : <>Messages are routed to <span className="font-medium text-foreground">{agentName}</span>. Direct-message access follows the policy below; only listed channels may contact it.</>}</p></div>
-	      <button onClick={onSetup} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground">{managedReady ? <Plus className="size-3.5" /> : <ShieldCheck className="size-3.5" />}{managedReady ? "Add channel" : "Verify tokens"}</button>
+	    <div className="min-w-0 flex-1"><h3 className="text-[14px] font-semibold">{credentialUnavailable ? "Slack credential needs attention" : !managedReady ? "Complete managed Slack setup" : online ? "Slack is ready" : "Slack needs attention"}</h3><p className="mt-0.5 text-[11.5px] leading-5 text-muted-foreground">{credentialUnavailable ? "The existing credential could not be verified. Secret re-entry is not offered for an existing managed or compatibility reference." : !managedReady ? "Verify the Slack tokens once so CodexLoom can create managed credentials and discover conversations." : <>Messages are routed to <span className="font-medium text-foreground">{agentName}</span>. Direct-message access follows the policy below; only listed channels may contact it.</>}</p></div>
+	      <button onClick={onSetup} disabled={credentialUnavailable || !connection.enabled} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground disabled:opacity-45">{managedReady ? <Plus className="size-3.5" /> : <ShieldCheck className="size-3.5" />}{credentialUnavailable ? "Recovery unavailable" : managedReady ? "Add channel" : "Verify tokens"}</button>
     </div>
     {discovery?.missingScopes?.length ? <div className="ml-12 mt-3 rounded-[3px] bg-warning/8 px-3 py-2 text-[10.5px] text-muted-foreground">Channel discovery needs {discovery.missingScopes.join(", ")}. Existing message delivery remains online.</div> : null}
     <div className="mt-4 space-y-2">
@@ -1312,21 +1335,45 @@ function SlackConnectionSummary({ connection, addresses, memberships, inboxEntri
 }
 
 function ParallConnectionSummary({ connection, addresses, memberships, candidates, inboxEntries, agents, discovery, working, onReconnect, onSetup, onChanged, onError }: { connection: PlatformConnection; addresses: AgentAddress[]; memberships: ConversationMembership[]; candidates: ConversationCandidate[]; inboxEntries: InboxEntry[]; agents: Agent[]; discovery: ParallDiscovery | null; working: boolean; onReconnect: () => void; onSetup: () => void; onChanged: () => Promise<void>; onError: (message: string) => void }) {
-  const address = addresses[0];
+  const address = addresses.find((item) => item.enabled && !item.archivedAt && !item.deletedAt) || addresses[0];
   const agentName = agents.find((agent) => agent.id === address?.agentId)?.name || "an Agent";
   const online = connection.enabled && connection.status === "connected";
-  const identityReady = Boolean(discovery?.agentCredentialStored && discovery.externalReady && discovery.socketReady);
   const conversationMemberships = memberships.filter((membership) => membership.conversationType !== "dm");
   const dmMemberships = memberships.filter((membership) => membership.conversationType === "dm");
   const configuredConversationIDs = new Set(conversationMemberships.map((membership) => membership.conversationId));
   const unconfiguredCandidates = candidates.filter((candidate) => candidate.available && candidate.conversationType !== "dm" && !configuredConversationIDs.has(candidate.conversationId));
   const external = discovery?.agents.find((item) => item.id === discovery.selectedAgentId);
-  const canRestart = !online && Boolean(address) && connection.credentialRef?.startsWith("keychain:");
+  const source = credentialSourceKind(connection.credentialRef);
+  const legacySource = source === "keychain" || source === "environment";
+  const canRestart = canRepairParallGateway(connection, address, discovery);
+  const recoveryUnavailable = !online && connection.enabled && source !== "missing" && !canRestart;
+  const heading = !connection.enabled
+    ? "Parall connection is disabled"
+    : online
+      ? "Parall is connected"
+      : legacySource
+        ? "Parall migration required"
+        : canRestart
+          ? "Parall gateway needs attention"
+          : source === "missing"
+            ? "Connect the Parall identity"
+            : "Parall recovery unavailable";
+  const description = !connection.enabled
+    ? "Enable this connection before checking or recovering its gateway."
+    : online
+      ? <>Dispatches for <span className="font-medium text-foreground">{external?.name || address?.displayName || "the external identity"}</span> are routed to <span className="font-medium text-foreground">{agentName}</span>. Joined conversations appear below and remain blocked until their role is configured.</>
+      : legacySource
+        ? "This legacy credential source remains visible for compatibility, but it is not eligible for automatic or manual restart. Migrate this Connection to a managed credential; secret re-entry is not offered here."
+        : canRestart
+          ? "Current non-secret discovery reports the managed credential, external identity, and WebSocket access ready. The backend validates them again before starting restart; wait for a later heartbeat before considering the Connection recovered."
+          : source === "missing"
+            ? "Complete onboarding so CodexLoom can create a managed credential and external Agent identity."
+            : "The existing credential or identity did not pass current backend discovery. Secret re-entry and restart are disabled here.";
   return <section className="py-5">
 	    <div className="grid grid-cols-[36px_minmax(0,1fr)] items-start gap-3 sm:flex sm:flex-wrap">
       <div className={`flex size-9 items-center justify-center rounded-full ${online ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{online ? <Check className="size-4" /> : <Cable className="size-4" />}</div>
-      <div className="min-w-0 flex-1"><h3 className="text-[14px] font-semibold">{online ? "Parall is connected" : identityReady ? "Parall needs attention" : "Connect the Parall identity"}</h3><p className="mt-0.5 text-[11.5px] leading-5 text-muted-foreground">{online ? <>Dispatches for <span className="font-medium text-foreground">{external?.name || address?.displayName || "the external identity"}</span> are routed to <span className="font-medium text-foreground">{agentName}</span>. Joined conversations appear below and remain blocked until their role is configured.</> : "Connect an external Agent identity so Loom can receive dispatches and discover the conversations it has joined."}</p></div>
-	      {(discovery?.ownerReady || !online) && <button onClick={canRestart ? onReconnect : onSetup} disabled={working} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground disabled:opacity-45">{canRestart ? <RefreshCw className={`size-3.5 ${working ? "animate-spin" : ""}`} /> : discovery?.ownerReady ? <Plus className="size-3.5" /> : <ShieldCheck className="size-3.5" />}{canRestart ? "Restart gateway" : discovery?.ownerReady ? "Add conversation" : "Connect identity"}</button>}
+      <div className="min-w-0 flex-1"><h3 className="text-[14px] font-semibold">{heading}</h3><p className="mt-0.5 text-[11.5px] leading-5 text-muted-foreground">{description}</p></div>
+	      {online && discovery?.ownerReady ? <button onClick={onSetup} disabled={working} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground disabled:opacity-45"><Plus className="size-3.5" />Add conversation</button> : canRestart ? <button onClick={onReconnect} disabled={working} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground disabled:opacity-45"><RefreshCw className={`size-3.5 ${working ? "animate-spin" : ""}`} />Restart gateway</button> : source === "missing" && connection.enabled ? <button onClick={onSetup} disabled={working} className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md bg-primary px-3 text-[11px] font-medium text-primary-foreground disabled:opacity-45"><ShieldCheck className="size-3.5" />Connect identity</button> : legacySource && connection.enabled ? <div className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md border border-warning/40 bg-warning/5 px-3 text-[11px] font-medium text-warning" data-migration-required><ShieldCheck className="size-3.5" />Migration required</div> : recoveryUnavailable ? <button disabled className="col-start-2 flex h-8 items-center gap-1.5 justify-self-start rounded-md border border-border px-3 text-[11px] font-medium text-muted-foreground opacity-60"><ShieldCheck className="size-3.5" />Repair unavailable</button> : null}
     </div>
     {discovery?.error && <div className="ml-12 mt-3 rounded-[3px] bg-warning/8 px-3 py-2 text-[10.5px] text-muted-foreground">{discovery.error}</div>}
     <div className="mt-4 space-y-2">
@@ -1661,6 +1708,22 @@ function ConnectionDot({ connection }: { connection: PlatformConnection }) {
   return <span className={`size-2 shrink-0 rounded-full ${color}`} />;
 }
 
+function CredentialSourceSummary({ connection }: { connection: PlatformConnection }) {
+  const source = credentialSourcePresentation(connection.credentialRef);
+  return <div className={`mt-4 border-l-2 px-3 py-2 ${source.tone}`} data-credential-source={source.kind}>
+    <div className="text-[10.5px] font-semibold">{source.label}</div>
+    <div className="mt-0.5 text-[10px] leading-4 opacity-80">{source.detail}</div>
+  </div>;
+}
+
+function CredentialMeta({ credentialRef }: { credentialRef?: string }) {
+  const source = credentialSourcePresentation(credentialRef);
+  return <>
+    <Meta label="Credential source" value={source.label} />
+    <Meta label="Credential reference" value={source.kind === "managed" ? "Hub-issued opaque reference" : credentialRef || "-"} />
+  </>;
+}
+
 function Meta({ label, value }: { label: string; value: string }) {
   return <div className="min-w-0"><dt className="uppercase text-muted-foreground">{label}</dt><dd className="mt-0.5 break-all font-mono text-foreground">{value}</dd></div>;
 }
@@ -1673,8 +1736,6 @@ type ProviderSpec = {
   id: string;
   label: string;
   accountPlaceholder: string;
-  credentialPlaceholder: string;
-  defaultCredentialRef: string;
   identityPlaceholder: string;
   capabilities: string[];
   requirements: string[];
@@ -1686,32 +1747,26 @@ const providerSpecs: ProviderSpec[] = [
     id: "lark",
     label: "Feishu / Lark",
     accountPlaceholder: "App ID (cli_...)",
-    credentialPlaceholder: "keychain:com.codexloom.feishu.<app-id>",
-    defaultCredentialRef: "",
     identityPlaceholder: "Bot Open ID (ou_...)",
     capabilities: ["receive_events", "threads", "mentions", "attachments", "reactions", "proactive_send"],
-    requirements: ["native Go gateway", "App Secret in system Keychain", "message and reaction scopes", "im:chat.members:read for member names"],
+    requirements: ["native Go gateway", "CodexLoom managed credential", "message and reaction scopes", "im:chat.members:read for member names"],
   },
   {
     id: "slack",
     label: "Slack",
     accountPlaceholder: "Workspace ID (T...)",
-    credentialPlaceholder: "keychain:com.codexloom.slack.<app-id>",
-    defaultCredentialRef: "",
     identityPlaceholder: "Bot User ID (U...)",
     capabilities: ["receive_events", "threads", "mentions", "attachments", "reactions", "proactive_send"],
-    requirements: ["managed Socket Mode gateway", "tokens in system Keychain", "Bot invited to configured channels"],
+    requirements: ["managed Socket Mode gateway", "CodexLoom managed credential", "Bot invited to configured channels"],
     manifest: "gateway/slack-app-manifest.yaml",
   },
   {
     id: "parall",
     label: "Parall",
     accountPlaceholder: "Organization ID (org_...)",
-    credentialPlaceholder: "keychain:com.codexloom.parall.agent.<org>.<agent>",
-    defaultCredentialRef: "",
     identityPlaceholder: "Parall identity (prll://...)",
     capabilities: ["receive_events", "explicit_dispatch", "threads", "attachments", "reading", "ack", "proactive_send"],
-    requirements: ["managed WebSocket gateway", "Owner and Agent keys in system Keychain", "external Agent membership in configured conversations"],
+    requirements: ["managed WebSocket gateway", "CodexLoom managed credentials", "external Agent membership in configured conversations"],
   },
 ];
 
@@ -1729,10 +1784,11 @@ function ProviderIcon({ provider, className }: { provider: string; className?: s
   return <Cable className={className} />;
 }
 
-function GatewaySetup({ connection, addresses }: { connection: PlatformConnection; addresses: AgentAddress[] }) {
+function GatewaySetup({ connection, addresses, slackAppID = "" }: { connection: PlatformConnection; addresses: AgentAddress[]; slackAppID?: string }) {
   const spec = providerSpec(connection.provider);
   const address = addresses[0];
-  const command = address ? gatewayCommand(connection, address) : "";
+  const command = address ? gatewayCommand(connection, address, { slackAppID }) : "";
+  const missingStructuredIdentity = Boolean(address && connection.provider === "slack" && !slackAppID.trim());
   const online = connection.enabled && connection.status === "connected";
   return (
     <section className="mt-4 py-3">
@@ -1752,9 +1808,7 @@ function GatewaySetup({ connection, addresses }: { connection: PlatformConnectio
           <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-3 py-2 font-mono text-[10.5px] text-foreground/80">{command}</code>
           <CopyCommand value={command} />
         </div>
-      ) : (
-        <div className="mt-3 border-l-2 border-warning bg-warning/5 px-3 py-2 text-[11px] text-muted-foreground">Bind an Agent Address to generate the gateway command.</div>
-      )}
+      ) : <div className="mt-3 border-l-2 border-warning bg-warning/5 px-3 py-2 text-[11px] text-muted-foreground">{missingStructuredIdentity ? "Refresh Slack discovery to verify its public App ID before generating a gateway command." : "Bind an Agent Address to generate the gateway command."}</div>}
       {addresses.length > 1 && <div className="mt-2 font-mono text-[9.5px] text-warning">This command uses the first of {addresses.length} addresses.</div>}
     </section>
   );
@@ -1768,38 +1822,6 @@ function CopyCommand({ value }: { value: string }) {
     window.setTimeout(() => setCopied(false), 1200);
   };
   return <button onClick={copy} title="Copy gateway command" className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground hover:bg-muted hover:text-foreground">{copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}</button>;
-}
-
-function gatewayCommand(connection: PlatformConnection, address: AgentAddress) {
-  const base = `node gateway/${connection.provider}.mjs --connection ${shellArg(connection.id)} --address ${shellArg(address.id)}`;
-  if (connection.provider === "lark") {
-    return `bin/loom-feishu-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --app-id ${shellArg(connection.accountRef || stripIdentity(address.externalIdentity))}`;
-  }
-  if (connection.provider === "slack") {
-    const app = slackAppIDFromCredentialRef(connection.credentialRef);
-    const bot = stripIdentity(address.externalIdentity);
-    const team = connection.accountRef || "";
-    return `bin/loom-slack-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)}${app ? ` --app-id ${shellArg(app)}` : ""}${bot ? ` --bot-user-id ${shellArg(bot)}` : ""}${team ? ` --team-id ${shellArg(team)}` : ""}`;
-  }
-  if (connection.provider === "parall") {
-    return `bin/loom-parall-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --org-id ${shellArg(connection.accountRef || "")} --agent-id ${shellArg(stripIdentity(address.externalIdentity))}`;
-  }
-  return base;
-}
-
-function slackAppIDFromCredentialRef(value = "") {
-  const prefix = "keychain:com.codexloom.slack.";
-  if (!value.startsWith(prefix)) return "";
-  return value.slice(prefix.length).replace(/\.(bot-token|app-token)$/, "").trim();
-}
-
-function stripIdentity(value: string) {
-  const index = value.lastIndexOf("/");
-  return index >= 0 ? value.slice(index + 1) : value;
-}
-
-function shellArg(value: string) {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function formatDate(value?: string) {

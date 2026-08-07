@@ -294,6 +294,7 @@ export interface AgentAddress {
   enabled: boolean;
   supersededBy?: string;
   archivedAt?: string;
+  deletedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

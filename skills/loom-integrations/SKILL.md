@@ -46,6 +46,8 @@ loom integration connect PROVIDER \
 
 Use it only when the credential and gateway lifecycle have already been provisioned by an operator. A `managed:` ID is opaque, Hub-issued, and valid only when that entry already exists in the current owner-only store; never construct one from a path or parse its suffix. `env:NAME` and `keychain:SERVICE_NAME` remain compatibility reads for legacy or manually managed gateways, but never print or inspect their values.
 
+Automatic managed gateway restart and the manual Parall gateway repair endpoint accept only eligible `managed:` Connections. A Parall `keychain:` or `env:` Connection returns non-secret HTTP `409 migration_required` before secret resolution, provider access, or service mutation; preserve its current executable and migrate it instead of attempting repair. A successful repair response means the restart was initiated, not that a new heartbeat has arrived.
+
 For first-time native Feishu, Slack, Parall, or GitHub onboarding, use CodexLoom's setup/import flow to validate credentials, store them behind a `managed:` reference in the owner-only file store, discover platform identities, and install the managed gateway when that provider has one.
 
 Migrate an existing enabled, non-archived Keychain-backed Connection one at a time:

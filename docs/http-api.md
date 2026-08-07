@@ -275,6 +275,13 @@ backup excludes `credentials/**`. `manual_recovery_required` is a terminal fail-
 | Parall | `POST /api/integrations/providers/parall/gateway` |
 | Parall | `POST /api/integrations/providers/parall/operations` |
 
+Parall gateway repair accepts only an enabled, non-archived Connection with an active Address and a valid
+Hub-issued `managed:` credential reference. A legacy `keychain:` or `env:` reference fails before credential
+resolution, provider access, or service mutation with HTTP `409` and `{"error":"migration_required"}`; migrate
+that Connection through the managed credential operation first. A successful repair response means that the
+managed repair/restart was initiated after credential binding, provider identity/status, and WebSocket readiness
+checks. It does not assert that a subsequent gateway heartbeat has arrived.
+
 `GET /api/integrations/provider-operations/{id}` 用于读取异步 Provider
 Operation 状态。
 

@@ -3,14 +3,177 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	"github.com/yan5xu/codex-loom/internal/parall"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
+
+func TestRepairParallGatewayRejectsLegacyReferencesBeforeSideEffects(t *testing.T) {
+	oldNew := newParallClient
+	oldLoadAgent := loadParallAgentCredentials
+	oldInstall := installManagedParallGateway
+	defer func() {
+		newParallClient = oldNew
+		loadParallAgentCredentials = oldLoadAgent
+		installManagedParallGateway = oldInstall
+	}()
+
+	secretReads, providerCalls, installerCalls := 0, 0, 0
+	loadParallAgentCredentials = func(string, string) (parall.Credentials, error) {
+		secretReads++
+		return parall.Credentials{}, errors.New("legacy credential loader must not run")
+	}
+	newParallClient = func(string, string) parallAPI {
+		providerCalls++
+		return &fakeParallAPI{}
+	}
+	installManagedParallGateway = func(_ *Server, _ hub.PlatformConnection, _ hub.AgentAddress, _, _, _ string) (managedParallGateway, error) {
+		installerCalls++
+		return managedParallGateway{}, nil
+	}
+
+	for _, reference := range []string{
+		"keychain:" + parall.AgentCredentialService("org_test", "usr_external"),
+		"env:LOOM_PARALL_LEGACY_TEST",
+	} {
+		t.Run(strings.SplitN(reference, ":", 2)[0], func(t *testing.T) {
+			server, connection, _ := newParallRepairFixture(t, reference)
+			result := integrationAPIRequest(t, server.Handler(), http.MethodPost, "/api/integrations/providers/parall/gateway", map[string]any{
+				"connectionId": connection.ID,
+			}, http.StatusConflict)
+			if result["error"] != "migration_required" {
+				t.Fatalf("legacy repair response = %#v", result)
+			}
+		})
+	}
+	if secretReads != 0 || providerCalls != 0 || installerCalls != 0 {
+		t.Fatalf("legacy repair side effects: secret=%d provider=%d installer=%d", secretReads, providerCalls, installerCalls)
+	}
+}
+
+func TestRepairParallGatewayAcceptsEligibleManagedConnection(t *testing.T) {
+	fake := &fakeParallAPI{credential: randomTestCredential(t)}
+	restore := stubParall(t, fake)
+	defer restore()
+
+	server, connection, _ := newManagedParallRepairFixture(t)
+	result := integrationAPIRequest(t, server.Handler(), http.MethodPost, "/api/integrations/providers/parall/gateway", map[string]any{
+		"connectionId": connection.ID,
+	}, http.StatusOK)
+	gateway, _ := result["gateway"].(map[string]any)
+	if gateway["managed"] != true || gateway["service"] != connection.ID {
+		t.Fatalf("managed repair response = %#v", result)
+	}
+}
+
+func TestRepairParallGatewayRejectsIneligibleManagedConnectionOrAddress(t *testing.T) {
+	oldNew := newParallClient
+	oldInstall := installManagedParallGateway
+	defer func() {
+		newParallClient = oldNew
+		installManagedParallGateway = oldInstall
+	}()
+	newParallClient = func(string, string) parallAPI {
+		t.Fatal("ineligible managed repair called provider")
+		return nil
+	}
+	installManagedParallGateway = func(_ *Server, _ hub.PlatformConnection, _ hub.AgentAddress, _, _, _ string) (managedParallGateway, error) {
+		t.Fatal("ineligible managed repair called installer")
+		return managedParallGateway{}, nil
+	}
+
+	t.Run("disabled connection", func(t *testing.T) {
+		server, h, connection, _ := newManagedParallRepairFixtureWithHub(t)
+		disabled := false
+		if _, err := h.UpdateConnection(connection.ID, hub.ConnectionParams{Enabled: &disabled}); err != nil {
+			t.Fatal(err)
+		}
+		result := integrationAPIRequest(t, server.Handler(), http.MethodPost, "/api/integrations/providers/parall/gateway", map[string]any{
+			"connectionId": connection.ID,
+		}, http.StatusConflict)
+		if result["error"] != "Parall connection is not eligible for repair" {
+			t.Fatalf("disabled connection repair response = %#v", result)
+		}
+	})
+
+	t.Run("disabled address", func(t *testing.T) {
+		server, h, connection, address := newManagedParallRepairFixtureWithHub(t)
+		disabled := false
+		if _, err := h.UpdateAddress(address.ID, hub.AddressParams{Enabled: &disabled}); err != nil {
+			t.Fatal(err)
+		}
+		result := integrationAPIRequest(t, server.Handler(), http.MethodPost, "/api/integrations/providers/parall/gateway", map[string]any{
+			"connectionId": connection.ID,
+		}, http.StatusConflict)
+		if result["error"] != "An enabled Loom Agent Address is required before repairing the Parall gateway" {
+			t.Fatalf("disabled address repair response = %#v", result)
+		}
+	})
+}
+
+func newParallRepairFixture(t *testing.T, credentialRef string) (*Server, hub.PlatformConnection, hub.AgentAddress) {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hub.New(st)
+	t.Cleanup(h.Shutdown)
+	if _, err := h.RestoreAgent(hub.RestoreAgentParams{ID: "agent-parall-repair", Name: "parall-repair", Cwd: t.TempDir(), ThreadID: "thread-parall-repair"}); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := h.CreateConnection(hub.ConnectionParams{Provider: "parall", AccountRef: "org_test", CredentialRef: credentialRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(hub.AddressParams{Agent: "parall-repair", ConnectionID: connection.ID, ExternalIdentity: "prll://usr_external"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(h, st, fstest.MapFS{"index.html": {Data: []byte("app")}}), connection, address
+}
+
+func newManagedParallRepairFixture(t *testing.T) (*Server, hub.PlatformConnection, hub.AgentAddress) {
+	t.Helper()
+	server, _, connection, address := newManagedParallRepairFixtureWithHub(t)
+	return server, connection, address
+}
+
+func newManagedParallRepairFixtureWithHub(t *testing.T) (*Server, *hub.Hub, hub.PlatformConnection, hub.AgentAddress) {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hub.New(st)
+	t.Cleanup(h.Shutdown)
+	if _, err := h.RestoreAgent(hub.RestoreAgentParams{ID: "agent-parall-repair", Name: "parall-repair", Cwd: t.TempDir(), ThreadID: "thread-parall-repair"}); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := parall.SaveManagedAgentCredentials(credentials, "org_test", "usr_external", "https://api.example.test", randomTestCredential(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := h.CreateConnection(hub.ConnectionParams{Provider: "parall", AccountRef: "org_test", CredentialRef: reference})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := h.CreateAddress(hub.AddressParams{Agent: "parall-repair", ConnectionID: connection.ID, ExternalIdentity: "prll://usr_external"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(h, st, fstest.MapFS{"index.html": {Data: []byte("app")}}), h, connection, address
+}
 
 func TestSetupParallCreatesStableIdentityAndMembershipIdempotently(t *testing.T) {
 	fake := &fakeParallAPI{

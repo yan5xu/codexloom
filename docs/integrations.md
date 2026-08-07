@@ -67,6 +67,11 @@ message ID，并为每个 Loom Artifact 保存 provider attachment ID 与对应 
 Restart Loom 会同时重启使用 `managed:` reference 的已启用 Feishu、Slack 和 Parall gateway，使
 Hub、WebUI 与 Connector 使用同一次构建。仍使用 legacy Keychain reference 的 gateway 必须先通过下述
 preflight/migration；普通 restart 不会自动替换它。未由 Loom 托管的外部进程不会被自动接管。
+Parall 的手动 gateway repair 同样只接受 enabled、non-archived 且有 active Address 的 `managed:`
+Connection；`keychain:` / `env:` 会在读取 secret、访问 provider 或修改 service 前返回 HTTP 409
+`migration_required`。legacy source/status 仍可用于 discovery 和迁移，但不再是 repair 能力。repair
+成功仅表示已通过 binding/provider/socket preflight 并发起 managed restart，不代表 gateway heartbeat
+已经恢复。
 
 ## 受管凭据迁移与回滚
 

@@ -796,19 +796,25 @@ func (s *Server) repairParallGateway(ctx context.Context, connectionID, hubURL s
 	if connection.ID == "" || connection.Provider != "parall" {
 		return nil, &hub.HubError{Status: 404, Message: "Parall connection not found: " + connectionID}
 	}
+	if !strings.HasPrefix(strings.TrimSpace(connection.CredentialRef), credentialstore.ManagedReferencePrefix) {
+		return nil, &hub.HubError{Status: 409, Message: "migration_required"}
+	}
+	if !connection.Enabled || connection.ArchivedAt != "" {
+		return nil, &hub.HubError{Status: 409, Message: "Parall connection is not eligible for repair"}
+	}
 	addresses, err := s.hub.ListAddresses("")
 	if err != nil {
 		return nil, err
 	}
 	var address hub.AgentAddress
 	for _, candidate := range addresses {
-		if candidate.ConnectionID == connection.ID {
+		if candidate.ConnectionID == connection.ID && candidate.Enabled && candidate.ArchivedAt == "" && candidate.DeletedAt == "" {
 			address = candidate
 			break
 		}
 	}
 	if address.ID == "" {
-		return nil, &hub.HubError{Status: 409, Message: "Bind a Loom Agent Address before starting the Parall gateway"}
+		return nil, &hub.HubError{Status: 409, Message: "An enabled Loom Agent Address is required before repairing the Parall gateway"}
 	}
 	orgID := strings.TrimSpace(connection.AccountRef)
 	agentID := strings.TrimPrefix(strings.TrimSpace(address.ExternalIdentity), "prll://")

@@ -28,19 +28,20 @@ import (
 )
 
 type Server struct {
-	hub              *hub.Hub
-	st               *store.Store
-	web              fs.FS
-	restartMu        sync.Mutex
-	restart          restartState
-	connectorMu      sync.Mutex
-	activeConnectors map[string]struct{}
-	githubMu         sync.Mutex
-	githubDevices    map[string]*githubDeviceFlow
-	credentialMu     sync.Mutex
-	credentialLocks  map[string]*sync.Mutex
-	build            buildinfo.Info
-	readOnly         bool
+	hub                     *hub.Hub
+	st                      *store.Store
+	web                     fs.FS
+	restartMu               sync.Mutex
+	restart                 restartState
+	connectorMu             sync.Mutex
+	activeConnectors        map[string]struct{}
+	githubMu                sync.Mutex
+	githubDevices           map[string]*githubDeviceFlow
+	credentialMu            sync.Mutex
+	credentialLocks         map[string]*sync.Mutex
+	credentialMigrationSave func(hub.CredentialMigrationReceipt, int) (hub.CredentialMigrationReceipt, error)
+	build                   buildinfo.Info
+	readOnly                bool
 }
 
 func New(h *hub.Hub, st *store.Store, web fs.FS) *Server {
@@ -58,7 +59,7 @@ func NewWithOptions(h *hub.Hub, st *store.Store, web fs.FS, options Options) *Se
 	if st != nil {
 		dataDir = st.Dir()
 	}
-	return &Server{
+	server := &Server{
 		hub: h, st: st, web: web, restart: restartState{State: "idle"},
 		activeConnectors: map[string]struct{}{},
 		githubDevices:    map[string]*githubDeviceFlow{},
@@ -68,6 +69,8 @@ func NewWithOptions(h *hub.Hub, st *store.Store, web fs.FS, options Options) *Se
 		}),
 		readOnly: options.ReadOnly,
 	}
+	server.credentialMigrationSave = h.SaveCredentialMigration
+	return server
 }
 
 type restartState struct {
@@ -829,6 +832,8 @@ func readOnly(next http.Handler) http.Handler {
 
 func readOnlyExternalRead(path string) bool {
 	return strings.HasPrefix(path, "/api/integrations/providers/") ||
+		strings.HasPrefix(path, "/api/integrations/credentials") ||
+		strings.HasPrefix(path, "/api/integrations/credential-migrations") ||
 		strings.HasSuffix(path, "/commands") ||
 		path == "/api/remote/pairing" ||
 		path == "/api/remote/devices"

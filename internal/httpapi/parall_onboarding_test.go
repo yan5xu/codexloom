@@ -119,6 +119,7 @@ func TestRepairParallGatewayRejectsIneligibleManagedConnectionOrAddress(t *testi
 
 func newParallRepairFixture(t *testing.T, credentialRef string) (*Server, hub.PlatformConnection, hub.AgentAddress) {
 	t.Helper()
+	t.Setenv("CODEX_LOOM_ADMIN_TOKEN", "parall-repair-test-admin-token")
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +148,7 @@ func newManagedParallRepairFixture(t *testing.T) (*Server, hub.PlatformConnectio
 
 func newManagedParallRepairFixtureWithHub(t *testing.T) (*Server, *hub.Hub, hub.PlatformConnection, hub.AgentAddress) {
 	t.Helper()
+	t.Setenv("CODEX_LOOM_ADMIN_TOKEN", "parall-repair-test-admin-token")
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

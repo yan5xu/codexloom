@@ -22,6 +22,9 @@ var restartManagedConnectorService = restartManagedGatewayService
 var preflightManagedConnectorCredential = func(s *Server, connection hub.PlatformConnection) error {
 	return s.preflightManagedGatewayCredential(connection)
 }
+var preflightManagedConnectorProcess = func(s *Server, connection hub.PlatformConnection) error {
+	return s.preflightMigrationGateway(connection)
+}
 var runManagedServiceCommand = func(name string, arguments ...string) ([]byte, error) {
 	return exec.Command(name, arguments...).CombinedOutput()
 }
@@ -52,8 +55,18 @@ func (s *Server) RestartManagedGateways() {
 			log.Printf("[codex-loom] keep %s gateway %s on its current executable: managed credential preflight failed: %v", provider, connection.ID, err)
 			continue
 		}
+		if err := preflightManagedConnectorProcess(s, connection); err != nil {
+			log.Printf("[codex-loom] keep %s gateway %s on its current registration: process preflight failed: %v", provider, connection.ID, err)
+			continue
+		}
 		restarted, err := restartManagedConnectorService(provider, connection.ID)
 		if err != nil {
+			var failure *managedGatewayRestartFailure
+			if errors.As(err, &failure) && !failure.Recovered {
+				if persistErr := s.hub.MarkConnectionManualRecovery(connection.ID, "manual_recovery_required: managed gateway restart failed and previous registration could not be recovered"); persistErr != nil {
+					log.Printf("[codex-loom] persist managed gateway manual recovery %s: %v", connection.ID, persistErr)
+				}
+			}
 			log.Printf("[codex-loom] restart %s gateway %s: %v", provider, connection.ID, err)
 			continue
 		}
@@ -62,6 +75,22 @@ func (s *Server) RestartManagedGateways() {
 		}
 	}
 }
+
+type managedGatewayRestartFailure struct {
+	Stage     string
+	Recovered bool
+	Cause     error
+}
+
+func (e *managedGatewayRestartFailure) Error() string {
+	status := "previous registration recovery failed"
+	if e.Recovered {
+		status = "previous registration recovered"
+	}
+	return fmt.Sprintf("%s failed (%s): %v", e.Stage, status, e.Cause)
+}
+
+func (e *managedGatewayRestartFailure) Unwrap() error { return e.Cause }
 
 func (s *Server) preflightManagedGatewayCredential(connection hub.PlatformConnection) error {
 	credentials, err := s.hub.CredentialStore()
@@ -138,25 +167,40 @@ func restartManagedGatewayService(provider, connectionID string) (bool, error) {
 		// refresh the job registration before starting the new executable.
 		_, _ = runManagedServiceCommand("launchctl", "bootout", target)
 		if err := bootstrapManagedLaunchAgent(uid, target, unitPath); err != nil {
-			return false, err
+			recovered := recoverManagedLaunchAgent(uid, target, unitPath)
+			return false, &managedGatewayRestartFailure{Stage: "launchctl bootstrap", Recovered: recovered == nil, Cause: errors.Join(err, recovered)}
 		}
 		if output, err := runManagedServiceCommand("launchctl", "kickstart", "-k", target); err != nil {
-			_, _ = runManagedServiceCommand("launchctl", "bootout", target)
-			return false, fmt.Errorf("launchctl kickstart: %s", strings.TrimSpace(string(output)))
+			kickstartErr := fmt.Errorf("launchctl kickstart: %s", strings.TrimSpace(string(output)))
+			recovered := recoverManagedLaunchAgent(uid, target, unitPath)
+			return false, &managedGatewayRestartFailure{Stage: "launchctl kickstart", Recovered: recovered == nil, Cause: errors.Join(kickstartErr, recovered)}
 		}
 		return true, nil
 	case "linux":
 		service := fmt.Sprintf("codexloom-%s-%s.service", provider, connectionID)
-		if err := exec.Command("systemctl", "--user", "is-active", "--quiet", service).Run(); err != nil {
+		if _, err := runManagedServiceCommand("systemctl", "--user", "is-active", "--quiet", service); err != nil {
 			return false, nil
 		}
-		if output, err := exec.Command("systemctl", "--user", "restart", service).CombinedOutput(); err != nil {
-			return false, fmt.Errorf("systemctl restart: %s", strings.TrimSpace(string(output)))
+		if output, err := runManagedServiceCommand("systemctl", "--user", "restart", service); err != nil {
+			restartErr := fmt.Errorf("systemctl restart: %s", strings.TrimSpace(string(output)))
+			_, recovered := runManagedServiceCommand("systemctl", "--user", "start", service)
+			return false, &managedGatewayRestartFailure{Stage: "systemctl restart", Recovered: recovered == nil, Cause: errors.Join(restartErr, recovered)}
 		}
 		return true, nil
 	default:
 		return false, nil
 	}
+}
+
+func recoverManagedLaunchAgent(uid, target, unitPath string) error {
+	_, _ = runManagedServiceCommand("launchctl", "bootout", target)
+	if err := bootstrapManagedLaunchAgent(uid, target, unitPath); err != nil {
+		return err
+	}
+	if output, err := runManagedServiceCommand("launchctl", "kickstart", "-k", target); err != nil {
+		return fmt.Errorf("launchctl recovery kickstart: %s", strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func bootstrapManagedLaunchAgent(uid, target, unitPath string) error {

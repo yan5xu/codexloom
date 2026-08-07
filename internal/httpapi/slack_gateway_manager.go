@@ -56,6 +56,9 @@ func (s *Server) installSlackGatewayMode(connection hub.PlatformConnection, addr
 		"--app-id", appID, "--team-id", teamID, "--bot-user-id", botUserID,
 		"--credential-ref", connection.CredentialRef, "--node", node, "--script", script,
 	}
+	if connection.GatewayGeneration != "" {
+		arguments = append(arguments, "--generation", connection.GatewayGeneration)
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return s.installSlackLaunchAgent(connection.ID, arguments, logPath, retireLegacy)

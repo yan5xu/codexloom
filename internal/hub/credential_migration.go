@@ -29,12 +29,14 @@ type CredentialMigrationProviderReceipt struct {
 }
 
 type CredentialMigrationGatewayReceipt struct {
-	Status      string `json:"status"`
-	Manager     string `json:"manager,omitempty"`
-	Service     string `json:"service,omitempty"`
-	Build       string `json:"build,omitempty"`
-	AnchorID    string `json:"anchorId,omitempty"`
-	HeartbeatAt string `json:"heartbeatAt,omitempty"`
+	Status           string `json:"status"`
+	Manager          string `json:"manager,omitempty"`
+	Service          string `json:"service,omitempty"`
+	Build            string `json:"build,omitempty"`
+	ExecutableSHA256 string `json:"executableSha256,omitempty"`
+	Generation       string `json:"generation,omitempty"`
+	AnchorID         string `json:"anchorId,omitempty"`
+	HeartbeatAt      string `json:"heartbeatAt,omitempty"`
 }
 
 type CredentialMigrationError struct {
@@ -55,6 +57,8 @@ type CredentialMigrationReceipt struct {
 	TargetCredentialRef   string                              `json:"targetCredentialRef,omitempty"`
 	ProviderReceipt       *CredentialMigrationProviderReceipt `json:"providerReceipt,omitempty"`
 	GatewayReceipt        *CredentialMigrationGatewayReceipt  `json:"gatewayReceipt,omitempty"`
+	GatewayEffectID       string                              `json:"gatewayEffectId,omitempty"`
+	GatewayEffectState    string                              `json:"gatewayEffectState,omitempty"`
 	Error                 *CredentialMigrationError           `json:"error,omitempty"`
 	CredentialsIncluded   bool                                `json:"credentialsIncluded"`
 	RunnableRestore       bool                                `json:"runnableRestore"`
@@ -83,12 +87,35 @@ func (h *Hub) loadCredentialMigrations() error {
 				return fmt.Errorf("invalid credential migration target %s", id)
 			}
 		}
+		if receipt.GatewayEffectID != "" && !validCredentialMigrationEffectID(receipt.GatewayEffectID) {
+			return fmt.Errorf("invalid credential migration effect %s", id)
+		}
+		if !validCredentialMigrationEffectState(receipt.GatewayEffectState) {
+			return fmt.Errorf("invalid credential migration effect state %s", id)
+		}
 		if prior := connections[receipt.ConnectionID]; prior != "" && prior != id {
 			return fmt.Errorf("multiple credential migration receipts for connection %s", receipt.ConnectionID)
 		}
 		connections[receipt.ConnectionID] = id
 	}
 	return nil
+}
+
+func validCredentialMigrationEffectID(value string) bool {
+	if !strings.HasPrefix(value, "geff_") || len(value) > 100 {
+		return false
+	}
+	for _, char := range value {
+		if char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validCredentialMigrationEffectState(value string) bool {
+	return oneOf(value, "", "activation_prepared", "activation_applied", "rollback_prepared", "rollback_applied")
 }
 
 func validCredentialMigrationID(value string) bool {
@@ -149,6 +176,9 @@ func (h *Hub) SaveCredentialMigration(next CredentialMigrationReceipt, expectedV
 			return CredentialMigrationReceipt{}, errf(400, "invalid managed credential migration target")
 		}
 	}
+	if next.GatewayEffectID != "" && !validCredentialMigrationEffectID(next.GatewayEffectID) || !validCredentialMigrationEffectState(next.GatewayEffectState) {
+		return CredentialMigrationReceipt{}, errf(400, "invalid credential migration gateway effect")
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	current := h.credentialMigrations[strings.TrimSpace(next.ID)]
@@ -160,6 +190,9 @@ func (h *Hub) SaveCredentialMigration(next CredentialMigrationReceipt, expectedV
 	}
 	if next.ID != current.ID || next.ConnectionID != current.ConnectionID || next.Provider != current.Provider || next.PreviousCredentialRef != current.PreviousCredentialRef || next.CreatedAt != current.CreatedAt {
 		return CredentialMigrationReceipt{}, errf(409, "credential migration receipt identity is immutable")
+	}
+	if current.GatewayEffectID != "" && next.GatewayEffectID != current.GatewayEffectID {
+		return CredentialMigrationReceipt{}, errf(409, "credential migration gateway effect identity is immutable")
 	}
 	previous := *current
 	next.CredentialsIncluded = false

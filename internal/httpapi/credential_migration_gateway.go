@@ -3,7 +3,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -17,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yan5xu/codex-loom/internal/buildinfo"
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	loomslack "github.com/yan5xu/codex-loom/internal/slack"
@@ -35,6 +38,14 @@ type migrationGatewayService struct {
 	Service  string
 	UnitPath string
 	Target   string
+}
+
+type migrationGatewayAnchorEvidence struct {
+	Version          int    `json:"version"`
+	Status           string `json:"status"`
+	Build            string `json:"build,omitempty"`
+	ExecutableSHA256 string `json:"executableSha256,omitempty"`
+	Generation       string `json:"generation,omitempty"`
 }
 
 func (s *Server) preflightMigrationGateway(connection hub.PlatformConnection) error {
@@ -99,19 +110,74 @@ func (s *Server) preflightMigrationGateway(connection hub.PlatformConnection) er
 	return nil
 }
 
-func (s *Server) activateMigrationGateway(ctx context.Context, connection hub.PlatformConnection, targetRef, receiptID, hubURL string) (hub.CredentialMigrationGatewayReceipt, error) {
+func (s *Server) prepareMigrationGatewayEffect(connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (string, hub.CredentialMigrationGatewayReceipt, error) {
+	if err := s.matchMigrationConnectionControl(connection); err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	effectID := migrationGatewayEffectID(receipt.ID, receipt.TargetCredentialRef)
+	provider := managedGatewayProvider(connection.Provider)
+	if !buildinfo.ValidBuildIdentity(s.build.Commit) {
+		return "", hub.CredentialMigrationGatewayReceipt{}, errors.New("gateway build identity is unavailable")
+	}
+	prepared := hub.CredentialMigrationGatewayReceipt{
+		Status: "activation_prepared", Build: s.build.Commit,
+		Generation: migrationGatewayGeneration(effectID, s.build.Commit),
+	}
+	if provider == "" {
+		if strings.EqualFold(connection.Provider, "github") {
+			prepared.Status = "not_applicable"
+			return effectID, prepared, nil
+		}
+		return "", hub.CredentialMigrationGatewayReceipt{}, errors.New("provider has no managed gateway")
+	}
+	anchorID, err := s.captureMigrationGatewayAnchor(connection, receipt.ID)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	service, err := migrationGatewayServiceFor(provider, connection.ID)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	wrapperName := "loom-" + provider + "-gateway"
+	if provider == "feishu" {
+		wrapperName = "loom-feishu-gateway"
+	}
+	wrapperPath, err := siblingExecutable(wrapperName)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	evidence, err := buildinfo.ObserveExecutable(wrapperPath)
+	if err != nil {
+		return "", hub.CredentialMigrationGatewayReceipt{}, err
+	}
+	prepared.AnchorID = anchorID
+	prepared.Manager = service.Manager
+	prepared.Service = service.Service
+	prepared.ExecutableSHA256 = evidence.SHA256
+	return effectID, prepared, nil
+}
+
+func (s *Server) activateMigrationGateway(ctx context.Context, connection hub.PlatformConnection, targetRef, receiptID, hubURL string, prepared hub.CredentialMigrationGatewayReceipt) (hub.CredentialMigrationGatewayReceipt, error) {
+	if err := s.matchMigrationConnectionControl(connection); err != nil {
+		return prepared, err
+	}
 	provider := managedGatewayProvider(connection.Provider)
 	if provider == "" {
 		if strings.EqualFold(connection.Provider, "github") {
-			return hub.CredentialMigrationGatewayReceipt{Status: "not_applicable", Build: s.build.Commit}, nil
+			prepared.Status = "not_applicable"
+			return prepared, nil
 		}
 		return hub.CredentialMigrationGatewayReceipt{Status: "unsupported", Build: s.build.Commit}, errors.New("provider has no managed gateway")
 	}
-	anchorID, err := s.captureMigrationGatewayAnchor(connection, receiptID)
-	receipt := hub.CredentialMigrationGatewayReceipt{Status: "activating", AnchorID: anchorID, Build: s.build.Commit}
-	if err != nil {
-		receipt.Status = "anchor_failed"
-		return receipt, err
+	receipt := prepared
+	receipt.Status = "activating"
+	if receipt.AnchorID == "" {
+		anchorID, err := s.captureMigrationGatewayAnchor(connection, receiptID)
+		if err != nil {
+			receipt.Status = "anchor_failed"
+			return receipt, err
+		}
+		receipt.AnchorID = anchorID
 	}
 	addresses, err := s.hub.ListAddresses("")
 	if err != nil {
@@ -134,6 +200,7 @@ func (s *Server) activateMigrationGateway(ctx context.Context, connection hub.Pl
 	}
 	target := connection
 	target.CredentialRef = targetRef
+	target.GatewayGeneration = prepared.Generation
 	started := time.Now().UTC()
 	switch provider {
 	case "feishu":
@@ -171,7 +238,7 @@ func (s *Server) activateMigrationGateway(ctx context.Context, connection hub.Pl
 		receipt.Status = "activation_failed"
 		return receipt, err
 	}
-	heartbeat, err := s.waitForMigrationGatewayHeartbeat(ctx, connection.ID, started)
+	heartbeat, err := s.waitForMigrationGatewayHeartbeat(ctx, connection.ID, started, &prepared)
 	if err != nil {
 		receipt.Status = "heartbeat_failed"
 		return receipt, err
@@ -183,7 +250,7 @@ func (s *Server) activateMigrationGateway(ctx context.Context, connection hub.Pl
 
 func (s *Server) rollbackMigrationGateway(ctx context.Context, connection hub.PlatformConnection, receipt hub.CredentialMigrationReceipt) (hub.CredentialMigrationGatewayReceipt, error) {
 	provider := managedGatewayProvider(connection.Provider)
-	result := hub.CredentialMigrationGatewayReceipt{Status: "restoring", Build: s.build.Commit}
+	result := hub.CredentialMigrationGatewayReceipt{Status: "restoring"}
 	if provider == "" {
 		result.Status = "not_applicable"
 		return result, nil
@@ -202,8 +269,36 @@ func (s *Server) rollbackMigrationGateway(ctx context.Context, connection hub.Pl
 		result.Status = "restore_failed"
 		return result, err
 	}
+	if exists, validateErr := validateExistingMigrationGatewayAnchor(anchorDir, provider, service.Manager); validateErr != nil || !exists {
+		result.Status = "restore_failed"
+		return result, errors.Join(validateErr, errors.New("gateway rollback anchor is incomplete"))
+	}
 	unit, err := readBoundedPrivateFile(filepath.Join(anchorDir, "unit"), 1<<20, false)
 	if err != nil {
+		result.Status = "restore_failed"
+		return result, err
+	}
+	arguments, err := gatewayUnitArguments(string(unit), service.Manager)
+	if err != nil {
+		result.Status = "restore_failed"
+		return result, err
+	}
+	wrapperName := "loom-" + provider + "-gateway"
+	if provider == "feishu" {
+		wrapperName = "loom-feishu-gateway"
+	}
+	wrapperPath := findArgumentByBase(arguments, wrapperName)
+	expected, verified, err := readMigrationGatewayAnchorEvidence(anchorDir, wrapperPath)
+	if err != nil {
+		result.Status = "restore_failed"
+		return result, err
+	}
+	if !verified {
+		result.Status = "anchor_unverified"
+		result.AnchorID = receipt.GatewayReceipt.AnchorID
+		return result, errors.New("gateway rollback anchor executable build is unverified")
+	}
+	if err := s.matchMigrationConnectionControl(connection); err != nil {
 		result.Status = "restore_failed"
 		return result, err
 	}
@@ -217,11 +312,12 @@ func (s *Server) rollbackMigrationGateway(ctx context.Context, connection hub.Pl
 		result.Status = "restore_failed"
 		return result, errors.Join(err, errors.New("previous gateway unit did not restart"))
 	}
-	heartbeat, err := s.waitForMigrationGatewayHeartbeat(ctx, connection.ID, started)
+	heartbeat, err := s.waitForMigrationGatewayHeartbeat(ctx, connection.ID, started, &expected)
 	if err != nil {
 		result.Status = "heartbeat_failed"
 		return result, err
 	}
+	result = expected
 	result.Status = "restored"
 	result.Manager, result.Service = service.Manager, service.Service
 	result.AnchorID = receipt.GatewayReceipt.AnchorID
@@ -245,6 +341,9 @@ func (s *Server) captureMigrationGatewayAnchor(connection hub.PlatformConnection
 	if exists, err := validateExistingMigrationGatewayAnchor(anchorDir, provider, service.Manager); err != nil {
 		return "", err
 	} else if exists {
+		if err := recordMigrationGatewayAnchorEvidence(anchorDir, provider, service.Manager, connection); err != nil {
+			return "", err
+		}
 		return receiptID, nil
 	}
 	unit, err := readBoundedPrivateFile(service.UnitPath, 1<<20, false)
@@ -287,7 +386,104 @@ func (s *Server) captureMigrationGatewayAnchor(connection hub.PlatformConnection
 	if err := writeSyncedPrivateFile(filepath.Join(anchorDir, "unit"), []byte(anchoredUnit), 0o600); err != nil {
 		return "", err
 	}
+	if err := recordMigrationGatewayAnchorEvidence(anchorDir, provider, service.Manager, connection); err != nil {
+		return "", err
+	}
 	return receiptID, nil
+}
+
+func recordMigrationGatewayAnchorEvidence(anchorDir, provider, manager string, connection hub.PlatformConnection) error {
+	unit, err := readBoundedPrivateFile(filepath.Join(anchorDir, "unit"), 1<<20, false)
+	if err != nil {
+		return err
+	}
+	arguments, err := gatewayUnitArguments(string(unit), manager)
+	if err != nil {
+		return err
+	}
+	wrapperName := "loom-" + provider + "-gateway"
+	if provider == "feishu" {
+		wrapperName = "loom-feishu-gateway"
+	}
+	wrapperPath := findArgumentByBase(arguments, wrapperName)
+	if wrapperPath == "" {
+		return errors.New("gateway rollback anchor wrapper is missing")
+	}
+	if _, verified, readErr := readMigrationGatewayAnchorEvidence(anchorDir, wrapperPath); readErr != nil {
+		return readErr
+	} else if verified {
+		return nil
+	}
+	observed, err := buildinfo.ObserveExecutable(wrapperPath)
+	if err != nil {
+		return err
+	}
+	evidence := migrationGatewayAnchorEvidence{
+		Version: 1, Status: "unknown_unverified", ExecutableSHA256: observed.SHA256,
+	}
+	unitGeneration := findArgumentValue(arguments, "--generation")
+	if observed.SHA256 == connection.GatewayExecutableSHA256 && buildinfo.ValidBuildIdentity(connection.GatewayBuild) &&
+		validGatewayGeneration(connection.GatewayGeneration) && connection.GatewayGeneration == unitGeneration {
+		evidence.Status = "verified"
+		evidence.Build = connection.GatewayBuild
+		evidence.Generation = connection.GatewayGeneration
+	}
+	payload, err := json.Marshal(evidence)
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	return writeSyncedPrivateFile(filepath.Join(anchorDir, "evidence.json"), payload, 0o600)
+}
+
+func readMigrationGatewayAnchorEvidence(anchorDir, wrapperPath string) (hub.CredentialMigrationGatewayReceipt, bool, error) {
+	payload, err := readBoundedPrivateFile(filepath.Join(anchorDir, "evidence.json"), 16<<10, false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return hub.CredentialMigrationGatewayReceipt{Status: "anchor_unverified"}, false, nil
+		}
+		return hub.CredentialMigrationGatewayReceipt{}, false, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var evidence migrationGatewayAnchorEvidence
+	if err := decoder.Decode(&evidence); err != nil {
+		return hub.CredentialMigrationGatewayReceipt{}, false, errors.New("gateway rollback anchor evidence is corrupt")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return hub.CredentialMigrationGatewayReceipt{}, false, errors.New("gateway rollback anchor evidence has trailing data")
+	}
+	result := hub.CredentialMigrationGatewayReceipt{
+		Status: evidence.Status, Build: strings.TrimSpace(evidence.Build),
+		ExecutableSHA256: strings.TrimSpace(evidence.ExecutableSHA256), Generation: strings.TrimSpace(evidence.Generation),
+	}
+	if evidence.Version != 1 || evidence.Status != "verified" {
+		return result, false, nil
+	}
+	if !buildinfo.ValidBuildIdentity(result.Build) || !buildinfo.ValidExecutableSHA256(result.ExecutableSHA256) || !validGatewayGeneration(result.Generation) {
+		return hub.CredentialMigrationGatewayReceipt{}, false, errors.New("gateway rollback anchor evidence is invalid")
+	}
+	observed, err := buildinfo.ObserveExecutable(wrapperPath)
+	if err != nil {
+		return hub.CredentialMigrationGatewayReceipt{}, false, err
+	}
+	if observed.SHA256 != result.ExecutableSHA256 {
+		return hub.CredentialMigrationGatewayReceipt{}, false, errors.New("gateway rollback anchor executable digest changed")
+	}
+	return result, true, nil
+}
+
+func validGatewayGeneration(value string) bool {
+	if len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x21 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func rejectUnanchoredLegacyGatewayUnits(provider, connectionID, currentUnitPath string) error {
@@ -427,14 +623,14 @@ func migrationGatewayServiceFor(provider, connectionID string) (migrationGateway
 	}
 }
 
-func (s *Server) waitForMigrationGatewayHeartbeat(ctx context.Context, connectionID string, after time.Time) (string, error) {
+func (s *Server) waitForMigrationGatewayHeartbeat(ctx context.Context, connectionID string, after time.Time, expected *hub.CredentialMigrationGatewayReceipt) (string, error) {
 	timeout := time.NewTimer(migrationGatewayHeartbeatTimeout)
 	defer timeout.Stop()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		for _, connection := range s.hub.ListConnections() {
-			if connection.ID != connectionID || connection.Status != "connected" || connection.LastHeartbeatAt == "" {
+			if connection.ID != connectionID || connection.Status != "connected" || connection.LastHeartbeatAt == "" || expected != nil && !gatewayProcessEvidenceMatches(connection, *expected) {
 				continue
 			}
 			heartbeat, err := time.Parse(time.RFC3339Nano, connection.LastHeartbeatAt)
@@ -489,6 +685,15 @@ func findArgumentByBase(arguments []string, base string) string {
 	for _, argument := range arguments {
 		if filepath.Base(argument) == base {
 			return argument
+		}
+	}
+	return ""
+}
+
+func findArgumentValue(arguments []string, name string) string {
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == name {
+			return strings.TrimSpace(arguments[index+1])
 		}
 	}
 	return ""

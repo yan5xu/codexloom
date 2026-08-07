@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -108,6 +109,7 @@ func TestGitHubDeviceFlowExpiresWithoutAnotherPoll(t *testing.T) {
 }
 
 func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
+	t.Setenv("CODEX_LOOM_ADMIN_TOKEN", "github-http-test-admin-token")
 	keyring.MockInit()
 	ownerCredential := randomTestCredential(t)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +188,7 @@ func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
 }
 
 func TestGitHubTokenConnectionsMigrateLegacyAndSeparateResourceOwners(t *testing.T) {
+	t.Setenv("CODEX_LOOM_ADMIN_TOKEN", "github-http-test-admin-token")
 	keyring.MockInit()
 	parallCredential := randomTestCredential(t)
 	personalCredential := randomTestCredential(t)
@@ -274,6 +277,9 @@ func serveJSON(t *testing.T, handler http.Handler, method, path, body string, st
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	if token := os.Getenv("CODEX_LOOM_ADMIN_TOKEN"); token != "" {
+		req.Header.Set("X-Codex-Loom-Admin-Token", token)
+	}
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != status {

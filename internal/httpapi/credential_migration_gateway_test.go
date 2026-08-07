@@ -12,6 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/yan5xu/codex-loom/internal/buildinfo"
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/hub"
 	"github.com/yan5xu/codex-loom/internal/store"
@@ -42,6 +43,12 @@ func TestMigrationGatewayAnchorIsPrivateAndIdempotent(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte("gateway-wrapper-fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	observed, err := buildinfo.ObserveExecutable(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.GatewayBuild = "build-anchor"
+	connection.GatewayExecutableSHA256 = observed.SHA256
 	if err := os.WriteFile(script, []byte("gateway-adapter-fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +68,7 @@ func TestMigrationGatewayAnchorIsPrivateAndIdempotent(t *testing.T) {
 		t.Fatalf("capture anchor id = %q, err = %v", anchorID, err)
 	}
 	anchorDir := filepath.Join(st.Dir(), credentialstore.DirectoryName, "gateway-rollback", receiptID)
-	for _, name := range []string{"unit", "loom-slack-gateway", "slack.mjs", "slack-protocol.mjs"} {
+	for _, name := range []string{"unit", "evidence.json", "loom-slack-gateway", "slack.mjs", "slack-protocol.mjs"} {
 		info, err := os.Lstat(filepath.Join(anchorDir, name))
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			t.Fatalf("anchor file %s is unsafe: mode=%v err=%v", name, infoMode(info), err)
@@ -80,6 +87,16 @@ func TestMigrationGatewayAnchorIsPrivateAndIdempotent(t *testing.T) {
 	anchorID, err = server.captureMigrationGatewayAnchor(connection, receiptID)
 	if err != nil || anchorID != receiptID {
 		t.Fatalf("idempotent anchor reuse id = %q, err = %v", anchorID, err)
+	}
+	anchorEvidence, verified, err := readMigrationGatewayAnchorEvidence(anchorDir, filepath.Join(anchorDir, "loom-slack-gateway"))
+	if err != nil || !verified || anchorEvidence.Build != connection.GatewayBuild || anchorEvidence.ExecutableSHA256 != observed.SHA256 {
+		t.Fatalf("anchor executable evidence = %#v, verified=%v, err=%v", anchorEvidence, verified, err)
+	}
+	if err := os.WriteFile(filepath.Join(anchorDir, "loom-slack-gateway"), []byte("tampered-wrapper"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readMigrationGatewayAnchorEvidence(anchorDir, filepath.Join(anchorDir, "loom-slack-gateway")); err == nil {
+		t.Fatal("rollback anchor digest drift was accepted")
 	}
 }
 

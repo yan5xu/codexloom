@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/yan5xu/codex-loom/internal/buildinfo"
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/feishugw"
@@ -24,7 +25,12 @@ func main() {
 	appID := flag.String("app-id", os.Getenv("FEISHU_APP_ID"), "Feishu App ID")
 	credentialRef := flag.String("credential-ref", os.Getenv("CODEX_LOOM_CREDENTIAL_REF"), "opaque credential reference")
 	stateFile := flag.String("state-file", "", "gateway state file")
+	generation := flag.String("generation", envFirst("CODEX_LOOM_GATEWAY_GENERATION"), "non-secret managed gateway generation")
 	flag.Parse()
+	evidence, err := buildinfo.CurrentExecutableEvidence()
+	if err != nil {
+		log.Fatalf("observe Feishu gateway executable: %v", err)
+	}
 
 	secret := strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET"))
 	if secret == "" && strings.TrimSpace(*appID) != "" {
@@ -32,7 +38,6 @@ func main() {
 			*credentialRef = "keychain:" + feishu.CredentialService(*appID)
 		}
 		var credentials *credentialstore.Store
-		var err error
 		if strings.HasPrefix(strings.TrimSpace(*credentialRef), credentialstore.ManagedReferencePrefix) {
 			credentials, err = credentialstore.Open(dataDir())
 			if err != nil {
@@ -50,7 +55,9 @@ func main() {
 	gateway, err := feishugw.New(feishugw.Config{
 		HubURL: *hubURL, ConnectionID: *connectionID, AddressID: *addressID,
 		AppID: *appID, AppSecret: secret, ConnectorToken: os.Getenv("CODEX_LOOM_CONNECTOR_TOKEN"),
-		StateFile: *stateFile,
+		StateFile:         *stateFile,
+		GatewayGeneration: *generation, GatewayBuild: evidence.Build,
+		GatewayExecutableSHA256: evidence.SHA256,
 	})
 	if err != nil {
 		log.Fatal(err)

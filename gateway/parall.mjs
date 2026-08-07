@@ -31,6 +31,9 @@ const config = {
   pollOnly: args['poll-only'] === 'true',
   pollInbound: args['poll-inbound'] === 'true',
   includeReceived: args['include-received'] === 'true',
+  gatewayGeneration: args['gateway-generation'] || '',
+  gatewayBuild: args['gateway-build'] || '',
+  gatewayExecutableSha256: args['gateway-executable-sha256'] || '',
 };
 credential.apiURL = '';
 credential.apiKey = '';
@@ -438,6 +441,9 @@ async function runHeartbeatLoop() {
           'proactive_send',
           'provider_native_read',
         ],
+        gatewayGeneration: config.gatewayGeneration,
+        gatewayBuild: config.gatewayBuild,
+        gatewayExecutableSha256: config.gatewayExecutableSha256,
       },
     }).catch((error) => console.error(`[hub] heartbeat: ${errorText(error)}`));
     await delay(10000, controller.signal);

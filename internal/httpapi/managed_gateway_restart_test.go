@@ -48,12 +48,15 @@ func TestRestartManagedGatewaysRestartsOnlyEnabledSupportedConnections(t *testin
 
 	previousRestart := restartManagedConnectorService
 	previousPreflight := preflightManagedConnectorCredential
+	previousProcessPreflight := preflightManagedConnectorProcess
 	defer func() {
 		restartManagedConnectorService = previousRestart
 		preflightManagedConnectorCredential = previousPreflight
+		preflightManagedConnectorProcess = previousProcessPreflight
 	}()
 	calls := []string{}
 	preflightManagedConnectorCredential = func(_ *Server, _ hub.PlatformConnection) error { return nil }
+	preflightManagedConnectorProcess = func(_ *Server, _ hub.PlatformConnection) error { return nil }
 	restartManagedConnectorService = func(provider, connectionID string) (bool, error) {
 		calls = append(calls, fmt.Sprintf("%s:%s", provider, connectionID))
 		return true, nil
@@ -83,9 +86,11 @@ func TestRestartManagedGatewaysLeavesLegacyKeychainGatewayRunning(t *testing.T) 
 	}
 	previousRestart := restartManagedConnectorService
 	previousPreflight := preflightManagedConnectorCredential
+	previousProcessPreflight := preflightManagedConnectorProcess
 	defer func() {
 		restartManagedConnectorService = previousRestart
 		preflightManagedConnectorCredential = previousPreflight
+		preflightManagedConnectorProcess = previousProcessPreflight
 	}()
 	restartManagedConnectorService = func(string, string) (bool, error) {
 		t.Fatal("legacy Keychain gateway was restarted")
@@ -93,6 +98,10 @@ func TestRestartManagedGatewaysLeavesLegacyKeychainGatewayRunning(t *testing.T) 
 	}
 	preflightManagedConnectorCredential = func(_ *Server, _ hub.PlatformConnection) error {
 		t.Fatal("legacy Keychain gateway entered managed credential preflight")
+		return nil
+	}
+	preflightManagedConnectorProcess = func(_ *Server, _ hub.PlatformConnection) error {
+		t.Fatal("legacy Keychain gateway entered process preflight")
 		return nil
 	}
 	New(h, st, nil).RestartManagedGateways()
@@ -238,7 +247,104 @@ func TestDarwinManagedGatewayRestartDoesNotRetryPermanentBootstrapFailure(t *tes
 	if err == nil || restarted {
 		t.Fatalf("restart = %v, %v; want permanent bootstrap failure", restarted, err)
 	}
-	if bootstrapAttempts != 1 {
-		t.Fatalf("bootstrap attempts = %d, want 1", bootstrapAttempts)
+	if bootstrapAttempts != 2 {
+		t.Fatalf("bootstrap attempts = %d, want replacement plus recovery", bootstrapAttempts)
+	}
+}
+
+func TestDarwinManagedGatewayRestartRecoversRegistrationAfterKickstartFailure(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("launchd behavior is macOS-specific")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	label := "com.codexloom.parall.conn_recover"
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := runManagedServiceCommand
+	defer func() { runManagedServiceCommand = previous }()
+	kickstarts := 0
+	runManagedServiceCommand = func(_ string, arguments ...string) ([]byte, error) {
+		if len(arguments) > 0 && arguments[0] == "kickstart" {
+			kickstarts++
+			if kickstarts == 1 {
+				return []byte("replacement failed"), errors.New("exit status 1")
+			}
+		}
+		return nil, nil
+	}
+	restarted, err := restartManagedGatewayService("parall", "conn_recover")
+	var failure *managedGatewayRestartFailure
+	if restarted || !errors.As(err, &failure) || !failure.Recovered || kickstarts != 2 {
+		t.Fatalf("restart = %v, err=%v, failure=%#v, kickstarts=%d", restarted, err, failure, kickstarts)
+	}
+}
+
+func TestRestartManagedGatewaysPersistsManualRecoveryWhenRegistrationCannotRecover(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hub.New(st)
+	defer h.Shutdown()
+	credentials, err := h.CredentialStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, _, err := credentials.PutBound("restart-manual/lark", credentialstore.Payload{
+		Provider: "lark", Kind: "test", Values: map[string]string{"value": randomTestCredential(t)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := h.CreateConnection(hub.ConnectionParams{Provider: "lark", CredentialRef: reference})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousRestart := restartManagedConnectorService
+	previousCredential := preflightManagedConnectorCredential
+	previousProcess := preflightManagedConnectorProcess
+	defer func() {
+		restartManagedConnectorService = previousRestart
+		preflightManagedConnectorCredential = previousCredential
+		preflightManagedConnectorProcess = previousProcess
+	}()
+	preflightManagedConnectorCredential = func(*Server, hub.PlatformConnection) error { return nil }
+	preflightManagedConnectorProcess = func(*Server, hub.PlatformConnection) error { return nil }
+	restartManagedConnectorService = func(string, string) (bool, error) {
+		return false, &managedGatewayRestartFailure{Stage: "test", Cause: errors.New("replacement and recovery failed")}
+	}
+	New(h, st, nil).RestartManagedGateways()
+	var current hub.PlatformConnection
+	for _, candidate := range h.ListConnections() {
+		if candidate.ID == connection.ID {
+			current = candidate
+		}
+	}
+	if current.Status != "disconnected" || !strings.Contains(current.LastError, "manual_recovery_required") {
+		t.Fatalf("manual recovery state = %#v", current)
+	}
+	h.Shutdown()
+	reopened, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Shutdown()
+	found := false
+	for _, candidate := range reopened.ListConnections() {
+		if candidate.ID == connection.ID {
+			found = true
+			if candidate.Status != "disconnected" || !strings.Contains(candidate.LastError, "manual_recovery_required") {
+				t.Fatalf("reopened manual recovery state = %#v", candidate)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("manual recovery connection was not durable across reopen")
 	}
 }

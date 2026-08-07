@@ -31,6 +31,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"connections": s.hub.ListConnections()})
 	})
 	mux.HandleFunc("GET /api/integrations/credentials/preflight", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		items, err := s.preflightCredentialMigrations(r.Context(), r.URL.Query().Get("connectionId"))
 		if err != nil {
 			writeErr(w, err)
@@ -42,6 +45,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		})
 	})
 	mux.HandleFunc("POST /api/integrations/connections/{id}/credential-migration", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body credentialMigrationRequest
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -55,6 +61,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("GET /api/integrations/credential-migrations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		receipt, err := s.hub.GetCredentialMigration(r.PathValue("id"))
 		if err != nil {
 			writeErr(w, err)
@@ -63,6 +72,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, credentialMigrationReceiptView(receipt))
 	})
 	mux.HandleFunc("POST /api/integrations/credential-migrations/{id}/rollback", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body credentialMigrationRequest
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -76,6 +88,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("POST /api/integrations/providers/github/token", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body githubTokenParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -89,6 +104,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"connection": connection, "login": login})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/github/credential", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body githubCredentialParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -102,6 +120,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"connection": connection, "login": login})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/github/device", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body githubDeviceParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -115,6 +136,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 201, map[string]any{"device": flow})
 	})
 	mux.HandleFunc("GET /api/integrations/providers/github/device/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		flow, err := s.pollGitHubDevice(r.Context(), r.PathValue("id"))
 		if err != nil {
 			writeErr(w, err)
@@ -126,6 +150,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discovery": s.discoverLark(r.Context(), r.URL.Query().Get("appId"))})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/lark/credentials", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body larkCredentialParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -139,6 +166,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discovery": discovery})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/lark/setup", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body larkSetupParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -155,6 +185,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discovery": s.discoverSlack(r.Context(), r.URL.Query().Get("connectionId"), r.URL.Query().Get("appId"))})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/slack/credentials", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body slackCredentialParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -168,6 +201,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discovery": discovery})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/slack/setup", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body slackSetupParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -184,6 +220,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discovery": s.discoverParall(r.Context(), r.URL.Query().Get("connectionId"), r.URL.Query().Get("orgId"), r.URL.Query().Get("agentId"))})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/parall/credentials", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body parallCredentialParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -197,6 +236,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discovery": discovery})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/parall/agent-credentials", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body parallAgentCredentialParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -210,6 +252,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"discovery": discovery})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/parall/import", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body parallImportParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -223,6 +268,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("POST /api/integrations/providers/parall/setup", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body parallSetupParams
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, err)
@@ -236,6 +284,9 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("POST /api/integrations/providers/parall/gateway", func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowCredentialOperatorRequest(w, r) {
+			return
+		}
 		var body struct {
 			ConnectionID string `json:"connectionId"`
 		}

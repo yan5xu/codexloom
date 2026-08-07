@@ -44,6 +44,13 @@ func TestBackupStatusReportsCredentialExclusion(t *testing.T) {
 	}
 }
 
+func TestBackupStatusDoesNotPromoteUnverifiedArchive(t *testing.T) {
+	status := backupStatus([]backup.Snapshot{{BackupStatus: "legacy_unverified"}}, backup.DefaultRetentionPolicy(), t.TempDir())
+	if status["backupStatus"] != "unknown_unverified" || status["runnableRestore"] != false {
+		t.Fatalf("backup status = %#v", status)
+	}
+}
+
 func clearBackupPolicyEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{

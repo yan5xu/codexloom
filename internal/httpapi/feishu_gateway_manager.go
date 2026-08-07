@@ -46,6 +46,9 @@ func (s *Server) installFeishuGatewayMode(connection hub.PlatformConnection, add
 		binary, "--hub", hubURL, "--connection", connection.ID,
 		"--address", address.ID, "--app-id", appID, "--credential-ref", connection.CredentialRef,
 	}
+	if connection.GatewayGeneration != "" {
+		arguments = append(arguments, "--generation", connection.GatewayGeneration)
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return s.installFeishuLaunchAgent(connection.ID, arguments, logPath, retireLegacy)

@@ -3,6 +3,7 @@ package hub
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
@@ -96,6 +97,92 @@ func TestConnectionAcceptsOnlyExistingProviderMatchedManagedReference(t *testing
 	}
 	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{CredentialRef: "managed:../../outside"}); err == nil {
 		t.Fatal("path-like managed credential reference was accepted")
+	}
+}
+
+func TestConnectionControlSnapshotIgnoresHeartbeatButDetectsIdentityDrift(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", AccountRef: "app-a", ScopeRef: "scope-a", CredentialRef: "keychain:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := h.SnapshotConnectionControl(connection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{Status: "connected", Cursor: "cursor-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.MatchConnectionControl(snapshot); err != nil {
+		t.Fatalf("heartbeat invalidated control snapshot: %v", err)
+	}
+	disabled := false
+	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.MatchConnectionControl(snapshot); err == nil {
+		t.Fatal("enabled-state drift matched the frozen control snapshot")
+	}
+	enabled := true
+	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{Enabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UpdateConnection(connection.ID, ConnectionParams{AccountRef: "app-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.MatchConnectionControl(snapshot); err == nil {
+		t.Fatal("identity drift matched the frozen control snapshot")
+	}
+}
+
+func TestConnectionHeartbeatPersistsAndClearsOptionalGatewayEvidence(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark", CredentialRef: "keychain:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("a", 64)
+	observed, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{
+		Status: "connected", GatewayGeneration: "ggen_test", GatewayBuild: "build-test",
+		GatewayExecutableSHA256: digest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.GatewayGeneration != "ggen_test" || observed.GatewayBuild != "build-test" || observed.GatewayExecutableSHA256 != digest {
+		t.Fatalf("observed gateway evidence = %#v", observed)
+	}
+	legacy, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{Status: "connected"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.GatewayGeneration != "" || legacy.GatewayBuild != "" || legacy.GatewayExecutableSHA256 != "" {
+		t.Fatalf("legacy heartbeat retained stale evidence = %#v", legacy)
+	}
+	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{GatewayExecutableSHA256: "BAD"}); err == nil {
+		t.Fatal("invalid gateway digest accepted")
+	}
+	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{GatewayBuild: "unknown"}); err == nil {
+		t.Fatal("placeholder gateway build accepted")
+	}
+	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{GatewayGeneration: "bad\ngeneration"}); err == nil {
+		t.Fatal("control character in gateway generation accepted")
 	}
 }
 

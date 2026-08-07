@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/rand"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -73,6 +74,7 @@ func TestCreateUsesCodexLoomNameAndLayout(t *testing.T) {
 		DataDir:          dataDir,
 		CodexSessionsDir: filepath.Join(t.TempDir(), "sessions"),
 		Reason:           "rename-test",
+		Build:            "accepted-build",
 		Agents:           []AgentRef{{ID: "agent-1", Name: "alpha", ThreadID: "thread-1"}},
 	})
 	if err != nil {
@@ -151,6 +153,16 @@ func TestCreateUsesCodexLoomNameAndLayout(t *testing.T) {
 	if !manifestReportsExcludedCredentials {
 		t.Fatal("snapshot manifest did not report that managed credentials were excluded")
 	}
+	verification := Verify(snapshot.Path)
+	if verification.Status != "credentials_excluded" || verification.ManifestVersion != CurrentManifestVersion {
+		t.Fatalf("snapshot verification = %#v", verification)
+	}
+	if err := verification.ValidateRollbackFloor(CurrentManifestVersion, snapshot.Build); err != nil {
+		t.Fatalf("rollback floor rejected current snapshot: %v", err)
+	}
+	if err := verification.ValidateRollbackFloor(CurrentManifestVersion, ""); err == nil {
+		t.Fatal("rollback floor accepted an unspecified build")
+	}
 }
 
 func TestListIncludesLegacySnapshots(t *testing.T) {
@@ -174,6 +186,122 @@ func TestListIncludesLegacySnapshots(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Fatalf("List() returned %d snapshots, want 2", len(items))
+	}
+	for _, item := range items {
+		if item.BackupStatus != "corrupt_unverified" || item.RunnableRestore {
+			t.Fatalf("opaque legacy file was presented as verified: %#v", item)
+		}
+	}
+}
+
+func TestVerifyClassifiesLegacyAndCorruptSnapshotsWithoutTrustingFilename(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "codex-loom-20260101T000000Z-legacy.tar.gz")
+	writeSnapshotFixture(t, legacyPath, map[string]any{
+		"version": 2, "excluded": []string{"codex-loom/credentials/** (legacy prose)"},
+	}, nil)
+	legacy := Verify(legacyPath)
+	if legacy.Status != "legacy_unverified" || legacy.RunnableRestore {
+		t.Fatalf("legacy verification = %#v", legacy)
+	}
+	if err := legacy.ValidateRollbackFloor(CurrentManifestVersion, ""); err == nil {
+		t.Fatal("legacy snapshot satisfied managed credential rollback floor")
+	}
+
+	corruptPath := filepath.Join(dir, "codex-loom-20260102T000000Z-corrupt.tar.gz")
+	if err := os.WriteFile(corruptPath, []byte("not an archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if corrupt := Verify(corruptPath); corrupt.Status != "corrupt_unverified" || corrupt.RunnableRestore {
+		t.Fatalf("corrupt verification = %#v", corrupt)
+	}
+
+	unsafePath := filepath.Join(dir, "codex-loom-20260103T000000Z-unsafe.tar.gz")
+	writeSnapshotFixture(t, unsafePath, map[string]any{
+		"version": CurrentManifestVersion, "credentialsIncluded": false, "runnableRestore": false,
+		"backupStatus": "credentials_excluded", "build": "accepted-build",
+		"excluded": []string{"codex-loom/credentials/** (secret-bearing managed credentials; ordinary backup is not a complete runnable restore)"},
+	}, map[string][]byte{"codex-loom/credentials/leaked.json": []byte("secret")})
+	if unsafe := Verify(unsafePath); unsafe.Status != "corrupt_unverified" {
+		t.Fatalf("credential-bearing archive was verified: %#v", unsafe)
+	}
+
+	oversizedPath := filepath.Join(dir, "codex-loom-20260104T000000Z-oversized.tar.gz")
+	writeRawManifestFixture(t, oversizedPath, bytes.Repeat([]byte("x"), maxManifestBytes+1))
+	if oversized := Verify(oversizedPath); oversized.Status != "corrupt_unverified" {
+		t.Fatalf("oversized manifest was verified: %#v", oversized)
+	}
+
+	decodedLimitPath := filepath.Join(dir, "codex-loom-20260105T000000Z-decoded-limit.tar.gz")
+	writeSnapshotFixture(t, decodedLimitPath, map[string]any{
+		"version": CurrentManifestVersion, "credentialsIncluded": false, "runnableRestore": false,
+		"backupStatus": "credentials_excluded", "build": "accepted-build",
+		"excluded": []string{"codex-loom/credentials/** (secret-bearing managed credentials; ordinary backup is not a complete runnable restore)"},
+	}, map[string][]byte{"codex-loom/agents.json": bytes.Repeat([]byte("x"), 2048)})
+	if oversized := verify(decodedLimitPath, 1024); oversized.Status != "corrupt_unverified" {
+		t.Fatalf("decoded-size limit was not enforced: %#v", oversized)
+	}
+}
+
+func writeSnapshotFixture(t *testing.T, path string, manifestValue map[string]any, files map[string][]byte) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	for name, data := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := json.Marshal(manifestValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(data))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeRawManifestFixture(t *testing.T, path string, data []byte) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(data))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

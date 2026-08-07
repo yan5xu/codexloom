@@ -29,6 +29,9 @@ const config = {
   teamId: args['team-id'] || process.env.SLACK_TEAM_ID || '',
   stateFile: args['state-file'] || path.join(defaultDataDir(), 'gateway', `slack-${args.connection}.json`),
   socketEnabled,
+  gatewayGeneration: args['gateway-generation'] || '',
+  gatewayBuild: args['gateway-build'] || '',
+  gatewayExecutableSha256: args['gateway-executable-sha256'] || '',
 };
 credential.appToken = '';
 credential.botToken = '';
@@ -381,6 +384,9 @@ async function runHeartbeatLoop() {
           'proactive_send',
         ],
         error: healthy ? '' : lastSocketError,
+        gatewayGeneration: config.gatewayGeneration,
+        gatewayBuild: config.gatewayBuild,
+        gatewayExecutableSha256: config.gatewayExecutableSha256,
       },
     }).catch((error) => console.error(`[hub] heartbeat: ${errorText(error)}`));
     await delay(10000);

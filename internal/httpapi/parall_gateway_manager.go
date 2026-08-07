@@ -59,6 +59,9 @@ func (s *Server) installParallGatewayMode(connection hub.PlatformConnection, add
 		"--org-id", orgID, "--agent-id", agentID, "--credential-ref", connection.CredentialRef,
 		"--node", node, "--script", script,
 	}
+	if connection.GatewayGeneration != "" {
+		arguments = append(arguments, "--generation", connection.GatewayGeneration)
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return s.installParallLaunchAgent(connection.ID, arguments, logPath, retireLegacy)

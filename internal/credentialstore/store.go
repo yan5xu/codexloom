@@ -117,10 +117,18 @@ func Open(dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, storeError("open", "", "data directory path is invalid", err)
 	}
-	if err := validateDataDirectory(abs); err != nil {
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, storeError("open", "", "data directory ancestry could not be resolved", errors.Join(ErrUnsafe, err))
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return nil, storeError("open", "", "resolved data directory path is invalid", errors.Join(ErrUnsafe, err))
+	}
+	if err := validateDataDirectory(resolved); err != nil {
 		return nil, storeError("open", "", "data directory ownership or path is unsafe", errors.Join(ErrUnsafe, err))
 	}
-	inside, err := insideSourceRepository(abs)
+	inside, err := insideSourceRepository(resolved)
 	if err != nil {
 		return nil, storeError("open", "", "data directory trust could not be verified", errors.Join(ErrUnsafe, err))
 	}
@@ -128,7 +136,7 @@ func Open(dataDir string) (*Store, error) {
 		return nil, storeError("open", "", "credentials cannot be stored inside a source repository", ErrUnsafe)
 	}
 
-	root := filepath.Join(abs, DirectoryName)
+	root := filepath.Join(resolved, DirectoryName)
 	if err := createOrValidatePrivateDirectory(root); err != nil {
 		return nil, storeError("open", "", "credential directory is not owner-only", errors.Join(ErrUnsafe, err))
 	}

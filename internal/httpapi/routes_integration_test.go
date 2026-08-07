@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -97,6 +99,47 @@ func TestAddressLifecycleAndTransferAPIReturnManagedReceipts(t *testing.T) {
 	}
 }
 
+func TestHeartbeatWireCarriesOptionalGatewayProcessEvidence(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	connection, err := h.CreateConnection(hub.ConnectionParams{Provider: "lark", CredentialRef: "keychain:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(h, st, fstest.MapFS{"index.html": {Data: []byte("app")}}).Handler()
+	digest := strings.Repeat("c", 64)
+	body, err := json.Marshal(map[string]any{
+		"status": "connected", "gatewayGeneration": "ggen_wire", "gatewayBuild": "build-wire",
+		"gatewayExecutableSha256": digest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/integrations/connections/"+connection.ID+"/heartbeat", bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:12345"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("heartbeat = %d: %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Connection hub.PlatformConnection `json:"connection"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Connection.GatewayGeneration != "ggen_wire" || result.Connection.GatewayBuild != "build-wire" || result.Connection.GatewayExecutableSHA256 != digest {
+		t.Fatalf("heartbeat evidence = %#v", result.Connection)
+	}
+}
+
 func integrationAPIRequest(t *testing.T, handler http.Handler, method, path string, body any, wantStatus int) map[string]any {
 	t.Helper()
 	var encoded bytes.Buffer
@@ -107,6 +150,9 @@ func integrationAPIRequest(t *testing.T, handler http.Handler, method, path stri
 	}
 	request := httptest.NewRequest(method, path, &encoded)
 	request.Header.Set("Content-Type", "application/json")
+	if token := os.Getenv("CODEX_LOOM_ADMIN_TOKEN"); token != "" {
+		request.Header.Set("X-Codex-Loom-Admin-Token", token)
+	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != wantStatus {

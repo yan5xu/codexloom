@@ -10,26 +10,30 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yan5xu/codex-loom/internal/buildinfo"
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 )
 
 type PlatformConnection struct {
-	ID              string   `json:"id"`
-	Provider        string   `json:"provider"`
-	AccountRef      string   `json:"accountRef,omitempty"`
-	ScopeRef        string   `json:"scopeRef,omitempty"`
-	CredentialRef   string   `json:"credentialRef,omitempty"`
-	Status          string   `json:"status"`
-	Capabilities    []string `json:"capabilities,omitempty"`
-	Cursor          string   `json:"cursor,omitempty"`
-	LastEventAt     string   `json:"lastEventAt,omitempty"`
-	LastHeartbeatAt string   `json:"lastHeartbeatAt,omitempty"`
-	LastError       string   `json:"lastError,omitempty"`
-	Enabled         bool     `json:"enabled"`
-	SupersededBy    string   `json:"supersededBy,omitempty"`
-	ArchivedAt      string   `json:"archivedAt,omitempty"`
-	CreatedAt       string   `json:"createdAt"`
-	UpdatedAt       string   `json:"updatedAt"`
+	ID                      string   `json:"id"`
+	Provider                string   `json:"provider"`
+	AccountRef              string   `json:"accountRef,omitempty"`
+	ScopeRef                string   `json:"scopeRef,omitempty"`
+	CredentialRef           string   `json:"credentialRef,omitempty"`
+	Status                  string   `json:"status"`
+	Capabilities            []string `json:"capabilities,omitempty"`
+	Cursor                  string   `json:"cursor,omitempty"`
+	LastEventAt             string   `json:"lastEventAt,omitempty"`
+	LastHeartbeatAt         string   `json:"lastHeartbeatAt,omitempty"`
+	LastError               string   `json:"lastError,omitempty"`
+	GatewayGeneration       string   `json:"gatewayGeneration,omitempty"`
+	GatewayBuild            string   `json:"gatewayBuild,omitempty"`
+	GatewayExecutableSHA256 string   `json:"gatewayExecutableSha256,omitempty"`
+	Enabled                 bool     `json:"enabled"`
+	SupersededBy            string   `json:"supersededBy,omitempty"`
+	ArchivedAt              string   `json:"archivedAt,omitempty"`
+	CreatedAt               string   `json:"createdAt"`
+	UpdatedAt               string   `json:"updatedAt"`
 }
 
 var loomCLIPath = resolveLoomCLIPath()
@@ -373,10 +377,27 @@ type InboxActionParams struct {
 }
 
 type ConnectionHeartbeatParams struct {
-	Status       string   `json:"status"`
-	Cursor       string   `json:"cursor"`
-	Capabilities []string `json:"capabilities"`
-	Error        string   `json:"error"`
+	Status                  string   `json:"status"`
+	Cursor                  string   `json:"cursor"`
+	Capabilities            []string `json:"capabilities"`
+	Error                   string   `json:"error"`
+	GatewayGeneration       string   `json:"gatewayGeneration"`
+	GatewayBuild            string   `json:"gatewayBuild"`
+	GatewayExecutableSHA256 string   `json:"gatewayExecutableSha256"`
+}
+
+// ConnectionControlSnapshot freezes the non-secret Connection fields that
+// determine credential binding. It is an internal concurrency primitive; it is
+// deliberately not part of the HTTP representation.
+type ConnectionControlSnapshot struct {
+	ID            string
+	Provider      string
+	AccountRef    string
+	ScopeRef      string
+	CredentialRef string
+	Enabled       bool
+	SupersededBy  string
+	ArchivedAt    string
 }
 
 type OutboxResultParams struct {
@@ -1178,6 +1199,15 @@ func credentialProviderMatches(connectionProvider, credentialProvider string) bo
 }
 
 func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (PlatformConnection, error) {
+	generation := strings.TrimSpace(p.GatewayGeneration)
+	build := strings.TrimSpace(p.GatewayBuild)
+	digest := strings.TrimSpace(p.GatewayExecutableSHA256)
+	if !validGatewayGeneration(generation) || len(build) > 128 || (build != "" && !buildinfo.ValidBuildIdentity(build)) {
+		return PlatformConnection{}, errf(400, "invalid gateway process evidence")
+	}
+	if digest != "" && !buildinfo.ValidExecutableSHA256(digest) {
+		return PlatformConnection{}, errf(400, "invalid gateway executable digest")
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[id]
@@ -1207,6 +1237,11 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 		next.Capabilities = normalizeCapabilities(p.Capabilities)
 	}
 	next.LastError = strings.TrimSpace(p.Error)
+	// A fresh legacy heartbeat clears prior optional process evidence rather
+	// than allowing an old generation or executable digest to look current.
+	next.GatewayGeneration = generation
+	next.GatewayBuild = build
+	next.GatewayExecutableSHA256 = digest
 	h.connections[next.ID] = &next
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections[next.ID] = connection
@@ -1216,12 +1251,69 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 	return next, nil
 }
 
+func validGatewayGeneration(value string) bool {
+	if len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x21 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// SnapshotConnectionControl returns the current credential-binding identity.
+// Provider-specific migration code can persist this snapshot before side
+// effects and compare it again under the Hub lock at each control boundary.
+func (h *Hub) SnapshotConnectionControl(id string) (ConnectionControlSnapshot, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(id)]
+	if connection == nil {
+		return ConnectionControlSnapshot{}, errf(404, "connection not found: %s", id)
+	}
+	return connectionControlSnapshot(*connection), nil
+}
+
+// MatchConnectionControl proves that credential-binding identity has not
+// drifted. Heartbeat/status/cursor updates intentionally do not invalidate it.
+func (h *Hub) MatchConnectionControl(expected ConnectionControlSnapshot) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	connection := h.connections[strings.TrimSpace(expected.ID)]
+	if connection == nil {
+		return errf(404, "connection not found: %s", expected.ID)
+	}
+	if current := connectionControlSnapshot(*connection); current != expected {
+		return errf(409, "credential migration connection identity changed")
+	}
+	return nil
+}
+
+func connectionControlSnapshot(connection PlatformConnection) ConnectionControlSnapshot {
+	return ConnectionControlSnapshot{
+		ID: connection.ID, Provider: connection.Provider, AccountRef: connection.AccountRef,
+		ScopeRef: connection.ScopeRef, CredentialRef: connection.CredentialRef, Enabled: connection.Enabled,
+		SupersededBy: connection.SupersededBy, ArchivedAt: connection.ArchivedAt,
+	}
+}
+
 func (h *Hub) MarkConnectionDisconnected(id, reason string) {
+	if err := h.MarkConnectionManualRecovery(id, reason); err != nil {
+		log.Printf("[codex-loom] persist disconnected connection %s: %v", id, err)
+	}
+}
+
+// MarkConnectionManualRecovery persists a process-lifecycle failure on the
+// existing Connection instead of leaving an automatic restart failure only in
+// transient logs.
+func (h *Hub) MarkConnectionManualRecovery(id, reason string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[id]
 	if connection == nil {
-		return
+		return errf(404, "connection not found: %s", id)
 	}
 	previous := *connection
 	connection.Status = "disconnected"
@@ -1229,10 +1321,10 @@ func (h *Hub) MarkConnectionDisconnected(id, reason string) {
 	connection.UpdatedAt = now()
 	if err := h.persistIntegrationsLocked(); err != nil {
 		*connection = previous
-		log.Printf("[codex-loom] persist disconnected connection %s: %v", id, err)
-		return
+		return errf(500, "persist connection manual recovery: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": *connection})
+	return nil
 }
 
 func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {

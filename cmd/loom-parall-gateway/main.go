@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/yan5xu/codex-loom/internal/buildinfo"
 	"github.com/yan5xu/codex-loom/internal/credentialpipe"
 	"github.com/yan5xu/codex-loom/internal/credentialstore"
 	"github.com/yan5xu/codex-loom/internal/parall"
@@ -28,13 +29,17 @@ func main() {
 	node := flag.String("node", "", "Node.js executable")
 	script := flag.String("script", "", "Parall gateway script")
 	stateFile := flag.String("state-file", "", "gateway state file")
+	generation := flag.String("generation", envFirst("CODEX_LOOM_GATEWAY_GENERATION"), "non-secret managed gateway generation")
 	flag.Parse()
+	evidence, err := buildinfo.CurrentExecutableEvidence()
+	if err != nil {
+		fatalf("observe Parall gateway executable: %v", err)
+	}
 
 	if strings.TrimSpace(*credentialRef) == "" {
 		*credentialRef = "keychain:" + parall.AgentCredentialService(*orgID, *agentID)
 	}
 	var store *credentialstore.Store
-	var err error
 	if strings.HasPrefix(strings.TrimSpace(*credentialRef), credentialstore.ManagedReferencePrefix) {
 		store, err = credentialstore.Open(dataDir())
 		if err != nil {
@@ -63,6 +68,8 @@ func main() {
 	arguments := []string{
 		*script, "--hub", *hubURL, "--connection", *connectionID,
 		"--address", *addressID, "--agent-id", *agentID,
+		"--gateway-generation", *generation, "--gateway-build", evidence.Build,
+		"--gateway-executable-sha256", evidence.SHA256,
 	}
 	if *stateFile != "" {
 		arguments = append(arguments, "--state-file", *stateFile)

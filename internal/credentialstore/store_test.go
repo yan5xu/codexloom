@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -202,6 +203,35 @@ func TestStoreRejectsRepositoryDataDirectory(t *testing.T) {
 	}
 	if _, err := Open(dataDir); err == nil || !errors.Is(err, ErrUnsafe) {
 		t.Fatal("repository data directory was not rejected")
+	}
+}
+
+func TestStoreRejectsSymlinkedAncestorIntoRepositorySubdirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires environment-specific Windows privileges")
+	}
+	repository := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repository, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repositorySubdir := filepath.Join(repository, "runtime")
+	if err := os.Mkdir(repositorySubdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	linkedAncestor := filepath.Join(outside, "data-link")
+	if err := os.Symlink(repositorySubdir, linkedAncestor); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(linkedAncestor, "state")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dataDir); err == nil || !errors.Is(err, ErrUnsafe) {
+		t.Fatalf("symlinked repository ancestry was accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, DirectoryName)); !os.IsNotExist(err) {
+		t.Fatalf("credential root was created inside repository: %v", err)
 	}
 }
 

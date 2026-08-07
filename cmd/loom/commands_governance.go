@@ -855,6 +855,8 @@ func cmdBackups(a args) {
 	}
 	if str(resp, "backupStatus") == "credentials_excluded" {
 		fmt.Println(dim("credentials excluded; ordinary backups are not complete runnable restores"))
+	} else if strings.Contains(str(resp, "backupStatus"), "unverified") {
+		fmt.Println(yellow("backup credential coverage is unknown; legacy or corrupt archives are not verified rollback anchors"))
 	}
 	backups, _ := resp["backups"].([]any)
 	if len(backups) == 0 {

@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/yan5xu/codex-loom/internal/backup"
@@ -547,7 +546,7 @@ func (s *Server) startReloader() (restartState, error) {
 	cmd := exec.Command(reloader, args...)
 	cmd.Env = os.Environ()
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureReloaderProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return restartState{}, &hub.HubError{Status: 500, Message: "start reloader: " + err.Error()}

@@ -47,7 +47,12 @@ func TestReadOnlyCanaryRejectsWritesAndExternalReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	reader, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	h, err := hub.OpenWithOptions(reader, hub.OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +88,12 @@ func TestModelProviderMutationsRequireLocalOrAdminRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	reader, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	h, err := hub.OpenWithOptions(reader, hub.OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}

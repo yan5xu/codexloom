@@ -80,11 +80,12 @@ type GatewayControl struct {
 }
 
 type GatewayProcessObservation struct {
-	ConnectionID string `json:"connectionId"`
-	Sequence     uint64 `json:"sequence"`
-	Status       string `json:"status"`
-	Error        string `json:"error,omitempty"`
-	ObservedAt   string `json:"observedAt"`
+	ConnectionID string   `json:"connectionId"`
+	Sequence     uint64   `json:"sequence"`
+	Status       string   `json:"status"`
+	Error        string   `json:"error,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	ObservedAt   string   `json:"observedAt"`
 }
 
 type GatewayControlUpdate struct {
@@ -115,6 +116,32 @@ type gatewayFoundationDocument struct {
 	MinimumWriter    int                   `json:"minimumWriter"`
 	GatewayLifecycle gatewayLifecycleState `json:"gatewayLifecycle"`
 }
+
+// GatewayFoundationCommitIndeterminateError means the persistence call failed
+// after entering an atomic-write boundary. Committed reports only whether an
+// immediate authoritative readback proved the exact requested document; the
+// caller still receives an error and the current Hub remains poisoned until a
+// fresh open/reconciliation establishes one authoritative generation.
+type GatewayFoundationCommitIndeterminateError struct {
+	Cause       error
+	ReadbackErr error
+	Committed   bool
+}
+
+func (e *GatewayFoundationCommitIndeterminateError) Error() string {
+	result := "gateway lifecycle commit is indeterminate"
+	if e.Committed {
+		result += " (authoritative readback contains the requested state)"
+	} else if e.ReadbackErr != nil {
+		result += ": readback failed: " + e.ReadbackErr.Error()
+	}
+	if e.Cause != nil {
+		result += ": " + e.Cause.Error()
+	}
+	return result
+}
+
+func (e *GatewayFoundationCommitIndeterminateError) Unwrap() error { return e.Cause }
 
 type gatewayMutationTicket struct {
 	preparedEpochs map[string]uint64
@@ -221,6 +248,9 @@ func gatewayConnectionIDSlicesEqual(left, right []string) bool {
 }
 
 func (h *Hub) requireGatewayControlsAbsentLocked(connectionIDs []string) error {
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return err
+	}
 	for _, connectionID := range normalizeGatewayConnectionIDs(connectionIDs) {
 		if h.gatewayLifecycle.Controls[connectionID] != nil {
 			return errf(409, "gateway lifecycle controls connection %s", connectionID)
@@ -251,6 +281,7 @@ func cloneGatewayLifecycleState(value gatewayLifecycleState) gatewayLifecycleSta
 			continue
 		}
 		copy := *observation
+		copy.Capabilities = append([]string(nil), observation.Capabilities...)
 		result.Observations[id] = &copy
 	}
 	return result
@@ -323,7 +354,8 @@ func (h *Hub) loadGatewayLifecycle() error {
 		}
 	}
 	for id, observation := range state.Observations {
-		if observation == nil || observation.ConnectionID != id || state.Controls[id] == nil || observation.Sequence == 0 || !validGatewayHealthStatus(observation.Status) {
+		if observation == nil || observation.ConnectionID != id || state.Controls[id] == nil || observation.Sequence == 0 || !validGatewayHealthStatus(observation.Status) ||
+			!gatewayStringSlicesEqual(observation.Capabilities, normalizeCapabilities(observation.Capabilities)) {
 			return fmt.Errorf("invalid gateway process observation %q", id)
 		}
 	}
@@ -336,18 +368,58 @@ func (h *Hub) saveGatewayLifecycleLocked(next gatewayLifecycleState) error {
 		SchemaVersion: store.RuntimeFoundationSchemaVersion, MinimumWriter: store.RuntimeWriterFloorR0,
 		GatewayLifecycle: next,
 	}
+	var err error
 	if h.saveRuntimeFoundation != nil {
-		if err := h.saveRuntimeFoundation(document); err != nil {
-			return err
-		}
-		h.gatewayFoundationPresent = true
-		return nil
+		err = h.saveRuntimeFoundation(document)
+	} else {
+		err = h.st.SaveRuntimeFoundation(document)
 	}
-	if err := h.st.SaveRuntimeFoundation(document); err != nil {
-		return err
+	if err != nil {
+		committed, readbackErr := h.gatewayFoundationReadbackEquals(document)
+		h.gatewayFoundationPoisoned = true
+		h.gatewayFoundationPoisonReason = "gateway lifecycle persistence outcome requires reopen/reconciliation"
+		if committed {
+			h.gatewayLifecycle = cloneGatewayLifecycleState(next)
+			h.gatewayFoundationPresent = true
+		}
+		return &GatewayFoundationCommitIndeterminateError{Cause: err, ReadbackErr: readbackErr, Committed: committed}
 	}
 	h.gatewayFoundationPresent = true
 	return nil
+}
+
+func (h *Hub) gatewayFoundationReadbackEquals(expected gatewayFoundationDocument) (bool, error) {
+	if err := h.st.ValidateWriterIdentity(); err != nil {
+		return false, err
+	}
+	var actual gatewayFoundationDocument
+	exists, err := h.st.LoadRuntimeFoundation(&actual)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	expectedJSON, err := json.Marshal(expected)
+	if err != nil {
+		return false, err
+	}
+	actualJSON, err := json.Marshal(actual)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(expectedJSON, actualJSON), nil
+}
+
+func (h *Hub) requireGatewayFoundationHealthyLocked() error {
+	if !h.gatewayFoundationPoisoned {
+		return nil
+	}
+	reason := strings.TrimSpace(h.gatewayFoundationPoisonReason)
+	if reason == "" {
+		reason = "gateway lifecycle foundation requires reopen/reconciliation"
+	}
+	return errf(503, "%s", reason)
 }
 
 func validGatewayDisposition(value GatewayDisposition) bool {
@@ -457,6 +529,9 @@ func gatewayStringSlicesEqual(left, right []string) bool {
 func (h *Hub) SnapshotGatewayBinding(connectionID string) (GatewayBindingSnapshot, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return GatewayBindingSnapshot{}, err
+	}
 	identity, err := h.gatewayBindingIdentityLocked(connectionID)
 	if err != nil {
 		return GatewayBindingSnapshot{}, err
@@ -471,6 +546,9 @@ func (h *Hub) SnapshotGatewayBinding(connectionID string) (GatewayBindingSnapsho
 func (h *Hub) MatchGatewayBinding(expected GatewayBindingSnapshot) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return err
+	}
 	identity, err := h.gatewayBindingIdentityLocked(expected.Binding.Connection.ID)
 	if err != nil {
 		return err
@@ -493,6 +571,9 @@ func (h *Hub) InitializeGatewayControl(connectionID string, disposition GatewayD
 	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return GatewayControl{}, err
+	}
 	connectionID = strings.TrimSpace(connectionID)
 	if h.gatewayLifecycle.Controls[connectionID] != nil {
 		return GatewayControl{}, errf(409, "gateway control already exists")
@@ -521,7 +602,7 @@ func (h *Hub) InitializeGatewayControl(connectionID string, disposition GatewayD
 		Error: connection.LastError, ObservedAt: observedAt,
 	}
 	if err := h.saveGatewayLifecycleLocked(next); err != nil {
-		return GatewayControl{}, errf(500, "persist gateway control: %s", err)
+		return GatewayControl{}, fmt.Errorf("persist gateway control: %w", err)
 	}
 	h.gatewayLifecycle = next
 	if h.applyGatewayHealthProjectionLocked(connectionID) {
@@ -533,21 +614,17 @@ func (h *Hub) InitializeGatewayControl(connectionID string, disposition GatewayD
 }
 
 func (h *Hub) CompareAndSwapGatewayControl(connectionID string, expectedEpoch uint64, update GatewayControlUpdate) (GatewayControl, error) {
-	return h.compareAndSwapGatewayControl(connectionID, expectedEpoch, update, false)
+	return h.compareAndSwapGatewayControl(connectionID, expectedEpoch, update)
 }
 
-// ClearGatewayManualDisposition is the sole R0 primitive that may release a
-// durable manual-recovery latch. R1 may invoke it only after its own exact
-// process-proof reconciliation; R0 deliberately performs no such effect.
-func (h *Hub) ClearGatewayManualDisposition(connectionID string, expectedEpoch uint64) (GatewayControl, error) {
-	return h.compareAndSwapGatewayControl(connectionID, expectedEpoch, GatewayControlUpdate{Disposition: GatewayDispositionStable}, true)
-}
-
-func (h *Hub) compareAndSwapGatewayControl(connectionID string, expectedEpoch uint64, update GatewayControlUpdate, allowManualClear bool) (GatewayControl, error) {
+func (h *Hub) compareAndSwapGatewayControl(connectionID string, expectedEpoch uint64, update GatewayControlUpdate) (GatewayControl, error) {
 	unlock := h.gatewayCoordinator.lock(connectionID)
 	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return GatewayControl{}, err
+	}
 	connectionID = strings.TrimSpace(connectionID)
 	current := h.gatewayLifecycle.Controls[connectionID]
 	if current == nil {
@@ -556,11 +633,8 @@ func (h *Hub) compareAndSwapGatewayControl(connectionID string, expectedEpoch ui
 	if current.Epoch != expectedEpoch {
 		return GatewayControl{}, errf(409, "gateway control epoch changed")
 	}
-	if current.Disposition == GatewayDispositionManualRecovery && update.Disposition != "" && update.Disposition != GatewayDispositionManualRecovery && !allowManualClear {
+	if current.Disposition == GatewayDispositionManualRecovery && update.Disposition != "" && update.Disposition != GatewayDispositionManualRecovery {
 		return GatewayControl{}, errf(409, "manual gateway recovery requires explicit reconciliation")
-	}
-	if allowManualClear && current.Disposition != GatewayDispositionManualRecovery {
-		return GatewayControl{}, errf(409, "gateway control is not awaiting manual recovery")
 	}
 	nextControl := *current
 	nextControl.Binding = cloneGatewayBindingIdentity(current.Binding)
@@ -574,6 +648,9 @@ func (h *Hub) compareAndSwapGatewayControl(connectionID string, expectedEpoch ui
 	if update.ActiveAttemptID != nil {
 		nextControl.ActiveAttemptID = strings.TrimSpace(*update.ActiveAttemptID)
 	}
+	if current.ActiveAttemptID != "" && nextControl.ActiveAttemptID != current.ActiveAttemptID {
+		return GatewayControl{}, errf(409, "active gateway attempt requires an exact accepted proof path")
+	}
 	if update.AnchorRef != nil {
 		nextControl.AnchorRef = strings.TrimSpace(*update.AnchorRef)
 	}
@@ -583,7 +660,7 @@ func (h *Hub) compareAndSwapGatewayControl(connectionID string, expectedEpoch ui
 	if nextControl.Disposition == GatewayDispositionStable && update.NeedsReconcile == nil {
 		nextControl.NeedsReconcile = false
 	}
-	if current.NeedsReconcile && !nextControl.NeedsReconcile && !allowManualClear {
+	if current.NeedsReconcile && !nextControl.NeedsReconcile {
 		return GatewayControl{}, errf(409, "gateway lifecycle reconciliation requires an explicit proof path")
 	}
 	binding, err := h.gatewayBindingIdentityLocked(connectionID)
@@ -596,7 +673,7 @@ func (h *Hub) compareAndSwapGatewayControl(connectionID string, expectedEpoch ui
 	next := cloneGatewayLifecycleState(h.gatewayLifecycle)
 	next.Controls[connectionID] = &nextControl
 	if err := h.saveGatewayLifecycleLocked(next); err != nil {
-		return GatewayControl{}, errf(500, "persist gateway control CAS: %s", err)
+		return GatewayControl{}, fmt.Errorf("persist gateway control CAS: %w", err)
 	}
 	h.gatewayLifecycle = next
 	if h.applyGatewayHealthProjectionLocked(connectionID) {
@@ -620,36 +697,60 @@ func (h *Hub) GatewayHealth(connectionID string) (GatewayHealthStatus, error) {
 func (h *Hub) reduceGatewayHealthLocked(connection PlatformConnection) GatewayHealthStatus {
 	result := GatewayHealthStatus{ConnectionID: connection.ID, Status: connection.Status, Error: connection.LastError}
 	control := h.gatewayLifecycle.Controls[connection.ID]
-	if control == nil {
+	if h.gatewayFoundationPoisoned {
+		if control != nil {
+			result.Disposition = control.Disposition
+			result.NeedsReconcile = control.NeedsReconcile
+			if observation := h.gatewayLifecycle.Observations[connection.ID]; observation != nil {
+				result.ObservationSeq = observation.Sequence
+			}
+		}
+		result.Status = "degraded"
+		result.Error = "gateway lifecycle foundation requires reopen/reconciliation"
 		return result
 	}
-	result.Disposition = control.Disposition
-	result.NeedsReconcile = control.NeedsReconcile
-	if observation := h.gatewayLifecycle.Observations[connection.ID]; observation != nil {
-		result.Status, result.Error, result.ObservationSeq = observation.Status, observation.Error, observation.Sequence
+	var observation *GatewayProcessObservation
+	if control != nil {
+		result.Disposition = control.Disposition
+		result.NeedsReconcile = control.NeedsReconcile
+		observation = h.gatewayLifecycle.Observations[connection.ID]
+		if observation != nil {
+			result.ObservationSeq = observation.Sequence
+		}
 	}
-	if control.NeedsReconcile {
+	if control != nil && control.NeedsReconcile {
 		result.Status = "degraded"
 		result.Error = "gateway lifecycle reconciliation required"
 		if control.Reason != "" {
 			result.Error = control.Reason
 		}
-	} else if control.Disposition == GatewayDispositionProvisioning {
-		result.Status = "connecting"
-		result.Error = control.Reason
-	} else if control.Disposition == GatewayDispositionManualRecovery {
+	} else if control != nil && control.Disposition == GatewayDispositionManualRecovery {
 		result.Status = "degraded"
 		result.Error = control.Reason
 		if result.Error == "" {
 			result.Error = "manual gateway recovery required"
 		}
+	} else if control != nil && control.ActiveAttemptID != "" {
+		result.Status = "connecting"
+		result.Error = "gateway lifecycle transition in progress"
+	} else if control != nil && control.Disposition == GatewayDispositionProvisioning {
+		result.Status = "connecting"
+		result.Error = control.Reason
+	} else if connection.ArchivedAt != "" || connection.SupersededBy != "" {
+		result.Status = "disconnected"
+		result.Error = "connection is archived or superseded"
+	} else if !connection.Enabled {
+		result.Status = "disconnected"
+		result.Error = "connection is disabled"
+	} else if observation != nil {
+		result.Status, result.Error = observation.Status, observation.Error
 	}
 	return result
 }
 
 func (h *Hub) applyGatewayHealthProjectionLocked(connectionID string) bool {
 	connection := h.connections[connectionID]
-	if connection == nil || h.gatewayLifecycle.Controls[connectionID] == nil {
+	if connection == nil {
 		return false
 	}
 	projection := h.reduceGatewayHealthLocked(*connection)
@@ -663,8 +764,16 @@ func (h *Hub) applyGatewayHealthProjectionLocked(connectionID string) bool {
 }
 
 func (h *Hub) recordGatewayObservationLocked(connectionID, status, detail, observedAt string) (bool, error) {
+	return h.recordGatewayObservationWithCapabilitiesLocked(connectionID, status, detail, observedAt, nil)
+}
+
+func (h *Hub) recordGatewayObservationWithCapabilitiesLocked(connectionID, status, detail, observedAt string, capabilities []string) (bool, error) {
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return h.gatewayLifecycle.Controls[connectionID] != nil, err
+	}
 	control := h.gatewayLifecycle.Controls[connectionID]
 	if control == nil {
+		h.applyGatewayHealthProjectionLocked(connectionID)
 		return false, nil
 	}
 	if !validGatewayHealthStatus(status) {
@@ -672,12 +781,17 @@ func (h *Hub) recordGatewayObservationLocked(connectionID, status, detail, obser
 	}
 	next := cloneGatewayLifecycleState(h.gatewayLifecycle)
 	sequence := uint64(1)
+	observedCapabilities := []string(nil)
 	if previous := next.Observations[connectionID]; previous != nil {
 		sequence = previous.Sequence + 1
+		observedCapabilities = append([]string(nil), previous.Capabilities...)
+	}
+	if capabilities != nil {
+		observedCapabilities = normalizeCapabilities(capabilities)
 	}
 	next.Observations[connectionID] = &GatewayProcessObservation{
 		ConnectionID: connectionID, Sequence: sequence, Status: status,
-		Error: strings.TrimSpace(detail), ObservedAt: observedAt,
+		Error: strings.TrimSpace(detail), Capabilities: observedCapabilities, ObservedAt: observedAt,
 	}
 	if err := h.saveGatewayLifecycleLocked(next); err != nil {
 		return true, err
@@ -690,6 +804,9 @@ func (h *Hub) recordGatewayObservationLocked(connectionID, status, detail, obser
 func (h *Hub) GatewayEligibleConnectionIDs() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.gatewayFoundationPoisoned {
+		return nil
+	}
 	result := []string{}
 	for id, control := range h.gatewayLifecycle.Controls {
 		connection := h.connections[id]
@@ -716,6 +833,9 @@ func gatewayBindingEligible(binding GatewayBindingIdentity) bool {
 }
 
 func (h *Hub) prepareGatewayMutationLocked(connectionIDs ...string) (*gatewayMutationTicket, error) {
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return nil, err
+	}
 	ids := normalizeGatewayConnectionIDs(connectionIDs)
 	next := cloneGatewayLifecycleState(h.gatewayLifecycle)
 	ticket := &gatewayMutationTicket{preparedEpochs: map[string]uint64{}}
@@ -740,7 +860,7 @@ func (h *Hub) prepareGatewayMutationLocked(connectionIDs ...string) (*gatewayMut
 		return ticket, nil
 	}
 	if err := h.saveGatewayLifecycleLocked(next); err != nil {
-		return nil, errf(500, "persist gateway mutation fence: %s", err)
+		return nil, fmt.Errorf("persist gateway mutation fence: %w", err)
 	}
 	h.gatewayLifecycle = next
 	for id := range ticket.preparedEpochs {
@@ -750,6 +870,9 @@ func (h *Hub) prepareGatewayMutationLocked(connectionIDs ...string) (*gatewayMut
 }
 
 func (h *Hub) finishGatewayMutationLocked(ticket *gatewayMutationTicket) error {
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return err
+	}
 	if ticket == nil || len(ticket.preparedEpochs) == 0 {
 		return nil
 	}
@@ -769,7 +892,7 @@ func (h *Hub) finishGatewayMutationLocked(ticket *gatewayMutationTicket) error {
 		control.UpdatedAt = now()
 	}
 	if err := h.saveGatewayLifecycleLocked(next); err != nil {
-		return errf(500, "persist gateway mutation completion: %s", err)
+		return fmt.Errorf("persist gateway mutation completion: %w", err)
 	}
 	h.gatewayLifecycle = next
 	for id := range ticket.preparedEpochs {

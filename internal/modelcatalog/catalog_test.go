@@ -63,6 +63,27 @@ func TestMaterializeWritesProtectedStableSnapshot(t *testing.T) {
 	}
 }
 
+func TestMaterializeRootWritesThroughOpenedDirectoryHandle(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	snapshot, err := MaterializeRoot(root, dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := root.ReadFile(filepath.Join("runtime", "model-catalog", ManagedVersion+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(contents)
+	if got := hex.EncodeToString(hash[:]); got != snapshot.SHA256 {
+		t.Fatalf("rooted sha256 = %s, want %s", got, snapshot.SHA256)
+	}
+}
+
 func TestOverrideCatalogIsReadOnlySource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	contents := []byte(`{"models":[{"slug":"custom-model","display_name":"Custom","supported_reasoning_levels":[],"visibility":"list","supported_in_api":true,"priority":1}]}`)

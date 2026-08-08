@@ -14,11 +14,31 @@ var processWriterLeases = struct {
 	held map[string]struct{}
 }{held: map[string]struct{}{}}
 
+func supportedLinuxLocalFilesystemType(value uint64) bool {
+	switch value {
+	case 0xEF53, // EXT2/3/4_SUPER_MAGIC
+		0x58465342, // XFS_SUPER_MAGIC
+		0x9123683E, // BTRFS_SUPER_MAGIC
+		0x01021994, // TMPFS_MAGIC
+		0x858458F6, // RAMFS_MAGIC
+		0x794C7630: // OVERLAYFS_SUPER_MAGIC
+		return true
+	default:
+		return false
+	}
+}
+
 type dataDirWriterLease struct {
-	canonical string
-	file      *os.File
-	once      sync.Once
-	err       error
+	requested       string
+	canonical       string
+	processKey      string
+	provisionalFile *os.File
+	file            *os.File
+	root            *os.File
+	rootAccess      *os.Root
+	rootInfo        os.FileInfo
+	once            sync.Once
+	err             error
 }
 
 func acquireDataDirWriterLease(dir string) (*dataDirWriterLease, error) {
@@ -43,19 +63,20 @@ func acquireDataDirWriterLease(dir string) (*dataDirWriterLease, error) {
 		return nil, fmt.Errorf("inspect data directory filesystem: %w", err)
 	}
 
+	processKey := "path:" + canonical
 	processWriterLeases.Lock()
-	if _, exists := processWriterLeases.held[canonical]; exists {
+	if _, exists := processWriterLeases.held[processKey]; exists {
 		processWriterLeases.Unlock()
 		return nil, fmt.Errorf("data directory already has a writable CodexLoom process: %s", canonical)
 	}
-	processWriterLeases.held[canonical] = struct{}{}
+	processWriterLeases.held[processKey] = struct{}{}
 	processWriterLeases.Unlock()
 
 	releaseProcess := true
 	defer func() {
 		if releaseProcess {
 			processWriterLeases.Lock()
-			delete(processWriterLeases.held, canonical)
+			delete(processWriterLeases.held, processKey)
 			processWriterLeases.Unlock()
 		}
 	}()
@@ -71,7 +92,119 @@ func acquireDataDirWriterLease(dir string) (*dataDirWriterLease, error) {
 		return nil, fmt.Errorf("data directory already has a writable CodexLoom process: %s: %w", canonical, err)
 	}
 	releaseProcess = false
-	return &dataDirWriterLease{canonical: canonical, file: file}, nil
+	return &dataDirWriterLease{requested: filepath.Clean(dir), canonical: canonical, processKey: processKey, provisionalFile: file}, nil
+}
+
+// stabilize replaces the caller-path bootstrap lease with an ownership key and
+// OS lock derived from the opened data directory itself. The root handle stays
+// open for the entire Store lifetime and every write revalidates that both the
+// canonical path and the original caller path still resolve to this identity.
+func (l *dataDirWriterLease) stabilize(dir string) error {
+	if l == nil {
+		return fmt.Errorf("data directory writer lease is unavailable")
+	}
+	canonical, err := canonicalDataDir(dir)
+	if err != nil {
+		return err
+	}
+	if err := verifyLocalLeasePath(canonical); err != nil {
+		return err
+	}
+	root, err := os.Open(canonical)
+	if err != nil {
+		return fmt.Errorf("open stable data directory handle: %w", err)
+	}
+	rootInfo, err := root.Stat()
+	if err != nil {
+		_ = root.Close()
+		return fmt.Errorf("inspect stable data directory handle: %w", err)
+	}
+	identity, err := stableFileIdentity(root, rootInfo)
+	if err != nil {
+		_ = root.Close()
+		return err
+	}
+	processKey := "fs:" + identity
+	processWriterLeases.Lock()
+	if _, exists := processWriterLeases.held[processKey]; exists {
+		processWriterLeases.Unlock()
+		_ = root.Close()
+		return fmt.Errorf("data directory already has a writable CodexLoom process: %s", canonical)
+	}
+	processWriterLeases.held[processKey] = struct{}{}
+	processWriterLeases.Unlock()
+	releaseIdentity := true
+	defer func() {
+		if releaseIdentity {
+			processWriterLeases.Lock()
+			delete(processWriterLeases.held, processKey)
+			processWriterLeases.Unlock()
+		}
+	}()
+
+	rootAccess, err := os.OpenRoot(canonical)
+	if err != nil {
+		_ = root.Close()
+		return fmt.Errorf("open stable data directory root: %w", err)
+	}
+	file, err := rootAccess.OpenFile(".codex-loom-writer.lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		_ = rootAccess.Close()
+		_ = root.Close()
+		return fmt.Errorf("open stable data directory writer lease: %w", err)
+	}
+	if err := lockWriterFile(file); err != nil {
+		_ = file.Close()
+		_ = rootAccess.Close()
+		_ = root.Close()
+		return fmt.Errorf("data directory already has a writable CodexLoom process: %s: %w", canonical, err)
+	}
+
+	if l.provisionalFile != nil {
+		_ = unlockWriterFile(l.provisionalFile)
+		_ = l.provisionalFile.Close()
+		l.provisionalFile = nil
+	}
+	processWriterLeases.Lock()
+	delete(processWriterLeases.held, l.processKey)
+	processWriterLeases.Unlock()
+	l.canonical = canonical
+	l.processKey = processKey
+	l.file = file
+	l.root = root
+	l.rootAccess = rootAccess
+	l.rootInfo = rootInfo
+	releaseIdentity = false
+	return nil
+}
+
+func (l *dataDirWriterLease) verify() error {
+	if l == nil || l.root == nil || l.rootAccess == nil || l.rootInfo == nil || l.file == nil {
+		return fmt.Errorf("stable data directory writer lease is unavailable")
+	}
+	if err := verifyLocalLeasePath(l.canonical); err != nil {
+		return err
+	}
+	current, err := os.Stat(l.canonical)
+	if err != nil {
+		return fmt.Errorf("data directory identity changed: %w", err)
+	}
+	if !os.SameFile(l.rootInfo, current) {
+		return fmt.Errorf("data directory identity changed at %s", l.canonical)
+	}
+	if requested, err := canonicalDataDir(l.requested); err != nil {
+		return fmt.Errorf("data directory caller path identity changed: %w", err)
+	} else if requested != l.canonical {
+		requestedInfo, statErr := os.Stat(requested)
+		if statErr != nil || !os.SameFile(l.rootInfo, requestedInfo) {
+			return fmt.Errorf("data directory caller path identity changed: %s", l.requested)
+		}
+	}
+	handleInfo, err := l.root.Stat()
+	if err != nil || !os.SameFile(l.rootInfo, handleInfo) {
+		return fmt.Errorf("data directory handle identity changed")
+	}
+	return nil
 }
 
 func existingLeaseDirectory(path string) (string, error) {
@@ -139,6 +272,15 @@ func (l *dataDirWriterLease) close() error {
 		return nil
 	}
 	l.once.Do(func() {
+		if l.provisionalFile != nil {
+			unlockErr := unlockWriterFile(l.provisionalFile)
+			closeErr := l.provisionalFile.Close()
+			if unlockErr != nil {
+				l.err = unlockErr
+			} else if closeErr != nil {
+				l.err = closeErr
+			}
+		}
 		if l.file != nil {
 			unlockErr := unlockWriterFile(l.file)
 			closeErr := l.file.Close()
@@ -148,8 +290,18 @@ func (l *dataDirWriterLease) close() error {
 				l.err = closeErr
 			}
 		}
+		if l.root != nil {
+			if closeErr := l.root.Close(); l.err == nil {
+				l.err = closeErr
+			}
+		}
+		if l.rootAccess != nil {
+			if closeErr := l.rootAccess.Close(); l.err == nil {
+				l.err = closeErr
+			}
+		}
 		processWriterLeases.Lock()
-		delete(processWriterLeases.held, l.canonical)
+		delete(processWriterLeases.held, l.processKey)
 		processWriterLeases.Unlock()
 	})
 	return l.err

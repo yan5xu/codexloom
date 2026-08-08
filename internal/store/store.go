@@ -33,9 +33,12 @@ package store
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -52,12 +55,16 @@ type Event struct {
 
 type Store struct {
 	dir                string
+	requestedDir       string
 	readOnly           bool
+	passiveCapable     bool
 	writerLease        *dataDirWriterLease
 	closeMu            sync.RWMutex
 	closed             bool
-	closeOnce          sync.Once
 	closeErr           error
+	ownerGeneration    uint64
+	ownerActive        bool
+	requireOwner       bool
 	eventMu            sync.Mutex
 	eventMaintenanceMu sync.Mutex
 	eventPolicy        EventLogPolicy
@@ -138,16 +145,33 @@ func OpenWithOptions(dir string, options OpenOptions) (_ *Store, err error) {
 		if err = validateRuntimeFoundationFile(cleanDir); err != nil {
 			return nil, err
 		}
-		if err = os.MkdirAll(filepath.Join(cleanDir, "events"), 0o755); err != nil {
+		if info, statErr := os.Stat(cleanDir); statErr == nil {
+			if !info.IsDir() {
+				return nil, fmt.Errorf("store path is not a directory: %s", cleanDir)
+			}
+		} else if os.IsNotExist(statErr) {
+			if err = mkdirAllFromStableAncestor(cleanDir, 0o755); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, statErr
+		}
+		if err = lease.stabilize(cleanDir); err != nil {
+			return nil, err
+		}
+		cleanDir = lease.canonical
+		if err = lease.rootAccess.MkdirAll("events", 0o755); err != nil {
 			return nil, err
 		}
 	}
 	return &Store{
-		dir:          cleanDir,
-		readOnly:     options.ReadOnly,
-		writerLease:  lease,
-		eventPolicy:  EventLogPolicyFromEnv(),
-		eventLastSeq: map[string]int64{},
+		dir:            cleanDir,
+		requestedDir:   filepath.Clean(dir),
+		readOnly:       options.ReadOnly,
+		passiveCapable: options.ReadOnly,
+		writerLease:    lease,
+		eventPolicy:    EventLogPolicyFromEnv(),
+		eventLastSeq:   map[string]int64{},
 	}, nil
 }
 
@@ -174,11 +198,16 @@ func migrateLegacyDefaultDir(dir string) error {
 	if legacyInfo.Mode()&os.ModeSymlink != 0 {
 		return nil
 	}
-	if err := os.Rename(legacyDir, loomDir); err != nil {
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.Rename(".codex-hub", ".codex-loom"); err != nil {
 		return err
 	}
 	// Keep legacy binaries and gateway state paths working during the rename.
-	if err := os.Symlink(loomDir, legacyDir); err != nil {
+	if err := root.Symlink(".codex-loom", ".codex-hub"); err != nil {
 		return err
 	}
 	return nil
@@ -188,30 +217,119 @@ func (s *Store) Dir() string { return s.dir }
 
 func (s *Store) ReadOnly() bool { return s != nil && s.readOnly }
 
-// ReadOnlyView shares only the durable directory with the Store. It never
-// acquires or releases the writer lease and rejects every write path.
-func (s *Store) ReadOnlyView() *Store {
+func (s *Store) PassiveCapableReadOnly() bool {
+	return s != nil && s.readOnly && s.passiveCapable
+}
+
+// OpenReadOnly opens an independent, genuinely read-only Store for the same
+// stable directory. It does not borrow or impersonate the writable owner's
+// lease and cannot be upgraded to a writer.
+func (s *Store) OpenReadOnly() (*Store, error) {
+	if s == nil {
+		return nil, fmt.Errorf("store is unavailable")
+	}
+	return OpenWithOptions(s.dir, OpenOptions{ReadOnly: true})
+}
+
+// RetiredReadOnlyView is attached to a Hub after its writable ownership has
+// ended. It preserves read access for diagnostics while mechanically rejecting
+// every later write from that retired Hub instance.
+func (s *Store) RetiredReadOnlyView() *Store {
 	if s == nil {
 		return nil
 	}
 	return &Store{
-		dir: s.dir, readOnly: true, eventPolicy: s.eventPolicy,
-		eventLastSeq: map[string]int64{},
+		dir: s.dir, requestedDir: s.requestedDir, readOnly: true,
+		passiveCapable: false, eventPolicy: s.eventPolicy, eventLastSeq: map[string]int64{},
 	}
+}
+
+// WritableOwnership binds one live writable Hub to this Store. Store-level
+// seeding remains possible before the first Hub claims ownership; once a Hub
+// has claimed it, every later write requires a live owner until Store.Close.
+type WritableOwnership struct {
+	store      *Store
+	generation uint64
+	once       sync.Once
+}
+
+// ClaimWritableOwnership must run before a writable Hub performs recovery or
+// any write. A Store may back at most one live writable Hub.
+func (s *Store) ClaimWritableOwnership() (*WritableOwnership, error) {
+	if s == nil {
+		return nil, fmt.Errorf("store is unavailable")
+	}
+	if s.readOnly {
+		return nil, fmt.Errorf("writable Hub requires a writable Store")
+	}
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.closed {
+		return nil, fmt.Errorf("store is closed")
+	}
+	if s.ownerActive {
+		return nil, fmt.Errorf("store already has a live writable Hub")
+	}
+	if s.writerLease == nil {
+		return nil, fmt.Errorf("store writer lease is unavailable")
+	}
+	if err := s.writerLease.verify(); err != nil {
+		return nil, err
+	}
+	s.ownerGeneration++
+	s.ownerActive = true
+	s.requireOwner = true
+	return &WritableOwnership{store: s, generation: s.ownerGeneration}, nil
+}
+
+// ValidateWriterIdentity verifies that the writable Store still addresses the
+// exact directory handle whose lease it owns. It performs no write and is used
+// before an authoritative readback of an indeterminate commit.
+func (s *Store) ValidateWriterIdentity() error {
+	if s == nil {
+		return fmt.Errorf("store is unavailable")
+	}
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	if s.closed {
+		return fmt.Errorf("store is closed")
+	}
+	if s.readOnly || s.writerLease == nil {
+		return fmt.Errorf("stable writable Store identity is unavailable")
+	}
+	return s.writerLease.verify()
+}
+
+func (ownership *WritableOwnership) Release() {
+	if ownership == nil || ownership.store == nil {
+		return
+	}
+	ownership.once.Do(func() {
+		s := ownership.store
+		s.closeMu.Lock()
+		if s.ownerActive && s.ownerGeneration == ownership.generation {
+			s.ownerActive = false
+		}
+		s.closeMu.Unlock()
+	})
 }
 
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.closeOnce.Do(func() {
-		s.closeMu.Lock()
-		defer s.closeMu.Unlock()
-		s.closed = true
-		if s.writerLease != nil {
-			s.closeErr = s.writerLease.close()
-		}
-	})
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.closed {
+		return s.closeErr
+	}
+	if s.ownerActive {
+		return fmt.Errorf("store is owned by a live writable Hub")
+	}
+	s.closed = true
+	if s.writerLease != nil {
+		s.closeErr = s.writerLease.close()
+	}
 	return s.closeErr
 }
 
@@ -231,7 +349,190 @@ func (s *Store) beginWrite() (func(), error) {
 		s.closeMu.RUnlock()
 		return nil, fmt.Errorf("store writer lease is unavailable")
 	}
+	if s.requireOwner && !s.ownerActive {
+		s.closeMu.RUnlock()
+		return nil, fmt.Errorf("store has no live writable Hub owner")
+	}
+	if err := s.writerLease.verify(); err != nil {
+		s.closeMu.RUnlock()
+		return nil, err
+	}
 	return s.closeMu.RUnlock, nil
+}
+
+func (s *Store) finishWrite(err error) error {
+	if err != nil {
+		return err
+	}
+	if s == nil || s.writerLease == nil {
+		return fmt.Errorf("stable data directory writer lease is unavailable")
+	}
+	if err := s.writerLease.verify(); err != nil {
+		return fmt.Errorf("data directory identity changed during write: %w", err)
+	}
+	return nil
+}
+
+// WithStableWriteRoot runs one non-Store-specific data-dir mutation through
+// the same live-Hub ownership and stable directory-handle boundary as the
+// canonical Store writers. The callback must use only the supplied Root and
+// relative paths; finishWrite revalidates the directory identity after the
+// operation so a concurrent rename or mount drift is reported fail-closed.
+//
+// This is intentionally an internal escape hatch for existing Runtime-owned
+// durable files (for example Thread artifacts). New canonical state should
+// continue to use a typed Store method instead.
+func (s *Store) WithStableWriteRoot(fn func(*os.Root) error) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+	if fn == nil {
+		return fmt.Errorf("stable data directory writer callback is required")
+	}
+	return s.finishWrite(fn(s.writerLease.rootAccess))
+}
+
+func mkdirAllFromStableAncestor(path string, mode os.FileMode) error {
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	ancestor, err := existingLeaseDirectory(filepath.Dir(absolute))
+	if err != nil {
+		return err
+	}
+	if err := verifyLocalLeasePath(ancestor); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(ancestor)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	relative, err := filepath.Rel(ancestor, absolute)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("data directory escaped its stable ancestor")
+	}
+	return root.MkdirAll(relative, mode)
+}
+
+func (s *Store) rootedPath(path string) (string, error) {
+	if s == nil || s.writerLease == nil || s.writerLease.rootAccess == nil {
+		return "", fmt.Errorf("stable data directory root is unavailable")
+	}
+	relative, err := filepath.Rel(s.dir, filepath.Clean(path))
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes stable data directory: %s", path)
+	}
+	return relative, nil
+}
+
+func (s *Store) rootedOpenFile(path string, flag int, mode os.FileMode) (*os.File, error) {
+	relative, err := s.rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return s.writerLease.rootAccess.OpenFile(relative, flag, mode)
+}
+
+func (s *Store) rootedReadFile(path string) ([]byte, error) {
+	if s == nil || s.writerLease == nil || s.writerLease.rootAccess == nil {
+		return os.ReadFile(path)
+	}
+	relative, err := s.rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return s.writerLease.rootAccess.ReadFile(relative)
+}
+
+func (s *Store) rootedStat(path string) (os.FileInfo, error) {
+	if s == nil || s.writerLease == nil || s.writerLease.rootAccess == nil {
+		return os.Stat(path)
+	}
+	relative, err := s.rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return s.writerLease.rootAccess.Stat(relative)
+}
+
+func (s *Store) rootedReadDir(path string) ([]os.DirEntry, error) {
+	if s == nil || s.writerLease == nil || s.writerLease.rootAccess == nil {
+		return os.ReadDir(path)
+	}
+	relative, err := s.rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return fs.ReadDir(s.writerLease.rootAccess.FS(), relative)
+}
+
+func (s *Store) rootedRemove(path string) error {
+	relative, err := s.rootedPath(path)
+	if err != nil {
+		return err
+	}
+	return s.writerLease.rootAccess.Remove(relative)
+}
+
+func (s *Store) rootedRename(oldPath, newPath string) error {
+	oldRelative, err := s.rootedPath(oldPath)
+	if err != nil {
+		return err
+	}
+	newRelative, err := s.rootedPath(newPath)
+	if err != nil {
+		return err
+	}
+	return s.writerLease.rootAccess.Rename(oldRelative, newRelative)
+}
+
+func (s *Store) rootedMkdirAll(path string, mode os.FileMode) error {
+	relative, err := s.rootedPath(path)
+	if err != nil {
+		return err
+	}
+	return s.writerLease.rootAccess.MkdirAll(relative, mode)
+}
+
+func (s *Store) rootedSyncDir(path string) error {
+	relative, err := s.rootedPath(path)
+	if err != nil {
+		return err
+	}
+	directory, err := s.writerLease.rootAccess.Open(relative)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func (s *Store) rootedTempFile(dir, base string, mode os.FileMode) (*os.File, string, error) {
+	relativeDir, err := s.rootedPath(dir)
+	if err != nil {
+		return nil, "", err
+	}
+	for attempt := 0; attempt < 32; attempt++ {
+		random := make([]byte, 12)
+		if _, err := rand.Read(random); err != nil {
+			return nil, "", err
+		}
+		name := "." + base + "-" + hex.EncodeToString(random) + ".tmp"
+		relative := filepath.Join(relativeDir, name)
+		file, err := s.writerLease.rootAccess.OpenFile(relative, os.O_CREATE|os.O_EXCL|os.O_RDWR, mode)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		return file, filepath.Join(dir, name), nil
+	}
+	return nil, "", fmt.Errorf("create temporary file under stable data directory: exhausted attempts")
 }
 
 func (s *Store) saveJSON(path string, value any) error {
@@ -240,7 +541,7 @@ func (s *Store) saveJSON(path string, value any) error {
 		return err
 	}
 	defer done()
-	return saveJSON(path, value)
+	return s.finishWrite(s.saveJSONUnlocked(path, value))
 }
 
 func (s *Store) appendNDJSON(path string, value any) error {
@@ -249,7 +550,7 @@ func (s *Store) appendNDJSON(path string, value any) error {
 		return err
 	}
 	defer done()
-	return appendNDJSON(path, value)
+	return s.finishWrite(s.appendNDJSONUnlocked(path, value))
 }
 
 // EdgeAgent is one entry from pinix-edge's registry (~/.pinix/code_agents/names.json).
@@ -386,10 +687,10 @@ func (s *Store) SaveAgents(v any) error {
 	// The compatibility mirror is written first. If its write fails, the
 	// canonical registry is untouched; if the canonical write fails, startup
 	// still reads the previous agents.json and the caller receives the error.
-	if err := saveJSON(s.sessionsFile(), v); err != nil {
+	if err := s.saveJSONUnlocked(s.sessionsFile(), v); err != nil {
 		return err
 	}
-	return saveJSON(s.agentsFile(), v)
+	return s.finishWrite(s.saveJSONUnlocked(s.agentsFile(), v))
 }
 
 func (s *Store) LoadAgentSkillConfigs(v any) error {
@@ -457,7 +758,7 @@ func (s *Store) LoadRemote(v any) error { return loadJSON(s.remoteFile(), v) }
 func (s *Store) SaveRemote(v any) error { return s.saveJSON(s.remoteFile(), v) }
 
 func (s *Store) LoadRuntimeFoundation(v any) (bool, error) {
-	data, err := os.ReadFile(s.runtimeFoundationFile())
+	data, err := s.rootedReadFile(s.runtimeFoundationFile())
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -488,7 +789,7 @@ func (s *Store) SaveRuntimeFoundation(v any) error {
 	if _, err := validateRuntimeFoundation(data); err != nil {
 		return err
 	}
-	return replaceFile(s.runtimeFoundationFile(), data, 0o600)
+	return s.finishWrite(s.replaceFile(s.runtimeFoundationFile(), data, 0o600))
 }
 
 func validateRuntimeFoundationFile(dir string) error {
@@ -546,31 +847,27 @@ func loadJSON(path string, v any) error {
 	return json.Unmarshal(data, v)
 }
 
-func saveJSON(path string, v any) error {
+func (s *Store) saveJSONUnlocked(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	return replaceFile(path, data, 0o600)
+	return s.replaceFile(path, data, 0o600)
 }
 
-func replaceFile(path string, data []byte, mode os.FileMode) error {
+func (s *Store) replaceFile(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	tmp, tmpPath, err := s.rootedTempFile(dir, filepath.Base(path), mode)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
 	committed := false
 	defer func() {
 		_ = tmp.Close()
 		if !committed {
-			_ = os.Remove(tmpPath)
+			_ = s.rootedRemove(tmpPath)
 		}
 	}()
-	if err := tmp.Chmod(mode); err != nil {
-		return err
-	}
 	if _, err := tmp.Write(data); err != nil {
 		return err
 	}
@@ -580,16 +877,11 @@ func replaceFile(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := s.rootedRename(tmpPath, path); err != nil {
 		return err
 	}
 	committed = true
-	directory, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return s.rootedSyncDir(dir)
 }
 
 func (s *Store) AppendComm(v any) error {
@@ -634,8 +926,8 @@ func (s *Store) ReadHumanRequests(fn func(json.RawMessage)) error {
 	return readNDJSON(s.humanRequestsFile(), fn)
 }
 
-func appendNDJSON(path string, v any) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+func (s *Store) appendNDJSONUnlocked(path string, v any) error {
+	f, err := s.rootedOpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
@@ -711,10 +1003,22 @@ func (s *Store) ReplaceComms(records []json.RawMessage) error {
 		return err
 	}
 	defer done()
-	if original, err := os.ReadFile(s.commsFile()); err == nil && len(original) > 0 {
+	if original, err := s.rootedReadFile(s.commsFile()); err == nil && len(original) > 0 {
 		backup := filepath.Join(s.dir, "comms.v1-name-addressed.ndjson")
-		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {
-			if err := os.WriteFile(backup, original, 0o644); err != nil {
+		if _, statErr := s.rootedStat(backup); os.IsNotExist(statErr) {
+			file, openErr := s.rootedOpenFile(backup, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+			if openErr != nil {
+				return openErr
+			}
+			if _, err := file.Write(original); err != nil {
+				_ = file.Close()
+				return err
+			}
+			if err := file.Sync(); err != nil {
+				_ = file.Close()
+				return err
+			}
+			if err := file.Close(); err != nil {
 				return err
 			}
 		}
@@ -729,5 +1033,5 @@ func (s *Store) ReplaceComms(records []json.RawMessage) error {
 		data = append(data, record...)
 		data = append(data, '\n')
 	}
-	return replaceFile(s.commsFile(), data, 0o600)
+	return s.finishWrite(s.replaceFile(s.commsFile(), data, 0o600))
 }

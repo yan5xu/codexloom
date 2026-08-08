@@ -24,7 +24,11 @@ func TestOpenMigratesLegacyCodexHubDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Dir() != filepath.Join(home, ".codex-loom") {
+	wantDir, err := canonicalDataDir(filepath.Join(home, ".codex-loom"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Dir() != wantDir {
 		t.Fatalf("store dir = %q", st.Dir())
 	}
 	info, err := os.Lstat(legacy)

@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/yan5xu/codex-loom/internal/store"
 )
 
 const restartGoalIntentFile = ".restart-goals.json"
@@ -35,7 +39,7 @@ func (s *Server) prepareGoalsForRestart() error {
 	intent := restartGoalIntent{
 		Version: 1, AgentIDs: agentIDs, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	if err := writeRestartGoalIntent(s.st.Dir(), intent); err != nil {
+	if err := writeRestartGoalIntent(s.st, intent); err != nil {
 		return fmt.Errorf("persist restart Goal intent: %w", err)
 	}
 	paused, err := s.hub.PauseGoalsForRestart(agentIDs)
@@ -43,11 +47,11 @@ func (s *Server) prepareGoalsForRestart() error {
 		return nil
 	}
 	if err == nil {
-		return clearRestartGoalIntent(s.st.Dir())
+		return clearRestartGoalIntent(s.st)
 	}
 	resumeErr := s.hub.ResumeGoalsAfterRestart(agentIDs)
 	if resumeErr == nil {
-		_ = clearRestartGoalIntent(s.st.Dir())
+		_ = clearRestartGoalIntent(s.st)
 	}
 	return errors.Join(err, resumeErr)
 }
@@ -71,7 +75,7 @@ func (s *Server) ResumeRestartPausedGoals() {
 		log.Printf("[codex-loom] resume Goals after restart: %v", err)
 		return
 	}
-	if err := clearRestartGoalIntent(s.st.Dir()); err != nil {
+	if err := clearRestartGoalIntent(s.st); err != nil {
 		log.Printf("[codex-loom] clear restart Goal intent: %v", err)
 		return
 	}
@@ -89,7 +93,7 @@ func (s *Server) restoreGoalsAfterFailedRestart() error {
 	if err := s.hub.ResumeGoalsAfterRestart(intent.AgentIDs); err != nil {
 		return err
 	}
-	return clearRestartGoalIntent(s.st.Dir())
+	return clearRestartGoalIntent(s.st)
 }
 
 func restartGoalIntentPath(dataDir string) string {
@@ -119,7 +123,10 @@ func readRestartGoalIntent(dataDir string) (restartGoalIntent, bool, error) {
 	return intent, true, nil
 }
 
-func writeRestartGoalIntent(dataDir string, intent restartGoalIntent) error {
+func writeRestartGoalIntent(st *store.Store, intent restartGoalIntent) error {
+	if st == nil {
+		return fmt.Errorf("restart Goal Store is unavailable")
+	}
 	intent.AgentIDs = uniqueRestartGoalIDs(intent.AgentIDs)
 	if len(intent.AgentIDs) == 0 {
 		return fmt.Errorf("restart Goal intent has no Agent IDs")
@@ -128,51 +135,58 @@ func writeRestartGoalIntent(dataDir string, intent restartGoalIntent) error {
 	if err != nil {
 		return err
 	}
-	path := restartGoalIntentPath(dataDir)
-	tmp, err := os.CreateTemp(dataDir, ".restart-goals-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	committed := false
-	defer func() {
-		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
+	return st.WithStableWriteRoot(func(root *os.Root) error {
+		random := make([]byte, 12)
+		if _, err := rand.Read(random); err != nil {
+			return err
 		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	committed = true
-	return syncRestartGoalDir(dataDir)
+		tmpPath := ".restart-goals-" + hex.EncodeToString(random) + ".tmp"
+		tmp, err := root.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			_ = tmp.Close()
+			if !committed {
+				_ = root.Remove(tmpPath)
+			}
+		}()
+		if _, err := tmp.Write(data); err != nil {
+			return err
+		}
+		if err := tmp.Sync(); err != nil {
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+		if err := root.Rename(tmpPath, restartGoalIntentFile); err != nil {
+			return err
+		}
+		committed = true
+		return syncRestartGoalRoot(root)
+	})
 }
 
-func clearRestartGoalIntent(dataDir string) error {
-	err := os.Remove(restartGoalIntentPath(dataDir))
-	if os.IsNotExist(err) {
-		return nil
+func clearRestartGoalIntent(st *store.Store) error {
+	if st == nil {
+		return fmt.Errorf("restart Goal Store is unavailable")
 	}
-	if err != nil {
-		return err
-	}
-	return syncRestartGoalDir(dataDir)
+	return st.WithStableWriteRoot(func(root *os.Root) error {
+		err := root.Remove(restartGoalIntentFile)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return syncRestartGoalRoot(root)
+	})
 }
 
-func syncRestartGoalDir(dataDir string) error {
-	directory, err := os.Open(dataDir)
+func syncRestartGoalRoot(root *os.Root) error {
+	directory, err := root.Open(".")
 	if err != nil {
 		return err
 	}

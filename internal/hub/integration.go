@@ -687,6 +687,9 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return PlatformConnection{}, err
+	}
 	h.connections[connection.ID] = &connection
 	if err := h.persistIntegrationsLocked(); err != nil {
 		delete(h.connections, connection.ID)
@@ -702,11 +705,9 @@ func (h *Hub) ListConnections() []PlatformConnection {
 	out := make([]PlatformConnection, 0, len(h.connections))
 	for _, connection := range h.connections {
 		copy := *connection
-		if h.gatewayLifecycle.Controls[copy.ID] != nil {
-			projection := h.reduceGatewayHealthLocked(copy)
-			copy.Status = projection.Status
-			copy.LastError = projection.Error
-		}
+		projection := h.reduceGatewayHealthLocked(copy)
+		copy.Status = projection.Status
+		copy.LastError = projection.Error
 		out = append(out, copy)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
@@ -1220,15 +1221,12 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 	if p.Cursor != "" {
 		next.Cursor = p.Cursor
 	}
-	if p.Capabilities != nil {
-		next.Capabilities = normalizeCapabilities(p.Capabilities)
-	}
 	next.LastError = strings.TrimSpace(p.Error)
 	previous := *connection
 	h.connections[next.ID] = &next
-	if _, err := h.recordGatewayObservationLocked(next.ID, status, p.Error, ts); err != nil {
+	if _, err := h.recordGatewayObservationWithCapabilitiesLocked(next.ID, status, p.Error, ts, p.Capabilities); err != nil {
 		h.connections[next.ID] = &previous
-		return PlatformConnection{}, errf(500, "persist gateway health observation: %s", err)
+		return PlatformConnection{}, fmt.Errorf("persist gateway health observation: %w", err)
 	}
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections[next.ID] = &previous

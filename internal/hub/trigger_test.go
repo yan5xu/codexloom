@@ -520,7 +520,12 @@ func TestTriggerReconcilesDurableMessageAfterRestart(t *testing.T) {
 	if err := st.AppendComm(commRecord{Message: message}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	reader, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	h, err := OpenWithOptions(reader, OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}

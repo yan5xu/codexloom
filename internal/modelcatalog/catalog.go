@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -171,6 +172,85 @@ func Materialize(dataDir, overridePath string) (Snapshot, error) {
 	}
 	snapshot.Path = path
 	return snapshot, nil
+}
+
+// MaterializeRoot is the stable-directory-handle variant used by the Hub data
+// directory. targetRoot is relative to root; dataDir is used only to publish
+// the absolute path consumed by Codex after the rooted write succeeds.
+func MaterializeRoot(root *os.Root, dataDir, overridePath string) (Snapshot, error) {
+	if root == nil {
+		return Snapshot{}, fmt.Errorf("stable model catalog root is unavailable")
+	}
+	snapshot, err := Describe(overridePath)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if snapshot.Source == "override" {
+		path, err := filepath.Abs(strings.TrimSpace(overridePath))
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("resolve model catalog override: %w", err)
+		}
+		snapshot.Path = path
+		return snapshot, nil
+	}
+	relativeDir := filepath.Join("runtime", "model-catalog")
+	if err := root.MkdirAll(relativeDir, 0o700); err != nil {
+		return Snapshot{}, fmt.Errorf("create model catalog directory: %w", err)
+	}
+	relativePath := filepath.Join(relativeDir, ManagedVersion+".json")
+	if existing, readErr := root.ReadFile(relativePath); readErr == nil {
+		hash := sha256.Sum256(existing)
+		if hex.EncodeToString(hash[:]) == snapshot.SHA256 {
+			snapshot.Path = filepath.Join(dataDir, relativePath)
+			return snapshot, nil
+		}
+	}
+	temporary := filepath.Join(relativeDir, ".models-"+rootedRandomSuffix()+".json")
+	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("create model catalog snapshot: %w", err)
+	}
+	committed := false
+	defer func() {
+		_ = file.Close()
+		if !committed {
+			_ = root.Remove(temporary)
+		}
+	}()
+	if _, err := file.Write(managedJSON); err != nil {
+		return Snapshot{}, fmt.Errorf("write model catalog snapshot: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return Snapshot{}, fmt.Errorf("sync model catalog snapshot: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return Snapshot{}, fmt.Errorf("close model catalog snapshot: %w", err)
+	}
+	if err := root.Rename(temporary, relativePath); err != nil {
+		return Snapshot{}, fmt.Errorf("publish model catalog snapshot: %w", err)
+	}
+	committed = true
+	directory, err := root.Open(relativeDir)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("open model catalog directory: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return Snapshot{}, fmt.Errorf("sync model catalog directory: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return Snapshot{}, fmt.Errorf("close model catalog directory: %w", err)
+	}
+	snapshot.Path = filepath.Join(dataDir, relativePath)
+	return snapshot, nil
+}
+
+func rootedRandomSuffix() string {
+	value := make([]byte, 12)
+	if _, err := rand.Read(value); err != nil {
+		panic(fmt.Sprintf("model catalog random suffix: %v", err))
+	}
+	return hex.EncodeToString(value)
 }
 
 func SpawnArgs(path string) []string {

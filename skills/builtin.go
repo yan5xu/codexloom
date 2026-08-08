@@ -2,6 +2,7 @@
 package skills
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -138,6 +139,103 @@ func MaterializeSelected(root string, names []string) ([]InstallResult, error) {
 		return nil, err
 	}
 	return results, nil
+}
+
+// MaterializeSelectedRoot is the stable-directory-handle variant for a
+// CodexLoom-owned data directory. target is relative to root; unlike the user
+// skill installer this function never follows an absolute caller path while
+// replacing the managed tree.
+func MaterializeSelectedRoot(root *os.Root, target string, names []string) ([]InstallResult, error) {
+	if root == nil {
+		return nil, fmt.Errorf("stable managed skill root is unavailable")
+	}
+	target = filepath.Clean(target)
+	if filepath.IsAbs(target) || target == "." || target == ".." || strings.HasPrefix(target, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("managed skill target must remain beneath the stable root")
+	}
+	selected, err := selectDefinitions(names)
+	if err != nil {
+		return nil, err
+	}
+	parent := filepath.Dir(target)
+	if err := root.MkdirAll(parent, 0o755); err != nil {
+		return nil, fmt.Errorf("create managed skill parent: %w", err)
+	}
+	stage := filepath.Join(parent, ".codexloom-skills-"+rootedSkillSuffix())
+	if err := root.Mkdir(stage, 0o755); err != nil {
+		return nil, fmt.Errorf("stage managed skills: %w", err)
+	}
+	defer root.RemoveAll(stage)
+	results := make([]InstallResult, 0, len(selected))
+	for _, definition := range selected {
+		if err := writeBundledSkillRoot(root, stage, definition.Name); err != nil {
+			return nil, err
+		}
+		files, err := bundledFiles(definition.Name)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, InstallResult{Status: Status{
+			Name: definition.Name, Path: filepath.Join(target, definition.Name),
+			State: StateInstalled, Hash: bundledHash(files),
+		}, Changed: true})
+	}
+	if err := swapManagedRootAtRoot(root, target, stage); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func writeBundledSkillRoot(root *os.Root, stage, name string) error {
+	target := filepath.Join(stage, name)
+	if err := root.MkdirAll(target, 0o755); err != nil {
+		return fmt.Errorf("stage skill %s: %w", name, err)
+	}
+	files, err := bundledFiles(name)
+	if err != nil {
+		return err
+	}
+	for relative, data := range files {
+		path := filepath.Join(target, relative)
+		if err := root.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("stage skill %s: %w", name, err)
+		}
+		if err := root.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("stage skill %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func swapManagedRootAtRoot(root *os.Root, target, stage string) error {
+	if _, err := root.Lstat(target); os.IsNotExist(err) {
+		if err := root.Rename(stage, target); err != nil {
+			return fmt.Errorf("install managed skill root: %w", err)
+		}
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect managed skill root: %w", err)
+	}
+	backup := filepath.Join(filepath.Dir(target), ".codexloom-skills-previous-"+rootedSkillSuffix())
+	if err := root.Rename(target, backup); err != nil {
+		return fmt.Errorf("replace managed skill root: %w", err)
+	}
+	if err := root.Rename(stage, target); err != nil {
+		_ = root.Rename(backup, target)
+		return fmt.Errorf("install managed skill root: %w", err)
+	}
+	if err := root.RemoveAll(backup); err != nil {
+		return fmt.Errorf("remove previous managed skill root: %w", err)
+	}
+	return nil
+}
+
+func rootedSkillSuffix() string {
+	value := make([]byte, 12)
+	if _, err := rand.Read(value); err != nil {
+		panic(fmt.Sprintf("managed skill random suffix: %v", err))
+	}
+	return hex.EncodeToString(value)
 }
 
 // Inspect compares installed skills with the exact version bundled in this

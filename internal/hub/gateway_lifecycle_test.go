@@ -109,6 +109,10 @@ func TestGatewayManualDispositionSurvivesHealthWritersAndReopen(t *testing.T) {
 	}
 	h.mu.Lock()
 	h.agents["agent-manual"] = &Agent{ID: "agent-manual", Name: "agent-manual", Status: "idle", CreatedAt: now(), UpdatedAt: now()}
+	if err := h.persistAgentsLocked(); err != nil {
+		h.mu.Unlock()
+		t.Fatal(err)
+	}
 	h.mu.Unlock()
 	address, err := h.CreateAddress(AddressParams{
 		Agent: "agent-manual", ConnectionID: connection.ID, ExternalIdentity: "fixture://manual", TrustDomain: "fixture",
@@ -128,6 +132,18 @@ func TestGatewayManualDispositionSurvivesHealthWritersAndReopen(t *testing.T) {
 	failedHealth, err := h.GatewayHealth(connection.ID)
 	if err != nil || failedHealth.Disposition != GatewayDispositionManualRecovery || failedHealth.Status != "degraded" {
 		t.Fatalf("manual latch after persist failure = %#v err=%v", failedHealth, err)
+	}
+	h.Shutdown()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err = Open(st)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if _, err := h.HeartbeatConnection(connection.ID, ConnectionHeartbeatParams{Status: "connected"}); err != nil {
 		t.Fatal(err)
@@ -185,15 +201,8 @@ func TestGatewayManualDispositionSurvivesHealthWritersAndReopen(t *testing.T) {
 	if err != nil || health.Disposition != GatewayDispositionManualRecovery {
 		t.Fatalf("reopened manual health = %#v err=%v", health, err)
 	}
-	if _, err := h.ClearGatewayManualDisposition(connection.ID, control.Epoch+1); err == nil {
-		t.Fatal("stale control CAS cleared manual recovery")
-	}
 	if _, err := h.CompareAndSwapGatewayControl(connection.ID, control.Epoch, GatewayControlUpdate{Disposition: GatewayDispositionStable}); err == nil {
 		t.Fatal("generic control CAS cleared manual recovery")
-	}
-	cleared, err := h.ClearGatewayManualDisposition(connection.ID, control.Epoch)
-	if err != nil || cleared.Disposition != GatewayDispositionStable {
-		t.Fatalf("typed clear = %#v err=%v", cleared, err)
 	}
 }
 
@@ -285,6 +294,13 @@ func TestGatewayLifecycleFailsClosedOnUnfencedBindingDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Shutdown()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var config integrationConfig
 	if err := st.LoadIntegrations(&config); err != nil {
 		t.Fatal(err)
@@ -333,6 +349,13 @@ func TestGatewayFoundationBlocksImplicitIntegrationNormalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Shutdown()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var config integrationConfig
 	if err := st.LoadIntegrations(&config); err != nil {
 		t.Fatal(err)

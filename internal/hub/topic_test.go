@@ -157,7 +157,12 @@ func TestTopicPersistsVersionedBriefAndOwnerAttention(t *testing.T) {
 		t.Fatalf("read Topic = %#v err=%v", read, err)
 	}
 
-	reloaded, err := OpenWithOptions(h.st, OpenOptions{Passive: true})
+	reader, err := h.st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	reloaded, err := OpenWithOptions(reader, OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}

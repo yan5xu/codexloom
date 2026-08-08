@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,24 @@ func TestThreadArtifactRejectsOversizeInput(t *testing.T) {
 	_, err = h.StageThreadArtifact("artifacts", "too-large.bin", "application/octet-stream", io.LimitReader(zeroReader{}, MaxThreadArtifactBytes+1))
 	if err == nil || !strings.Contains(err.Error(), "25 MB") {
 		t.Fatalf("oversize error = %v", err)
+	}
+}
+
+func TestRetiredHubCannotWriteThreadArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	h.agents["agent-artifacts"] = &Agent{ID: "agent-artifacts", Name: "artifacts"}
+	h.Shutdown()
+
+	if _, err := h.StageThreadArtifact("artifacts", "late.txt", "text/plain", strings.NewReader("late")); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("retired Hub artifact write error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "attachments")); !os.IsNotExist(err) {
+		t.Fatalf("retired Hub created artifact files: %v", err)
 	}
 }
 

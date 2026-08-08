@@ -274,16 +274,19 @@ func (s *subscriber) close() {
 }
 
 type Hub struct {
-	st      *store.Store
-	passive bool
+	st              *store.Store
+	passive         bool
+	writerOwnership *store.WritableOwnership
 
 	// Persistence seams keep the R0 crash boundaries deterministic in tests.
 	// Production leaves them nil and writes through Store.
-	saveIntegrations         func(integrationConfig) error
-	saveRuntimeFoundation    func(gatewayFoundationDocument) error
-	gatewayLifecycle         gatewayLifecycleState
-	gatewayFoundationPresent bool
-	gatewayCoordinator       *gatewayConnectionCoordinator
+	saveIntegrations              func(integrationConfig) error
+	saveRuntimeFoundation         func(gatewayFoundationDocument) error
+	gatewayLifecycle              gatewayLifecycleState
+	gatewayFoundationPresent      bool
+	gatewayFoundationPoisoned     bool
+	gatewayFoundationPoisonReason string
+	gatewayCoordinator            *gatewayConnectionCoordinator
 
 	mu                      sync.Mutex
 	contextCoverageMu       sync.Mutex
@@ -334,6 +337,7 @@ type Hub struct {
 	codexHostGeneration     uint64
 	stop                    chan struct{}
 	stopOnce                sync.Once
+	shutdownOnce            sync.Once
 	stopping                bool
 	draining                bool
 	providerSwitching       bool
@@ -376,14 +380,30 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if st == nil {
 		return nil, fmt.Errorf("store is required")
 	}
+	var writerOwnership *store.WritableOwnership
 	if options.Passive {
-		st = st.ReadOnlyView()
+		if !st.PassiveCapableReadOnly() {
+			return nil, fmt.Errorf("passive Hub requires an independently opened read-only Store")
+		}
 	} else if st.ReadOnly() {
 		return nil, fmt.Errorf("writable Hub requires a writable Store")
+	} else {
+		var err error
+		writerOwnership, err = st.ClaimWritableOwnership()
+		if err != nil {
+			return nil, err
+		}
 	}
+	opened := false
+	defer func() {
+		if !opened && writerOwnership != nil {
+			writerOwnership.Release()
+		}
+	}()
 	h := &Hub{
 		st:                     st,
 		passive:                options.Passive,
+		writerOwnership:        writerOwnership,
 		gatewayLifecycle:       emptyGatewayLifecycleState(),
 		gatewayCoordinator:     newGatewayConnectionCoordinator(),
 		agents:                 map[string]*Agent{},
@@ -490,7 +510,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		}
 	}
 	projectionChanged := false
-	for connectionID := range h.gatewayLifecycle.Controls {
+	for connectionID := range h.connections {
 		projectionChanged = h.applyGatewayHealthProjectionLocked(connectionID) || projectionChanged
 	}
 	if projectionChanged && !options.Passive {
@@ -551,6 +571,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		h.seqs[meta.ID] = st.LastSeq(meta.ID)
 	}
 	if options.Passive {
+		opened = true
 		return h, nil
 	}
 
@@ -617,6 +638,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	go func() { defer h.background.Done(); h.remoteLoop() }()
 	go func() { defer h.background.Done(); h.eventMaintenanceLoop() }()
 	go func() { defer h.background.Done(); h.triggerLoop() }()
+	opened = true
 	return h, nil
 }
 

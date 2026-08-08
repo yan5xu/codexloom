@@ -166,11 +166,16 @@ func (h *Hub) verifyRuntimeThreadControl(agentID string, rt *runtime) error {
 }
 
 func (h *Hub) materializeModelCatalog() (modelcatalog.Snapshot, error) {
-	dataDir := filepath.Join(os.TempDir(), "codexloom-runtime")
-	if h.st != nil {
-		dataDir = h.st.Dir()
+	if h.st == nil {
+		return modelcatalog.Materialize(filepath.Join(os.TempDir(), "codexloom-runtime"), os.Getenv("CODEX_LOOM_MODEL_CATALOG"))
 	}
-	return modelcatalog.Materialize(dataDir, os.Getenv("CODEX_LOOM_MODEL_CATALOG"))
+	var snapshot modelcatalog.Snapshot
+	err := h.st.WithStableWriteRoot(func(root *os.Root) error {
+		var err error
+		snapshot, err = modelcatalog.MaterializeRoot(root, h.st.Dir(), os.Getenv("CODEX_LOOM_MODEL_CATALOG"))
+		return err
+	})
+	return snapshot, err
 }
 
 func codexHostEnv() map[string]string {
@@ -227,14 +232,18 @@ func (h *Hub) initCodexHost(host *codexHostRuntime) {
 	if h.st != nil {
 		skillRoot := filepath.Join(h.st.Dir(), "builtin-skills")
 		missing := missingUserSkills()
-		if len(missing) == 0 {
-			_ = os.RemoveAll(skillRoot)
-		} else {
-			if _, err := loomskills.MaterializeSelected(skillRoot, missing); err != nil {
-				host.initErr = fmt.Errorf("materialize CodexLoom skills: %w", err)
-				host.client.Close()
-				return
+		if err := h.st.WithStableWriteRoot(func(root *os.Root) error {
+			if len(missing) == 0 {
+				return root.RemoveAll("builtin-skills")
 			}
+			_, err := loomskills.MaterializeSelectedRoot(root, "builtin-skills", missing)
+			return err
+		}); err != nil {
+			host.initErr = fmt.Errorf("materialize CodexLoom skills: %w", err)
+			host.client.Close()
+			return
+		}
+		if len(missing) != 0 {
 			if _, err := host.client.Request("skills/extraRoots/set", map[string]any{
 				"extraRoots": []string{skillRoot},
 			}, 20*time.Second); err != nil {

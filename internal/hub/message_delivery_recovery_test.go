@@ -19,6 +19,7 @@ func TestAgentMessageInjectTimeoutFencesSameHostAndRecoversSameMessageAfterResta
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer st.Close()
 
 	h := testHub(st)
 	h.stop = make(chan struct{})
@@ -147,7 +148,7 @@ func TestAgentMessageInjectTimeoutFencesSameHostAndRecoversSameMessageAfterResta
 	h.mu.Unlock()
 	h.Shutdown()
 
-	h2, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	h2, err := Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -50,10 +50,11 @@ func TestGitHubDeviceFlowRetriesConnectionWithGrantedToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { h.Shutdown(); _ = st.Close() })
 	server := New(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}})
 	server.githubDevices["flow-1"] = &githubDeviceFlow{
 		ID: "flow-1", ClientID: "client-id", DeviceCode: "device-code", Scope: "repo",
@@ -133,10 +134,11 @@ func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { h.Shutdown(); _ = st.Close() })
 	handler := New(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}}).Handler()
 
 	credentialBody := `{"credentialRef":"env:LOOM_TEST_GITHUB_TOKEN","resourceOwner":"acme"}`
@@ -203,10 +205,11 @@ func TestGitHubTokenConnectionsMigrateLegacyAndSeparateResourceOwners(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { h.Shutdown(); _ = st.Close() })
 	enabled := true
 	legacy, err := h.CreateConnection(hub.ConnectionParams{
 		Provider: "github", AccountRef: "yan5xu", CredentialRef: "keychain:com.codexloom.github.yan5xu",

@@ -374,8 +374,14 @@ func (h *Hub) CompleteOutbox(connectionID, id string, p OutboxResultParams) (Out
 			connection.Status = "degraded"
 			connection.LastError = next.LastError
 		}
+		if _, observationErr := h.recordGatewayObservationLocked(connection.ID, connection.Status, connection.LastError, ts); observationErr != nil {
+			*connection = previous
+			log.Printf("[codex-loom] persist connection observation for outbox %s: %v", next.ID, observationErr)
+			return next, nil
+		}
 		if err := h.persistIntegrationsLocked(); err != nil {
 			*connection = previous
+			h.applyGatewayHealthProjectionLocked(connection.ID)
 			log.Printf("[codex-loom] persist connection result for outbox %s: %v", next.ID, err)
 		}
 	}

@@ -14,6 +14,7 @@
 //	triggers.json        durable external-condition definitions
 //	topics.json          durable cross-Agent coordination records
 //	integrations.json    platform connections, agent addresses and conversation memberships (no secrets)
+//	runtime-foundation.json private Runtime lifecycle controls and the monotonic writer floor
 //	messages.ndjson      normalized external communication facts
 //	inbox.ndjson         per-agent inbox item snapshots
 //	attempts.ndjson      inbox handling attempt snapshots
@@ -34,6 +35,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -50,10 +52,34 @@ type Event struct {
 
 type Store struct {
 	dir                string
+	readOnly           bool
+	writerLease        *dataDirWriterLease
+	closeMu            sync.RWMutex
+	closed             bool
+	closeOnce          sync.Once
+	closeErr           error
 	eventMu            sync.Mutex
 	eventMaintenanceMu sync.Mutex
 	eventPolicy        EventLogPolicy
 	eventLastSeq       map[string]int64
+}
+
+type OpenOptions struct {
+	ReadOnly bool
+}
+
+const (
+	RuntimeFoundationSchemaVersion = 1
+	RuntimeWriterFloorR0           = 1
+)
+
+// RuntimeFoundationEnvelope is the private, data-dir-wide compatibility
+// envelope. GatewayLifecycle is owned and validated by the Hub; Store validates
+// the schema and writer floor before any writable open can touch the data dir.
+type RuntimeFoundationEnvelope struct {
+	SchemaVersion    int             `json:"schemaVersion"`
+	MinimumWriter    int             `json:"minimumWriter"`
+	GatewayLifecycle json.RawMessage `json:"gatewayLifecycle"`
 }
 
 func DefaultDir() string {
@@ -71,14 +97,55 @@ func DefaultDir() string {
 }
 
 func Open(dir string) (*Store, error) {
-	if err := migrateLegacyDefaultDir(dir); err != nil {
+	return OpenWithOptions(dir, OpenOptions{})
+}
+
+// OpenWithOptions acquires the process-lifetime writer lease before any
+// writable Store migration, directory creation, or durable write. Read-only
+// opens neither acquire the writer lease nor create or normalize files.
+func OpenWithOptions(dir string, options OpenOptions) (_ *Store, err error) {
+	cleanDir := filepath.Clean(dir)
+	var lease *dataDirWriterLease
+	if options.ReadOnly {
+		info, statErr := os.Stat(cleanDir)
+		if statErr != nil {
+			return nil, statErr
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("store path is not a directory: %s", cleanDir)
+		}
+	} else {
+		lease, err = acquireDataDirWriterLease(cleanDir)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err != nil {
+				_ = lease.close()
+			}
+		}()
+	}
+
+	if err = validateRuntimeFoundationFile(cleanDir); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "events"), 0o755); err != nil {
-		return nil, err
+	if !options.ReadOnly {
+		if err = migrateLegacyDefaultDir(cleanDir); err != nil {
+			return nil, err
+		}
+		// A legacy default-dir rename can reveal the foundation file at the
+		// canonical path; validate again before the first in-dir file create.
+		if err = validateRuntimeFoundationFile(cleanDir); err != nil {
+			return nil, err
+		}
+		if err = os.MkdirAll(filepath.Join(cleanDir, "events"), 0o755); err != nil {
+			return nil, err
+		}
 	}
 	return &Store{
-		dir:          dir,
+		dir:          cleanDir,
+		readOnly:     options.ReadOnly,
+		writerLease:  lease,
 		eventPolicy:  EventLogPolicyFromEnv(),
 		eventLastSeq: map[string]int64{},
 	}, nil
@@ -118,6 +185,72 @@ func migrateLegacyDefaultDir(dir string) error {
 }
 
 func (s *Store) Dir() string { return s.dir }
+
+func (s *Store) ReadOnly() bool { return s != nil && s.readOnly }
+
+// ReadOnlyView shares only the durable directory with the Store. It never
+// acquires or releases the writer lease and rejects every write path.
+func (s *Store) ReadOnlyView() *Store {
+	if s == nil {
+		return nil
+	}
+	return &Store{
+		dir: s.dir, readOnly: true, eventPolicy: s.eventPolicy,
+		eventLastSeq: map[string]int64{},
+	}
+}
+
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		s.closeMu.Lock()
+		defer s.closeMu.Unlock()
+		s.closed = true
+		if s.writerLease != nil {
+			s.closeErr = s.writerLease.close()
+		}
+	})
+	return s.closeErr
+}
+
+func (s *Store) beginWrite() (func(), error) {
+	if s == nil {
+		return nil, fmt.Errorf("store is unavailable")
+	}
+	if s.readOnly {
+		return nil, fmt.Errorf("store is read-only")
+	}
+	s.closeMu.RLock()
+	if s.closed {
+		s.closeMu.RUnlock()
+		return nil, fmt.Errorf("store is closed")
+	}
+	if s.writerLease == nil {
+		s.closeMu.RUnlock()
+		return nil, fmt.Errorf("store writer lease is unavailable")
+	}
+	return s.closeMu.RUnlock, nil
+}
+
+func (s *Store) saveJSON(path string, value any) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return saveJSON(path, value)
+}
+
+func (s *Store) appendNDJSON(path string, value any) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return appendNDJSON(path, value)
+}
 
 // EdgeAgent is one entry from pinix-edge's registry (~/.pinix/code_agents/names.json).
 type EdgeAgent struct {
@@ -200,6 +333,10 @@ func (s *Store) organizationLinksFile() string {
 
 func (s *Store) integrationsFile() string { return filepath.Join(s.dir, "integrations.json") }
 
+func (s *Store) runtimeFoundationFile() string {
+	return filepath.Join(s.dir, "runtime-foundation.json")
+}
+
 func (s *Store) remoteFile() string { return filepath.Join(s.dir, "remote.json") }
 
 func (s *Store) messagesFile() string { return filepath.Join(s.dir, "messages.ndjson") }
@@ -241,6 +378,11 @@ func (s *Store) LoadAgents(v any) error {
 
 // SaveAgents writes agents.json and a compatibility sessions.json mirror.
 func (s *Store) SaveAgents(v any) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
 	// The compatibility mirror is written first. If its write fails, the
 	// canonical registry is untouched; if the canonical write fails, startup
 	// still reads the previous agents.json and the caller receives the error.
@@ -255,7 +397,7 @@ func (s *Store) LoadAgentSkillConfigs(v any) error {
 }
 
 func (s *Store) SaveAgentSkillConfigs(v any) error {
-	return saveJSON(s.agentSkillConfigFile(), v)
+	return s.saveJSON(s.agentSkillConfigFile(), v)
 }
 
 // Deprecated compatibility names.
@@ -275,44 +417,123 @@ func (s *Store) LoadSchedules(v any) error {
 }
 
 func (s *Store) SaveSchedules(v any) error {
-	return saveJSON(s.schedulesFile(), v)
+	return s.saveJSON(s.schedulesFile(), v)
 }
 
 func (s *Store) LoadTriggers(v any) error { return loadJSON(s.triggersFile(), v) }
 
-func (s *Store) SaveTriggers(v any) error { return saveJSON(s.triggersFile(), v) }
+func (s *Store) SaveTriggers(v any) error { return s.saveJSON(s.triggersFile(), v) }
 
 func (s *Store) LoadTopics(v any) error { return loadJSON(s.topicsFile(), v) }
 
-func (s *Store) SaveTopics(v any) error { return saveJSON(s.topicsFile(), v) }
+func (s *Store) SaveTopics(v any) error { return s.saveJSON(s.topicsFile(), v) }
 
 func (s *Store) LoadProfiles(v any) error { return loadJSON(s.profilesFile(), v) }
 
-func (s *Store) SaveProfiles(v any) error { return saveJSON(s.profilesFile(), v) }
+func (s *Store) SaveProfiles(v any) error { return s.saveJSON(s.profilesFile(), v) }
 
 func (s *Store) LoadTeamLinks(v any) error { return loadJSON(s.teamLinksFile(), v) }
 
-func (s *Store) SaveTeamLinks(v any) error { return saveJSON(s.teamLinksFile(), v) }
+func (s *Store) SaveTeamLinks(v any) error { return s.saveJSON(s.teamLinksFile(), v) }
 
 func (s *Store) LoadCollaborationGroups(v any) error {
 	return loadJSON(s.collaborationGroupsFile(), v)
 }
 
 func (s *Store) SaveCollaborationGroups(v any) error {
-	return saveJSON(s.collaborationGroupsFile(), v)
+	return s.saveJSON(s.collaborationGroupsFile(), v)
 }
 
 func (s *Store) LoadOrganizationLinks(v any) error { return loadJSON(s.organizationLinksFile(), v) }
 
-func (s *Store) SaveOrganizationLinks(v any) error { return saveJSON(s.organizationLinksFile(), v) }
+func (s *Store) SaveOrganizationLinks(v any) error { return s.saveJSON(s.organizationLinksFile(), v) }
 
 func (s *Store) LoadIntegrations(v any) error { return loadJSON(s.integrationsFile(), v) }
 
-func (s *Store) SaveIntegrations(v any) error { return saveJSON(s.integrationsFile(), v) }
+func (s *Store) SaveIntegrations(v any) error { return s.saveJSON(s.integrationsFile(), v) }
 
 func (s *Store) LoadRemote(v any) error { return loadJSON(s.remoteFile(), v) }
 
-func (s *Store) SaveRemote(v any) error { return saveJSON(s.remoteFile(), v) }
+func (s *Store) SaveRemote(v any) error { return s.saveJSON(s.remoteFile(), v) }
+
+func (s *Store) LoadRuntimeFoundation(v any) (bool, error) {
+	data, err := os.ReadFile(s.runtimeFoundationFile())
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := validateRuntimeFoundation(data); err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SaveRuntimeFoundation atomically persists the writer floor and lifecycle
+// state in one file. There is deliberately no delete or floor-lowering API.
+func (s *Store) SaveRuntimeFoundation(v any) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	if _, err := validateRuntimeFoundation(data); err != nil {
+		return err
+	}
+	return replaceFile(s.runtimeFoundationFile(), data, 0o600)
+}
+
+func validateRuntimeFoundationFile(dir string) error {
+	data, err := os.ReadFile(filepath.Join(dir, "runtime-foundation.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read runtime foundation: %w", err)
+	}
+	_, err = validateRuntimeFoundation(data)
+	return err
+}
+
+func validateRuntimeFoundation(data []byte) (RuntimeFoundationEnvelope, error) {
+	var envelope RuntimeFoundationEnvelope
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return envelope, fmt.Errorf("invalid runtime foundation: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return envelope, fmt.Errorf("invalid runtime foundation: multiple JSON values")
+		}
+		return envelope, fmt.Errorf("invalid runtime foundation trailer: %w", err)
+	}
+	if envelope.SchemaVersion > RuntimeFoundationSchemaVersion {
+		return envelope, fmt.Errorf("newer runtime foundation schema %d requires a newer build", envelope.SchemaVersion)
+	}
+	if envelope.SchemaVersion != RuntimeFoundationSchemaVersion {
+		return envelope, fmt.Errorf("invalid runtime foundation schema %d", envelope.SchemaVersion)
+	}
+	if envelope.MinimumWriter > RuntimeWriterFloorR0 {
+		return envelope, fmt.Errorf("runtime foundation writer floor %d requires a newer build", envelope.MinimumWriter)
+	}
+	if envelope.MinimumWriter < RuntimeWriterFloorR0 {
+		return envelope, fmt.Errorf("invalid runtime foundation writer floor %d", envelope.MinimumWriter)
+	}
+	if len(envelope.GatewayLifecycle) == 0 || string(envelope.GatewayLifecycle) == "null" {
+		return envelope, fmt.Errorf("invalid runtime foundation: gateway lifecycle state is required")
+	}
+	return envelope, nil
+}
 
 func loadJSON(path string, v any) error {
 	data, err := os.ReadFile(path)
@@ -372,42 +593,42 @@ func replaceFile(path string, data []byte, mode os.FileMode) error {
 }
 
 func (s *Store) AppendComm(v any) error {
-	return appendNDJSON(s.commsFile(), v)
+	return s.appendNDJSON(s.commsFile(), v)
 }
 
 func (s *Store) ReadComms(fn func(json.RawMessage)) error {
 	return readNDJSON(s.commsFile(), fn)
 }
 
-func (s *Store) AppendMessage(v any) error { return appendNDJSON(s.messagesFile(), v) }
+func (s *Store) AppendMessage(v any) error { return s.appendNDJSON(s.messagesFile(), v) }
 
 func (s *Store) ReadMessages(fn func(json.RawMessage)) error {
 	return readNDJSON(s.messagesFile(), fn)
 }
 
-func (s *Store) AppendInbox(v any) error { return appendNDJSON(s.inboxFile(), v) }
+func (s *Store) AppendInbox(v any) error { return s.appendNDJSON(s.inboxFile(), v) }
 
 func (s *Store) ReadInbox(fn func(json.RawMessage)) error { return readNDJSON(s.inboxFile(), fn) }
 
-func (s *Store) AppendAttempt(v any) error { return appendNDJSON(s.attemptsFile(), v) }
+func (s *Store) AppendAttempt(v any) error { return s.appendNDJSON(s.attemptsFile(), v) }
 
 func (s *Store) ReadAttempts(fn func(json.RawMessage)) error {
 	return readNDJSON(s.attemptsFile(), fn)
 }
 
-func (s *Store) AppendOutbox(v any) error { return appendNDJSON(s.outboxFile(), v) }
+func (s *Store) AppendOutbox(v any) error { return s.appendNDJSON(s.outboxFile(), v) }
 
 func (s *Store) ReadOutbox(fn func(json.RawMessage)) error { return readNDJSON(s.outboxFile(), fn) }
 
 func (s *Store) AppendProviderOperation(v any) error {
-	return appendNDJSON(s.providerOperationsFile(), v)
+	return s.appendNDJSON(s.providerOperationsFile(), v)
 }
 
 func (s *Store) ReadProviderOperations(fn func(json.RawMessage)) error {
 	return readNDJSON(s.providerOperationsFile(), fn)
 }
 
-func (s *Store) AppendHumanRequest(v any) error { return appendNDJSON(s.humanRequestsFile(), v) }
+func (s *Store) AppendHumanRequest(v any) error { return s.appendNDJSON(s.humanRequestsFile(), v) }
 
 func (s *Store) ReadHumanRequests(fn func(json.RawMessage)) error {
 	return readNDJSON(s.humanRequestsFile(), fn)
@@ -485,6 +706,11 @@ func readNDJSON(path string, fn func(json.RawMessage)) error {
 // ReplaceComms atomically compacts the communication index to one current
 // snapshot per message. Codex Thread rollout history is intentionally untouched.
 func (s *Store) ReplaceComms(records []json.RawMessage) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
 	if original, err := os.ReadFile(s.commsFile()); err == nil && len(original) > 0 {
 		backup := filepath.Join(s.dir, "comms.v1-name-addressed.ndjson")
 		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {

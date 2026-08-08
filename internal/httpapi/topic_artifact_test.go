@@ -26,10 +26,11 @@ func TestTopicArtifactRoutesExposePreviewableLinkedArtifacts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { h.Shutdown(); _ = st.Close() })
 	topic, err := h.CreateTopic(hub.CreateTopicParams{
 		Title: "Preview artifacts", Purpose: "Verify Topic evidence.", CompletionBoundary: "Preview opens.",
 		ResponsibleAgent: "lead", CreatedBy: "owner",

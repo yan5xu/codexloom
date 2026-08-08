@@ -27,11 +27,16 @@ func (s *Store) LoadLoomAgentPrompt(v any) error {
 }
 
 func (s *Store) SaveLoomAgentPrompt(v any) error {
-	return saveJSON(s.loomAgentPromptFile(), v)
+	return s.saveJSON(s.loomAgentPromptFile(), v)
 }
 
 func (s *Store) DeleteLoomAgentPrompt() error {
-	err := os.Remove(s.loomAgentPromptFile())
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+	err = os.Remove(s.loomAgentPromptFile())
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -43,6 +48,11 @@ func (s *Store) LoadContextCoverage(threadID string, v any) error {
 }
 
 func (s *Store) SaveContextCoverage(threadID string, v any) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
 	if err := os.MkdirAll(s.contextCoverageDir(), 0o700); err != nil {
 		return err
 	}

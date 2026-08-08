@@ -54,6 +54,7 @@ func TestProviderOperationUsesAddressConnectionAndPersistsNativeResult(t *testin
 		t.Fatalf("completed operation = %#v", completed)
 	}
 
+	h.Shutdown()
 	reloaded := New(st)
 	defer reloaded.Shutdown()
 	persisted, err := reloaded.GetProviderOperation(operation.ID)
@@ -253,7 +254,11 @@ func TestProviderOperationRecoveryDoesNotReplayTerminalHistory(t *testing.T) {
 		}
 	}
 	for restart := 1; restart <= 2; restart++ {
-		h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+		reader, err := st.OpenReadOnly()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := OpenWithOptions(reader, OpenOptions{Passive: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -262,5 +267,6 @@ func TestProviderOperationRecoveryDoesNotReplayTerminalHistory(t *testing.T) {
 			t.Fatalf("restart %d operation = %#v", restart, got)
 		}
 		h.Shutdown()
+		_ = reader.Close()
 	}
 }

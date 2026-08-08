@@ -72,7 +72,12 @@ func TestAgentEventsRequestReconcileWhenCursorWasCompacted(t *testing.T) {
 	if err := st.AppendEvent("agent-1", store.Event{Seq: 5, TS: nowForTest(), Type: "item/completed", Data: json.RawMessage(`{"id":"item-1"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	reader, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	h, err := hub.OpenWithOptions(reader, hub.OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +102,12 @@ func TestAgentEventsTailDoesNotMasqueradeAsCompaction(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	reader, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	h, err := hub.OpenWithOptions(reader, hub.OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}

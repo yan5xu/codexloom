@@ -21,6 +21,7 @@ func TestRasterArtifactCanBeEmbeddedCrossOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer st.Close()
 	stamp := nowForTest()
 	if err := st.SaveAgents(map[string]*hub.Agent{
 		"viewer": {
@@ -30,7 +31,7 @@ func TestRasterArtifactCanBeEmbeddedCrossOrigin(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	writer, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,13 +42,25 @@ func TestRasterArtifactCanBeEmbeddedCrossOrigin(t *testing.T) {
 	if err := png.Encode(&imageBytes, pixel); err != nil {
 		t.Fatal(err)
 	}
-	artifact, err := h.StageThreadArtifact("viewer", "evidence.png", "image/png", bytes.NewReader(imageBytes.Bytes()))
+	artifact, err := writer.StageThreadArtifact("viewer", "evidence.png", "image/png", bytes.NewReader(imageBytes.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
+	writer.Shutdown()
+
+	reader, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	h, err := hub.OpenWithOptions(reader, hub.OpenOptions{Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
 
 	web := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("ok"), Mode: fs.FileMode(0o644)}}
-	server := httptest.NewServer(New(h, st, web).Handler())
+	server := httptest.NewServer(New(h, reader, web).Handler())
 	defer server.Close()
 
 	request, err := http.NewRequest(

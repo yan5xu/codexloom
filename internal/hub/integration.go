@@ -422,10 +422,10 @@ type ConnectorCommand struct {
 	ProviderOperation *ProviderOperation `json:"providerOperation,omitempty"`
 }
 
-func (h *Hub) loadIntegrations() error {
+func (h *Hub) loadIntegrations() (bool, error) {
 	var cfg integrationConfig
 	if err := h.st.LoadIntegrations(&cfg); err != nil {
-		return err
+		return false, err
 	}
 	if cfg.Connections != nil {
 		h.connections = cfg.Connections
@@ -444,20 +444,25 @@ func (h *Hub) loadIntegrations() error {
 	}
 	changed := h.normalizeAddressLifecycleLocked()
 	changed = h.migrateAllowedConversationsLocked() || changed
-	if changed {
-		return h.persistIntegrationsLocked()
-	}
-	return nil
+	return changed, nil
 }
 
 func (h *Hub) persistIntegrationsLocked() error {
-	return h.st.SaveIntegrations(integrationConfig{
+	config := integrationConfig{
 		Connections: h.connections, Addresses: h.addresses, Memberships: h.memberships,
 		ConversationCandidates: h.conversationCandidates, AddressOperations: h.addressOperations,
-	})
+	}
+	if h.saveIntegrations != nil {
+		return h.saveIntegrations(config)
+	}
+	return h.st.SaveIntegrations(config)
 }
 
 func (h *Hub) loadInboxState() error {
+	return h.loadInboxStateWithPersistence(true)
+}
+
+func (h *Hub) loadInboxStateWithPersistence(persistRecovery bool) error {
 	staleInbox := map[string]bool{}
 	staleAttempts := map[string]bool{}
 	staleOutbox := map[string]bool{}
@@ -519,8 +524,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendInbox(item); err != nil {
-				return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendInbox(item); err != nil {
+					return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.inbox[id] = &copy
@@ -558,8 +565,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendAttempt(attempt); err != nil {
-				return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendAttempt(attempt); err != nil {
+					return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+				}
 			}
 			copy := attempt
 			h.attempts[id] = &copy
@@ -586,8 +595,10 @@ func (h *Hub) loadInboxState() error {
 		item := *current
 		if staleOutbox[id] {
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -599,8 +610,10 @@ func (h *Hub) loadInboxState() error {
 			item.ClaimExpiresAt = ""
 			item.LastError = "recovered legacy delivery claim after CodexLoom restart"
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+			if persistRecovery {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -624,9 +637,11 @@ func (h *Hub) loadInboxState() error {
 			reconciledInbox = append(reconciledInbox, *item)
 		}
 	}
-	for _, item := range reconciledInbox {
-		if err := h.st.AppendInbox(item); err != nil {
-			return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+	if persistRecovery {
+		for _, item := range reconciledInbox {
+			if err := h.st.AppendInbox(item); err != nil {
+				return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+			}
 		}
 	}
 	return nil
@@ -668,8 +683,13 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 		CredentialRef: credentialRef, Status: "disconnected", Capabilities: normalizeCapabilities(p.Capabilities),
 		Enabled: enabled, CreatedAt: ts, UpdatedAt: ts,
 	}
+	unlock := h.gatewayCoordinator.lock(connection.ID)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return PlatformConnection{}, err
+	}
 	h.connections[connection.ID] = &connection
 	if err := h.persistIntegrationsLocked(); err != nil {
 		delete(h.connections, connection.ID)
@@ -684,7 +704,11 @@ func (h *Hub) ListConnections() []PlatformConnection {
 	defer h.mu.Unlock()
 	out := make([]PlatformConnection, 0, len(h.connections))
 	for _, connection := range h.connections {
-		out = append(out, *connection)
+		copy := *connection
+		projection := h.reduceGatewayHealthLocked(copy)
+		copy.Status = projection.Status
+		copy.LastError = projection.Error
+		out = append(out, copy)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out
@@ -694,8 +718,12 @@ func (h *Hub) ListConnections() []PlatformConnection {
 // provisioning attempt. Callers must only pass IDs that did not exist before
 // that attempt; existing integration state is never modified here.
 func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) error {
+	unlock := h.lockGatewayMutationScope(connectionIDs, addressIDs)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	lockedConnectionIDs := append([]string(nil), connectionIDs...)
+	lockedConnectionIDs = append(lockedConnectionIDs, h.gatewayConnectionIDsForAddressesLocked(addressIDs)...)
 	nextConnections := cloneConnections(h.connections)
 	nextAddresses := cloneAddresses(h.addresses)
 	nextMemberships := cloneMemberships(h.memberships)
@@ -735,6 +763,13 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 		}
 		delete(nextConnections, id)
 	}
+	if err := h.requireGatewayControlsAbsentLocked(connectionIDs); err != nil {
+		return err
+	}
+	ticket, err := h.prepareGatewayMutationLocked(lockedConnectionIDs...)
+	if err != nil {
+		return err
+	}
 	previousConnections, previousAddresses := h.connections, h.addresses
 	previousMemberships, previousCandidates := h.memberships, h.conversationCandidates
 	h.connections, h.addresses = nextConnections, nextAddresses
@@ -744,6 +779,14 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 		h.memberships, h.conversationCandidates = previousMemberships, previousCandidates
 		return errf(500, "save integration rollback: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return errf(500, "save reconciled integration rollback: %s", err)
+		}
+	}
 	h.emitGlobalLocked("loom/integration-rollback", map[string]any{"connections": connectionIDs, "addresses": addressIDs})
 	return nil
 }
@@ -751,8 +794,20 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 // RestoreIntegrationResources puts existing resources back to their exact
 // pre-provisioning values after a failed provider migration.
 func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addresses []AgentAddress) error {
+	connectionIDs := make([]string, 0, len(connections)+len(addresses))
+	addressIDs := make([]string, 0, len(addresses))
+	for _, connection := range connections {
+		connectionIDs = append(connectionIDs, connection.ID)
+	}
+	for _, address := range addresses {
+		connectionIDs = append(connectionIDs, address.ConnectionID)
+		addressIDs = append(addressIDs, address.ID)
+	}
+	unlock := h.lockGatewayMutationScope(connectionIDs, addressIDs)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	connectionIDs = append(connectionIDs, h.gatewayConnectionIDsForAddressesLocked(addressIDs)...)
 	nextConnections := cloneConnections(h.connections)
 	nextAddresses := cloneAddresses(h.addresses)
 	for i := range connections {
@@ -769,11 +824,23 @@ func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addr
 			nextAddresses[address.ID] = &copy
 		}
 	}
+	ticket, err := h.prepareGatewayMutationLocked(connectionIDs...)
+	if err != nil {
+		return err
+	}
 	previousConnections, previousAddresses := h.connections, h.addresses
 	h.connections, h.addresses = nextConnections, nextAddresses
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections, h.addresses = previousConnections, previousAddresses
 		return errf(500, "save integration restore: %s", err)
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return errf(500, "save reconciled integration restore: %s", err)
+		}
 	}
 	h.emitGlobalLocked("loom/integration-restored", map[string]any{"connections": connections, "addresses": addresses})
 	return nil
@@ -783,6 +850,10 @@ func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addr
 // keeping them available for historical Inbox/Outbox resolution. Missing or
 // newer Membership configuration is projected onto the canonical Address.
 func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAddressID string, duplicateConnectionIDs, duplicateAddressIDs []string) (IntegrationConsolidationResult, error) {
+	lockedConnectionIDs := append([]string{canonicalConnectionID}, duplicateConnectionIDs...)
+	lockedAddressIDs := append([]string{canonicalAddressID}, duplicateAddressIDs...)
+	unlock := h.lockGatewayMutationScope(lockedConnectionIDs, lockedAddressIDs)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -834,6 +905,14 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 				return IntegrationConsolidationResult{}, errf(409, "connection %s also serves address %s", id, candidate.ID)
 			}
 		}
+	}
+	affectedConnectionIDs := []string{connection.ID}
+	for id := range retiredConnections {
+		affectedConnectionIDs = append(affectedConnectionIDs, id)
+	}
+	ticket, err := h.prepareGatewayMutationLocked(affectedConnectionIDs...)
+	if err != nil {
+		return IntegrationConsolidationResult{}, err
 	}
 
 	connections := cloneConnections(h.connections)
@@ -944,6 +1023,14 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 		h.memberships, h.conversationCandidates = oldMemberships, oldCandidates
 		return IntegrationConsolidationResult{}, errf(500, "save integration consolidation: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return IntegrationConsolidationResult{}, err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return IntegrationConsolidationResult{}, errf(500, "save reconciled integration consolidation: %s", err)
+		}
+	}
 	sort.Strings(result.ArchivedConnectionIDs)
 	sort.Strings(result.ArchivedAddressIDs)
 	sort.Strings(result.ArchivedMembershipIDs)
@@ -1042,9 +1129,12 @@ func maxInt(left, right int) int {
 }
 
 func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnection, error) {
+	id = strings.TrimSpace(id)
+	unlock := h.gatewayCoordinator.lock(id)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	connection := h.connections[strings.TrimSpace(id)]
+	connection := h.connections[id]
 	if connection == nil {
 		return PlatformConnection{}, errf(404, "connection not found: %s", id)
 	}
@@ -1079,11 +1169,28 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 		}
 	}
 	next.UpdatedAt = now()
+	previous := *connection
+	ticket, err := h.prepareGatewayMutationLocked(id)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
 	h.connections[next.ID] = &next
+	h.applyGatewayHealthProjectionLocked(next.ID)
 	if err := h.persistIntegrationsLocked(); err != nil {
-		h.connections[next.ID] = connection
+		restored := previous
+		h.connections[next.ID] = &restored
+		h.applyGatewayHealthProjectionLocked(next.ID)
 		return PlatformConnection{}, errf(500, "save integration: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return PlatformConnection{}, err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return PlatformConnection{}, errf(500, "save reconciled integration: %s", err)
+		}
+	}
+	next = *h.connections[next.ID]
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
 	return next, nil
 }
@@ -1114,15 +1221,19 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 	if p.Cursor != "" {
 		next.Cursor = p.Cursor
 	}
-	if p.Capabilities != nil {
-		next.Capabilities = normalizeCapabilities(p.Capabilities)
-	}
 	next.LastError = strings.TrimSpace(p.Error)
+	previous := *connection
 	h.connections[next.ID] = &next
+	if _, err := h.recordGatewayObservationWithCapabilitiesLocked(next.ID, status, p.Error, ts, p.Capabilities); err != nil {
+		h.connections[next.ID] = &previous
+		return PlatformConnection{}, fmt.Errorf("persist gateway health observation: %w", err)
+	}
 	if err := h.persistIntegrationsLocked(); err != nil {
-		h.connections[next.ID] = connection
+		h.connections[next.ID] = &previous
+		h.applyGatewayHealthProjectionLocked(next.ID)
 		return PlatformConnection{}, errf(500, "save connection heartbeat: %s", err)
 	}
+	next = *h.connections[next.ID]
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
 	return next, nil
 }
@@ -1138,8 +1249,14 @@ func (h *Hub) MarkConnectionDisconnected(id, reason string) {
 	connection.Status = "disconnected"
 	connection.LastError = strings.TrimSpace(reason)
 	connection.UpdatedAt = now()
+	if _, err := h.recordGatewayObservationLocked(connection.ID, "disconnected", reason, connection.UpdatedAt); err != nil {
+		*connection = previous
+		log.Printf("[codex-loom] persist disconnected gateway observation %s: %v", id, err)
+		return
+	}
 	if err := h.persistIntegrationsLocked(); err != nil {
 		*connection = previous
+		h.applyGatewayHealthProjectionLocked(connection.ID)
 		log.Printf("[codex-loom] persist disconnected connection %s: %v", id, err)
 		return
 	}
@@ -1179,6 +1296,8 @@ func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
 		enabled = *p.Enabled
 	}
 
+	unlock := h.gatewayCoordinator.lock(connectionID)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[connectionID]
@@ -1209,6 +1328,10 @@ func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
 		BlockActors: normalizeIdentityList(p.BlockActors), BlockConversations: normalizeIdentityList(p.BlockConversations),
 		Enabled: enabled, Version: 1, CreatedAt: ts, UpdatedAt: ts,
 	}
+	ticket, err := h.prepareGatewayMutationLocked(connectionID)
+	if err != nil {
+		return AgentAddress{}, err
+	}
 	h.addresses[address.ID] = &address
 	createdMemberships := h.ensureAllowedConversationMembershipsLocked(&address)
 	if err := h.persistIntegrationsLocked(); err != nil {
@@ -1217,6 +1340,14 @@ func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
 			delete(h.memberships, id)
 		}
 		return AgentAddress{}, errf(500, "save agent address: %s", err)
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return AgentAddress{}, err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return AgentAddress{}, errf(500, "save reconciled agent address: %s", err)
+		}
 	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": address})
 	return address, nil
@@ -1244,6 +1375,9 @@ func (h *Hub) ListAddresses(agentKey string) ([]AgentAddress, error) {
 }
 
 func (h *Hub) UpdateAddress(id string, p AddressParams) (AgentAddress, error) {
+	id = strings.TrimSpace(id)
+	unlock := h.lockGatewayMutationScope(nil, []string{id})
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	address := h.addresses[id]
@@ -1318,6 +1452,10 @@ func (h *Hub) UpdateAddress(id string, p AddressParams) (AgentAddress, error) {
 	}
 	next.UpdatedAt = now()
 	next.Version++
+	ticket, err := h.prepareGatewayMutationLocked(address.ConnectionID)
+	if err != nil {
+		return AgentAddress{}, err
+	}
 	previousMemberships := h.memberships
 	h.memberships = cloneMemberships(h.memberships)
 	h.addresses[id] = &next
@@ -1338,6 +1476,14 @@ func (h *Hub) UpdateAddress(id string, p AddressParams) (AgentAddress, error) {
 		h.addresses[id] = address
 		h.memberships = previousMemberships
 		return AgentAddress{}, errf(500, "save agent address: %s", err)
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return AgentAddress{}, err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return AgentAddress{}, errf(500, "save reconciled agent address: %s", err)
+		}
 	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": next})
 	for _, membership := range updatedMemberships {

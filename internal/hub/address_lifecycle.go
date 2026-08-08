@@ -156,6 +156,9 @@ func (h *Hub) PreflightAddressLifecycle(addressID string, params AddressLifecycl
 }
 
 func (h *Hub) ApplyAddressLifecycle(addressID string, params AddressLifecycleParams) (AddressLifecycleResult, error) {
+	addressID = strings.TrimSpace(addressID)
+	unlock := h.lockGatewayMutationScope(nil, []string{addressID})
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -240,8 +243,20 @@ func (h *Hub) ApplyAddressLifecycle(addressID string, params AddressLifecyclePar
 	}
 	operation.AddressVersionAfter = nextAddress.Version
 	nextOperations[operation.ID] = operation
+	ticket, err := h.prepareGatewayMutationLocked(address.ConnectionID)
+	if err != nil {
+		return result, err
+	}
 	if err := h.commitAddressLifecycleLocked(nextAddresses, nextMemberships, nextCandidates, nextOperations); err != nil {
 		return result, err
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return result, err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return result, errf(500, "save reconciled address lifecycle operation: %s", err)
+		}
 	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": *nextAddress})
 	for _, snapshot := range operation.MembershipsBefore {
@@ -264,6 +279,15 @@ func (h *Hub) PreflightAddressTransferRollback(operationID string) (AddressLifec
 }
 
 func (h *Hub) RollbackAddressTransfer(operationID string, params AddressTransferRollbackParams) (AddressLifecycleResult, error) {
+	h.mu.Lock()
+	operation := h.addressOperations[strings.TrimSpace(operationID)]
+	addressID := ""
+	if operation != nil {
+		addressID = operation.AddressID
+	}
+	h.mu.Unlock()
+	unlock := h.lockGatewayMutationScope(nil, []string{addressID})
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	plan, source, address, err := h.preflightAddressTransferRollbackLocked(operationID, params.ExpectedVersion)
@@ -305,8 +329,20 @@ func (h *Hub) RollbackAddressTransfer(operationID string, params AddressTransfer
 	rollback.AddressVersionAfter = nextAddress.Version
 	nextOperations[source.ID].ReversedBy = rollback.ID
 	nextOperations[rollback.ID] = rollback
+	ticket, err := h.prepareGatewayMutationLocked(address.ConnectionID)
+	if err != nil {
+		return result, err
+	}
 	if err := h.commitAddressLifecycleLocked(nextAddresses, h.memberships, h.conversationCandidates, nextOperations); err != nil {
 		return result, err
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return result, err
+	}
+	if ticket.active() {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return result, errf(500, "save reconciled address transfer rollback: %s", err)
+		}
 	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": *nextAddress})
 	h.emitGlobalLocked("loom/integration-address-lifecycle", map[string]any{"operation": rollback, "address": *nextAddress})

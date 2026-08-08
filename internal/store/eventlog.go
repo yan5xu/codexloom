@@ -99,6 +99,11 @@ func (s *Store) SetEventLogPolicy(policy EventLogPolicy) {
 }
 
 func (s *Store) AppendEvent(agentID string, ev Event) error {
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
 	data, err := json.Marshal(ev)
 	if err != nil {
 		return err
@@ -107,7 +112,7 @@ func (s *Store) AppendEvent(agentID string, ev Event) error {
 
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
-	f, err := os.OpenFile(s.eventsFile(agentID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := s.rootedOpenFile(s.eventsFile(agentID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
@@ -117,6 +122,9 @@ func (s *Store) AppendEvent(agentID string, ev Event) error {
 		_ = f.Close()
 	}
 	if err != nil {
+		return err
+	}
+	if err := s.finishWrite(nil); err != nil {
 		return err
 	}
 	s.eventLastSeq[agentID] = ev.Seq
@@ -166,11 +174,16 @@ func (s *Store) LastSeq(agentID string) int64 {
 // MaintainEventLogs rotates oversized active logs, compresses immutable
 // segments, and prunes old diagnostic archives. It is safe to run repeatedly.
 func (s *Store) MaintainEventLogs() (EventMaintenanceReport, error) {
+	done, err := s.beginWrite()
+	if err != nil {
+		return EventMaintenanceReport{}, err
+	}
+	defer done()
 	s.eventMaintenanceMu.Lock()
 	defer s.eventMaintenanceMu.Unlock()
 
 	var report EventMaintenanceReport
-	entries, err := os.ReadDir(filepath.Join(s.dir, "events"))
+	entries, err := s.rootedReadDir(filepath.Join(s.dir, "events"))
 	if err != nil {
 		return report, err
 	}
@@ -192,7 +205,7 @@ func (s *Store) MaintainEventLogs() (EventMaintenanceReport, error) {
 	}
 	s.eventMu.Unlock()
 
-	entries, err = os.ReadDir(filepath.Join(s.dir, "events"))
+	entries, err = s.rootedReadDir(filepath.Join(s.dir, "events"))
 	if err != nil {
 		return report, err
 	}
@@ -202,7 +215,7 @@ func (s *Store) MaintainEventLogs() (EventMaintenanceReport, error) {
 			continue
 		}
 		path := filepath.Join(s.dir, "events", entry.Name())
-		compressedBytes, compressErr := compressEventSegment(path)
+		compressedBytes, compressErr := s.compressEventSegment(path)
 		if compressErr != nil {
 			errs = append(errs, compressErr)
 			continue
@@ -216,12 +229,15 @@ func (s *Store) MaintainEventLogs() (EventMaintenanceReport, error) {
 	if pruneErr != nil {
 		errs = append(errs, pruneErr)
 	}
-	return report, errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return report, err
+	}
+	return report, s.finishWrite(nil)
 }
 
 func (s *Store) rotateEventLogIfNeededLocked(agentID string) (bool, error) {
 	path := s.eventsFile(agentID)
-	info, err := os.Stat(path)
+	info, err := s.rootedStat(path)
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -231,7 +247,7 @@ func (s *Store) rotateEventLogIfNeededLocked(agentID string) (bool, error) {
 	if info.Size() <= s.eventPolicy.MaxActiveBytes {
 		return false, nil
 	}
-	lines, err := readEventTail(path, s.eventPolicy.ReplayEvents, s.eventPolicy.MaxReplayBytes)
+	lines, err := s.readEventTail(path, s.eventPolicy.ReplayEvents, s.eventPolicy.MaxReplayBytes)
 	if err != nil {
 		return false, err
 	}
@@ -242,19 +258,19 @@ func (s *Store) rotateEventLogIfNeededLocked(agentID string) (bool, error) {
 	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
 	pending := filepath.Join(filepath.Dir(path), fmt.Sprintf("%s.events-%s-%d.ndjson.pending", agentID, stamp, lastSeq))
 	next := path + ".next"
-	if err := writeSyncedFile(next, joinEventLines(lines), 0o600); err != nil {
+	if err := s.writeSyncedFile(next, joinEventLines(lines), 0o600); err != nil {
 		return false, err
 	}
-	if err := os.Rename(path, pending); err != nil {
-		_ = os.Remove(next)
+	if err := s.rootedRename(path, pending); err != nil {
+		_ = s.rootedRemove(next)
 		return false, err
 	}
-	if err := os.Rename(next, path); err != nil {
-		_ = os.Rename(pending, path)
-		_ = os.Remove(next)
+	if err := s.rootedRename(next, path); err != nil {
+		_ = s.rootedRename(pending, path)
+		_ = s.rootedRemove(next)
 		return false, err
 	}
-	if err := syncDir(filepath.Dir(path)); err != nil {
+	if err := s.rootedSyncDir(filepath.Dir(path)); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -266,6 +282,19 @@ func readEventTail(path string, maxEvents int, maxBytes int64) ([][]byte, error)
 		return nil, err
 	}
 	defer f.Close()
+	return readEventTailFromFile(f, maxEvents, maxBytes)
+}
+
+func (s *Store) readEventTail(path string, maxEvents int, maxBytes int64) ([][]byte, error) {
+	f, err := s.rootedOpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readEventTailFromFile(f, maxEvents, maxBytes)
+}
+
+func readEventTailFromFile(f *os.File, maxEvents int, maxBytes int64) ([][]byte, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -360,15 +389,15 @@ func readEventFile(path string, since int64) ([]Event, error) {
 	return out, scanner.Err()
 }
 
-func compressEventSegment(path string) (int64, error) {
-	in, err := os.Open(path)
+func (s *Store) compressEventSegment(path string) (int64, error) {
+	in, err := s.rootedOpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return 0, err
 	}
 	defer in.Close()
 	target := strings.TrimSuffix(path, ".pending") + ".gz"
 	tmp := target + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	out, err := s.rootedOpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
 	}
@@ -376,7 +405,7 @@ func compressEventSegment(path string) (int64, error) {
 	defer func() {
 		_ = out.Close()
 		if !ok {
-			_ = os.Remove(tmp)
+			_ = s.rootedRemove(tmp)
 		}
 	}()
 	gz, err := gzip.NewWriterLevel(out, gzip.BestSpeed)
@@ -396,17 +425,17 @@ func compressEventSegment(path string) (int64, error) {
 	if err := out.Close(); err != nil {
 		return 0, err
 	}
-	if err := os.Rename(tmp, target); err != nil {
+	if err := s.rootedRename(tmp, target); err != nil {
 		return 0, err
 	}
-	if err := os.Remove(path); err != nil {
+	if err := s.rootedRemove(path); err != nil {
 		return 0, err
 	}
-	if err := syncDir(filepath.Dir(path)); err != nil {
+	if err := s.rootedSyncDir(filepath.Dir(path)); err != nil {
 		return 0, err
 	}
 	ok = true
-	info, err := os.Stat(target)
+	info, err := s.rootedStat(target)
 	if err != nil {
 		return 0, err
 	}
@@ -424,7 +453,7 @@ func (s *Store) pruneEventArchives() (int, int64, error) {
 	s.eventMu.Lock()
 	policy := s.eventPolicy
 	s.eventMu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(s.dir, "events"))
+	entries, err := s.rootedReadDir(filepath.Join(s.dir, "events"))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -456,7 +485,7 @@ func (s *Store) pruneEventArchives() (int, int64, error) {
 			overBytes := policy.MaxArchiveBytes == 0 || keptBytes+archive.size > policy.MaxArchiveBytes
 			overAge := policy.MaxArchiveAge == 0 || now.Sub(archive.modTime) > policy.MaxArchiveAge
 			if overCount || overBytes || overAge {
-				if err := os.Remove(archive.path); err != nil {
+				if err := s.rootedRemove(archive.path); err != nil {
 					errs = append(errs, err)
 					continue
 				}
@@ -491,8 +520,8 @@ func (s *Store) lastArchivedSeq(agentID string) int64 {
 	return maxSeq
 }
 
-func writeSyncedFile(path string, data []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+func (s *Store) writeSyncedFile(path string, data []byte, mode os.FileMode) error {
+	f, err := s.rootedOpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
@@ -505,15 +534,6 @@ func writeSyncedFile(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return f.Close()
-}
-
-func syncDir(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
 }
 
 func envPositiveInt64(name string, fallback int64) int64 {

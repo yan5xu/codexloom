@@ -27,15 +27,20 @@ func (s *Store) LoadLoomAgentPrompt(v any) error {
 }
 
 func (s *Store) SaveLoomAgentPrompt(v any) error {
-	return saveJSON(s.loomAgentPromptFile(), v)
+	return s.saveJSON(s.loomAgentPromptFile(), v)
 }
 
 func (s *Store) DeleteLoomAgentPrompt() error {
-	err := os.Remove(s.loomAgentPromptFile())
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+	err = s.rootedRemove(s.loomAgentPromptFile())
 	if os.IsNotExist(err) {
 		return nil
 	}
-	return err
+	return s.finishWrite(err)
 }
 
 func (s *Store) LoadContextCoverage(threadID string, v any) error {
@@ -43,10 +48,15 @@ func (s *Store) LoadContextCoverage(threadID string, v any) error {
 }
 
 func (s *Store) SaveContextCoverage(threadID string, v any) error {
-	if err := os.MkdirAll(s.contextCoverageDir(), 0o700); err != nil {
+	done, err := s.beginWrite()
+	if err != nil {
 		return err
 	}
-	return saveJSON(s.contextCoverageFile(threadID), v)
+	defer done()
+	if err := s.rootedMkdirAll(s.contextCoverageDir(), 0o700); err != nil {
+		return err
+	}
+	return s.finishWrite(s.saveJSONUnlocked(s.contextCoverageFile(threadID), v))
 }
 
 func (s *Store) ReadContextCoverage(threadID string) (json.RawMessage, error) {

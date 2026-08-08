@@ -296,6 +296,10 @@ func newRelationshipID() string {
 // stable identities and atomically compacts legacy snapshots. Codex rollouts
 // are a separate source of truth and are never changed here.
 func (h *Hub) migrateCommAgentIDsLocked() error {
+	return h.migrateCommAgentIDsLockedWithPersistence(true)
+}
+
+func (h *Hub) migrateCommAgentIDsLockedWithPersistence(persist bool) error {
 	byName := map[string]string{}
 	for _, agent := range h.agents {
 		byName[agent.Name] = agent.ID
@@ -375,6 +379,9 @@ func (h *Hub) migrateCommAgentIDsLocked() error {
 		}
 	}
 	if !changed {
+		return nil
+	}
+	if !persist {
 		return nil
 	}
 	records := make([]json.RawMessage, 0, len(h.commOrder))

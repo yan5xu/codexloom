@@ -274,7 +274,19 @@ func (s *subscriber) close() {
 }
 
 type Hub struct {
-	st *store.Store
+	st              *store.Store
+	passive         bool
+	writerOwnership *store.WritableOwnership
+
+	// Persistence seams keep the R0 crash boundaries deterministic in tests.
+	// Production leaves them nil and writes through Store.
+	saveIntegrations              func(integrationConfig) error
+	saveRuntimeFoundation         func(gatewayFoundationDocument) error
+	gatewayLifecycle              gatewayLifecycleState
+	gatewayFoundationPresent      bool
+	gatewayFoundationPoisoned     bool
+	gatewayFoundationPoisonReason string
+	gatewayCoordinator            *gatewayConnectionCoordinator
 
 	mu                      sync.Mutex
 	contextCoverageMu       sync.Mutex
@@ -325,6 +337,7 @@ type Hub struct {
 	codexHostGeneration     uint64
 	stop                    chan struct{}
 	stopOnce                sync.Once
+	shutdownOnce            sync.Once
 	stopping                bool
 	draining                bool
 	providerSwitching       bool
@@ -364,8 +377,35 @@ func Open(st *store.Store) (*Hub, error) {
 }
 
 func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
+	if st == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	var writerOwnership *store.WritableOwnership
+	if options.Passive {
+		if !st.PassiveCapableReadOnly() {
+			return nil, fmt.Errorf("passive Hub requires an independently opened read-only Store")
+		}
+	} else if st.ReadOnly() {
+		return nil, fmt.Errorf("writable Hub requires a writable Store")
+	} else {
+		var err error
+		writerOwnership, err = st.ClaimWritableOwnership()
+		if err != nil {
+			return nil, err
+		}
+	}
+	opened := false
+	defer func() {
+		if !opened && writerOwnership != nil {
+			writerOwnership.Release()
+		}
+	}()
 	h := &Hub{
 		st:                     st,
+		passive:                options.Passive,
+		writerOwnership:        writerOwnership,
+		gatewayLifecycle:       emptyGatewayLifecycleState(),
+		gatewayCoordinator:     newGatewayConnectionCoordinator(),
 		agents:                 map[string]*Agent{},
 		agentSkillConfigs:      map[string]*AgentSkillConfig{},
 		comms:                  map[string]*AgentMessage{},
@@ -454,16 +494,37 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if err := h.validateLoadedCollaborationGroupsLocked(); err != nil {
 		return nil, fmt.Errorf("validate collaboration groups: %w", err)
 	}
-	if err := h.loadIntegrations(); err != nil {
+	integrationsNormalized, err := h.loadIntegrations()
+	if err != nil {
 		return nil, fmt.Errorf("load integrations: %w", err)
 	}
-	if err := h.loadInboxState(); err != nil {
+	if err := h.loadGatewayLifecycle(); err != nil {
+		return nil, fmt.Errorf("load gateway lifecycle: %w", err)
+	}
+	if integrationsNormalized && !options.Passive {
+		if h.gatewayFoundationPresent {
+			return nil, fmt.Errorf("integration normalization requires explicit gateway lifecycle reconciliation")
+		}
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return nil, fmt.Errorf("persist normalized integrations: %w", err)
+		}
+	}
+	projectionChanged := false
+	for connectionID := range h.connections {
+		projectionChanged = h.applyGatewayHealthProjectionLocked(connectionID) || projectionChanged
+	}
+	if projectionChanged && !options.Passive {
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return nil, fmt.Errorf("persist gateway health projection: %w", err)
+		}
+	}
+	if err := h.loadInboxStateWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load inbox state: %w", err)
 	}
-	if err := h.loadProviderOperations(); err != nil {
+	if err := h.loadProviderOperationsWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load provider operations: %w", err)
 	}
-	if err := h.loadComms(); err != nil {
+	if err := h.loadCommsWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("load communications: %w", err)
 	}
 	if err := h.loadHumanRequests(); err != nil {
@@ -487,7 +548,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if h.topics == nil {
 		h.topics = map[string]*Topic{}
 	}
-	if h.normalizeTopicsLocked() {
+	if h.normalizeTopicsLocked() && !options.Passive {
 		if err := h.persistTopicsLocked(); err != nil {
 			return nil, fmt.Errorf("persist normalized Topics: %w", err)
 		}
@@ -500,16 +561,17 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		// (read-only) and their rollout history is immediately viewable.
 		h.importEdgeLocked()
 	}
-	if err := h.migrateCommAgentIDsLocked(); err != nil {
+	if err := h.migrateCommAgentIDsLockedWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("migrate communication agent ids: %w", err)
 	}
-	if err := h.reconcileTriggersLocked(); err != nil {
+	if err := h.reconcileTriggersLockedWithPersistence(!options.Passive); err != nil {
 		return nil, fmt.Errorf("reconcile triggers: %w", err)
 	}
 	for _, meta := range h.agents {
 		h.seqs[meta.ID] = st.LastSeq(meta.ID)
 	}
 	if options.Passive {
+		opened = true
 		return h, nil
 	}
 
@@ -576,12 +638,17 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	go func() { defer h.background.Done(); h.remoteLoop() }()
 	go func() { defer h.background.Done(); h.eventMaintenanceLoop() }()
 	go func() { defer h.background.Done(); h.triggerLoop() }()
+	opened = true
 	return h, nil
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func (h *Hub) loadComms() error {
+	return h.loadCommsWithPersistence(true)
+}
+
+func (h *Hub) loadCommsWithPersistence(persistRecovery bool) error {
 	repairLatest := map[string]bool{}
 	if err := h.st.ReadComms(func(raw json.RawMessage) {
 		var rec commRecord
@@ -603,8 +670,10 @@ func (h *Hub) loadComms() error {
 			continue
 		}
 		msg := h.comms[id]
-		if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
-			return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+		if persistRecovery {
+			if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
+				return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+			}
 		}
 	}
 	return nil

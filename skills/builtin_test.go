@@ -74,6 +74,27 @@ func TestMaterializeSelectedReplacesManagedRootExactly(t *testing.T) {
 	}
 }
 
+func TestMaterializeSelectedRootReplacesManagedRootExactly(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := MaterializeSelectedRoot(root, "builtin-skills", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeSelectedRoot(root, "builtin-skills", []string{"loom-communication"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Stat(filepath.Join("builtin-skills", "loom-communication", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Stat(filepath.Join("builtin-skills", "domain-agent-coaching")); !os.IsNotExist(err) {
+		t.Fatalf("unselected rooted skill remains: %v", err)
+	}
+}
+
 func TestInstallPreflightsAllConflicts(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	modified := filepath.Join(root, "domain-agent-coaching")

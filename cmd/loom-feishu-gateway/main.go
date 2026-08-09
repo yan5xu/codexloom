@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/yan5xu/codex-loom/internal/credentials"
 	"github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/feishugw"
 )
@@ -24,18 +26,9 @@ func main() {
 	stateFile := flag.String("state-file", "", "gateway state file")
 	flag.Parse()
 
-	secret := strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET"))
-	if secret == "" {
-		if inherited, ok := readInheritedCredentialFD(); ok {
-			secret = strings.TrimSpace(string(inherited))
-		}
-	}
-	if secret == "" && strings.TrimSpace(*appID) != "" {
-		var err error
-		secret, err = feishu.LoadAppSecret(*appID)
-		if err != nil {
-			log.Fatalf("read Feishu App Secret from keychain: %v", err)
-		}
+	secret, err := resolveGatewaySecret(dataDir(), os.Getenv("CODEX_LOOM_MANAGED_CREDENTIAL_REF"), *appID)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 	if *stateFile == "" && *connectionID != "" {
 		*stateFile = filepath.Join(dataDir(), "gateway", "feishu-"+*connectionID+".json")
@@ -53,6 +46,36 @@ func main() {
 	if err := gateway.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// resolveGatewaySecret is the narrow credential resolution contract:
+// an explicit managed credential reference resolves through the C-v1
+// read-only store and NEVER falls back to environment or Keychain; a legacy
+// Connection without a managed reference keeps the existing env/Keychain path.
+func resolveGatewaySecret(dataDir, managedRef, appID string) (string, error) {
+	if strings.TrimSpace(managedRef) != "" {
+		data, err := credentials.ResolveRef(dataDir, credentials.Ref(strings.TrimSpace(managedRef)))
+		if err != nil {
+			return "", fmt.Errorf("managed credential %s is unavailable: %v", strings.TrimSpace(managedRef), err)
+		}
+		secret := strings.TrimSpace(string(data))
+		if secret == "" {
+			return "", fmt.Errorf("managed credential %s is empty", strings.TrimSpace(managedRef))
+		}
+		return secret, nil
+	}
+	secret := strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET"))
+	if secret == "" && strings.TrimSpace(appID) != "" {
+		var err error
+		secret, err = feishu.LoadAppSecret(appID)
+		if err != nil {
+			return "", fmt.Errorf("read Feishu App Secret from keychain: %v", err)
+		}
+	}
+	if secret == "" {
+		return "", fmt.Errorf("Feishu App Secret is unavailable")
+	}
+	return secret, nil
 }
 
 func envFirst(names ...string) string {

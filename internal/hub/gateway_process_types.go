@@ -12,6 +12,8 @@ import (
 	goruntime "runtime"
 	"strings"
 	"time"
+
+	"github.com/yan5xu/codex-loom/internal/credentials"
 )
 
 const (
@@ -71,6 +73,7 @@ type gatewayLaunchDescriptor struct {
 	ServiceID        string                `json:"serviceId"`
 	UnitPath         string                `json:"unitPath"`
 	Executable       string                `json:"executable"`
+	ManagedCredentialRef string            `json:"managedCredentialRef,omitempty"`
 	WorkingDirectory string                `json:"workingDirectory"`
 	HubURL           string                `json:"hubUrl"`
 	DataDir          string                `json:"dataDir"`
@@ -241,6 +244,9 @@ func validateGatewayLaunchDescriptor(value gatewayLaunchDescriptor) error {
 	}
 	if len(value.ExecutableDigest) != sha256.Size*2 || value.ExecutableDigest != strings.ToLower(value.ExecutableDigest) {
 		return fmt.Errorf("executable digest must be lowercase SHA-256")
+	}
+	if value.ManagedCredentialRef != "" && !credentials.IsManagedRef(value.ManagedCredentialRef) {
+		return fmt.Errorf("managed credential reference is not canonical")
 	}
 	if _, err := hex.DecodeString(value.ExecutableDigest); err != nil {
 		return fmt.Errorf("executable digest must be lowercase SHA-256")

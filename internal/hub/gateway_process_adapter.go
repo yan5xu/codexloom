@@ -288,6 +288,11 @@ func renderGatewayServiceUnit(descriptor gatewayLaunchDescriptor, generation str
 		writeLaunchdString(&builder, "WorkingDirectory", descriptor.WorkingDirectory)
 		writeLaunchdString(&builder, "StandardOutPath", descriptor.LogPath)
 		writeLaunchdString(&builder, "StandardErrorPath", descriptor.LogPath)
+		if descriptor.ManagedCredentialRef != "" {
+			builder.WriteString("<key>EnvironmentVariables</key><dict>")
+			writeLaunchdString(&builder, "CODEX_LOOM_MANAGED_CREDENTIAL_REF", descriptor.ManagedCredentialRef)
+			builder.WriteString("</dict>\n")
+		}
 		builder.WriteString("<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><false/>\n</dict></plist>\n")
 		return []byte(builder.String()), nil
 	case gatewayServiceManagerSystemd:
@@ -297,7 +302,11 @@ func renderGatewayServiceUnit(descriptor gatewayLaunchDescriptor, generation str
 		}
 		content := "[Unit]\nDescription=CodexLoom Gateway " + descriptor.ConnectionID + "\n\n[Service]\nType=simple\nExecStart=" + strings.Join(quoted, " ") +
 			"\nWorkingDirectory=" + systemdGatewayQuote(descriptor.WorkingDirectory) + "\nStandardOutput=" + systemdGatewayQuote("append:"+descriptor.LogPath) +
-			"\nStandardError=" + systemdGatewayQuote("append:"+descriptor.LogPath) + "\nRestart=no\n\n[Install]\nWantedBy=default.target\n"
+			"\nStandardError=" + systemdGatewayQuote("append:"+descriptor.LogPath) + "\nRestart=no\n"
+		if descriptor.ManagedCredentialRef != "" {
+			content += "Environment=CODEX_LOOM_MANAGED_CREDENTIAL_REF=" + systemdGatewayQuote(descriptor.ManagedCredentialRef) + "\n"
+		}
+		content += "\n[Install]\nWantedBy=default.target\n"
 		return []byte(content), nil
 	case gatewayServiceManagerFake:
 		return jsonCanonicalGatewayUnit(descriptor, generation)

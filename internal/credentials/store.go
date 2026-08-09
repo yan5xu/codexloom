@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -188,6 +189,46 @@ func (s *Store) OpenSecretForChild(ref Ref) (*os.File, error) {
 		return nil, err
 	}
 	return file, nil
+}
+
+// ResolveRef reads one managed credential by canonical reference from a
+// standalone data directory. It is the launchd-compatible, read-only
+// consumption path for the same-UID local trust boundary: no writer lease and
+// no secret broker are involved. Any failure is fatal to the caller's managed
+// path and must never fall back to environment or Keychain.
+func ResolveRef(dataDir string, ref Ref) ([]byte, error) {
+	id, err := parseRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dataDir, DirectoryName, id)
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, errCredentialNotFound
+		}
+		return nil, err
+	}
+	if err := verifyOwnerOnlyStat(info, false); err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("managed credential changed while opening")
+	}
+	if opened.Size() <= 0 || opened.Size() > maxSecret {
+		return nil, fmt.Errorf("managed credential is not a bounded regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxSecret+1))
+	if err != nil || int64(len(data)) != opened.Size() {
+		return nil, fmt.Errorf("managed credential changed or is truncated")
+	}
+	return data, nil
 }
 
 // Delete removes one canonical managed credential through the stable write

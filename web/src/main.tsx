@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import App from "./App";
 import { isChunkLoadError, requestWorkspaceReload } from "./workspace-recovery";
+import { installUiLocalization } from "./ui-localization";
 
 function enableAppleComposerLayout() {
   const isIPad = /iPad/i.test(navigator.userAgent)
@@ -24,6 +25,7 @@ function enableAppleComposerLayout() {
 }
 
 enableAppleComposerLayout();
+installUiLocalization();
 
 window.addEventListener("vite:preloadError", (event) => {
   event.preventDefault();

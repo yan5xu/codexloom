@@ -213,7 +213,7 @@ func TestTwoAgentsShareOneCodexHost(t *testing.T) {
 	h := testHub(st)
 	defer h.Shutdown()
 
-	first, err := h.CreateAgent(CreateParams{Name: "one", Cwd: "/tmp/one"})
+	first, err := h.CreateAgent(CreateParams{Name: "one", DisplayName: "短篇改编", Cwd: "/tmp/one"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +225,9 @@ func TestTwoAgentsShareOneCodexHost(t *testing.T) {
 	}
 	if first.ThreadID != "thr-one" || second.ThreadID != "thr-two" {
 		t.Fatalf("Thread bindings = %q, %q", first.ThreadID, second.ThreadID)
+	}
+	if first.DisplayName != "短篇改编" || second.DisplayName != "two" {
+		t.Fatalf("Display names = %q, %q", first.DisplayName, second.DisplayName)
 	}
 
 	h.mu.Lock()

@@ -39,6 +39,7 @@ type Server struct {
 	githubDevices    map[string]*githubDeviceFlow
 	build            buildinfo.Info
 	readOnly         bool
+	openLocalPath    func(string) error
 }
 
 func New(h *hub.Hub, st *store.Store, web fs.FS) *Server {
@@ -49,12 +50,17 @@ type Options struct {
 	StartedAt time.Time
 	Mode      string
 	ReadOnly  bool
+	OpenPath  func(string) error
 }
 
 func NewWithOptions(h *hub.Hub, st *store.Store, web fs.FS, options Options) *Server {
 	dataDir := ""
 	if st != nil {
 		dataDir = st.Dir()
+	}
+	openPath := options.OpenPath
+	if openPath == nil {
+		openPath = systemOpenPath
 	}
 	return &Server{
 		hub: h, st: st, web: web, restart: restartState{State: "idle"},
@@ -63,7 +69,7 @@ func NewWithOptions(h *hub.Hub, st *store.Store, web fs.FS, options Options) *Se
 		build: buildinfo.Current(web, buildinfo.Runtime{
 			StartedAt: options.StartedAt, DataDir: dataDir, Mode: options.Mode, ReadOnly: options.ReadOnly,
 		}),
-		readOnly: options.ReadOnly,
+		readOnly: options.ReadOnly, openLocalPath: openPath,
 	}
 }
 

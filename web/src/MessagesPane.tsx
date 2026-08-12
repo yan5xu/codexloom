@@ -2,6 +2,7 @@ import { CheckCircle2, Clock3, MessageSquare, Reply, RotateCcw, Send, SkipForwar
 import { useEffect, useMemo, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { api, type AgentMessage, type Agent } from "./types";
+import { agentLabel } from "./agent-label";
 import { subscribeGlobalEvents } from "./global-events";
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -287,7 +288,7 @@ export function MessagesPane({ agents, onError, initialTo, participants, onClear
                   <option value="">select</option>
                   {agents.map((s) => (
                     <option key={s.id} value={s.name}>
-                      {s.name}
+                      {agentLabel(s)}
                     </option>
                   ))}
                 </select>
@@ -303,7 +304,7 @@ export function MessagesPane({ agents, onError, initialTo, participants, onClear
                   <option value="">select</option>
                   {agents.map((s) => (
                     <option key={s.id} value={s.name}>
-                      {s.name}
+                      {agentLabel(s)}
                     </option>
                   ))}
                 </select>

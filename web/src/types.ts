@@ -15,6 +15,7 @@ export interface Approval {
 export interface Agent {
   id: string;
   name: string;
+  displayName?: string;
   cwd: string;
   threadId: string;
   sandbox: string;
@@ -882,6 +883,7 @@ export interface GitHubDeviceFlow {
 
 export interface TeamAgent {
   name: string;
+  displayName?: string;
   id: string;
   cwd?: string;
   status?: string;

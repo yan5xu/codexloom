@@ -375,7 +375,7 @@ func printHelp() {
   chub turn get <turn-id> [--json]
 
 Compatibility shortcuts:
-  chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--provider PROVIDER] [--model MODEL] [--effort minimal|low|medium|high|xhigh|max|ultra]
+  chub create <name> --cwd <path> [--display-name TEXT] [--approval never|on-request] [--sandbox MODE] [--provider PROVIDER] [--model MODEL] [--effort minimal|low|medium|high|xhigh|max|ultra]
   chub list
   chub get <name|id>
   chub rename <name|id> <new-name>

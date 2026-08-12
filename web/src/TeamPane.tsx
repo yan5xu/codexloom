@@ -53,6 +53,7 @@ import {
   type TeamRelationship,
   type TeamView,
 } from "./types";
+import { agentLabel } from "./agent-label";
 
 declare global {
   interface Window {
@@ -596,7 +597,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent, onOpenMessa
             )}
             <select value={selectedAgentId} onChange={(event) => { setSelectedAgentId(event.target.value); setSelectedLinkId(""); }} aria-label="Focus agent" className={`h-9 min-w-0 rounded-md bg-background px-2 text-[12px] outline-none ring-1 ring-border focus:ring-ring/25 sm:min-w-[145px] sm:max-w-[210px] ${viewMode === "activity" ? "" : "col-span-2"}`}>
               <option value="">all agents</option>
-              {team.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+              {team.agents.map((agent) => <option key={agent.id} value={agent.id}>{agentLabel(agent)}</option>)}
             </select>
             <button onClick={() => refresh().catch((err: Error) => onError(err.message))} title="Refresh team" className="flex size-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:text-foreground">
               <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -822,7 +823,7 @@ function CollaborationGroupEditor({
           {team.agents.map((agent) => (
             <label key={agent.id} className="flex cursor-pointer items-center gap-2 px-1 py-1.5 text-[11px] hover:bg-muted/40">
               <input type="checkbox" checked={members.has(agent.id)} onChange={() => toggleMember(agent.id)} className="size-3.5 accent-primary" />
-              <span className="min-w-0 truncate">{agent.name}</span>
+              <span className="min-w-0 truncate">{agentLabel(agent)}</span>
             </label>
           ))}
         </div>
@@ -1039,7 +1040,7 @@ function AgentInspector({
       <section className="order-1 border-b border-border pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="truncate text-[16px] font-semibold text-foreground">{agent.name}</div>
+            <div className="truncate text-[16px] font-semibold text-foreground">{agentLabel(agent)}</div>
             <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={agent.id}>{agent.id}</div>
           </div>
           <StatusBadge status={teamAgentStatus(agent)} />
@@ -1106,7 +1107,7 @@ function AgentInspector({
             </select>
             <select value={organizationTarget} onChange={(event) => setOrganizationTarget(event.target.value)} className="h-9 w-full rounded-md bg-background px-2 text-[12px] outline-none ring-1 ring-border">
               <option value="">select agent</option>
-              {targets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              {targets.map((item) => <option key={item.id} value={item.id}>{agentLabel(item)}</option>)}
             </select>
             <textarea value={organizationDescription} onChange={(event) => setOrganizationDescription(event.target.value)} rows={3} placeholder="Describe the durable responsibility boundary" className="w-full resize-y rounded-md bg-background p-2 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25" />
             <div className="flex justify-end gap-2">
@@ -1145,7 +1146,7 @@ function AgentInspector({
           <div className="mb-3 space-y-2 rounded-md border border-primary/20 bg-background p-3">
             <select value={target} onChange={(event) => setTarget(event.target.value)} className="h-9 w-full rounded-md bg-background px-2 text-[12px] outline-none ring-1 ring-border">
               <option value="">select related agent</option>
-              {targets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              {targets.map((item) => <option key={item.id} value={item.id}>{agentLabel(item)}</option>)}
             </select>
             <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} placeholder="Describe the long-term collaboration boundary" className="w-full resize-y rounded-md bg-background p-2 text-[12px] leading-5 outline-none ring-1 ring-border focus:ring-ring/25" />
             <div className="flex justify-end gap-2">
@@ -1575,7 +1576,7 @@ function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData>>) {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className={`size-2 shrink-0 rounded-full ${teamAgentWorking(agent) ? "bg-success" : "bg-muted-foreground/40"}`} />
-            <div className="truncate text-[14px] font-semibold" title={agent.name}>{agent.name}</div>
+            <div className="truncate text-[14px] font-semibold" title={`${agentLabel(agent)} · ${agent.name}`}>{agentLabel(agent)}</div>
           </div>
         </div>
         <StatusBadge status={teamAgentStatus(agent)} />
@@ -1597,7 +1598,7 @@ function AgentListCard({ agent, selected, onSelect, onMessage }: { agent: TeamAg
       <button onClick={onSelect} className="block w-full text-left">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="truncate text-[15px] font-semibold">{agent.name}</div>
+            <div className="truncate text-[15px] font-semibold">{agentLabel(agent)}</div>
             <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{agent.id}</div>
           </div>
           <StatusBadge status={teamAgentStatus(agent)} />
@@ -1620,7 +1621,7 @@ function UnassignedAgent({ agent, selected, onSelect }: { agent: TeamAgent; sele
   return (
     <button onClick={onSelect} className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left ${selected ? "bg-selection text-selection-foreground" : "hover:bg-muted/60"}`}>
       <span className={`size-2 shrink-0 rounded-full ${teamAgentWorking(agent) ? "bg-success" : "bg-muted-foreground/35"}`} />
-      <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{agent.name}</span>
+      <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{agentLabel(agent)}</span>
       {agent.openIn > 0 && <span className="font-mono text-[9px] text-warning">{agent.openIn} open</span>}
     </button>
   );
@@ -1698,7 +1699,7 @@ function isActiveAgent(agent: TeamAgent) {
 }
 
 function agentSearchText(agent: TeamAgent) {
-  return [agent.name, agent.id, agent.cwd || "", agent.profile.identity || "", agent.profile.domain || "", agent.profile.scope || ""].join(" ").toLowerCase();
+  return [agent.name, agent.displayName || "", agent.id, agent.cwd || "", agent.profile.identity || "", agent.profile.domain || "", agent.profile.scope || ""].join(" ").toLowerCase();
 }
 
 function aggregateActivityPairs(links: TeamObservedLink[]): ActivityPair[] {

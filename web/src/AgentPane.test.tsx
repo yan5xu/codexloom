@@ -117,7 +117,7 @@ describe("AgentPane", () => {
     render(<AgentPane {...props} configRequestNonce={1} active />);
 
     const path = await screen.findByTestId("agent-working-directory");
-    const name = screen.getByRole("textbox", { name: "Name" });
+    const name = screen.getByRole("textbox", { name: "Internal identifier" });
     const provider = screen.getByRole("combobox", { name: "Provider" });
 
     expect(path).toHaveTextContent(testAgent.cwd);
@@ -192,6 +192,7 @@ describe("AgentPane", () => {
     const body = JSON.parse(String(init?.body));
     expect(body).toEqual({
       name: testAgent.name,
+      displayName: testAgent.name,
       model: "",
       effort: "",
       sandbox: testAgent.sandbox,

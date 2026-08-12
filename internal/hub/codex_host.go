@@ -470,6 +470,7 @@ func (h *Hub) adoptThreadLocked(threadID, threadName, cwd string) *runtime {
 		return rt
 	}
 	name := strings.TrimSpace(threadName)
+	displayName := name
 	if !nameRe.MatchString(name) {
 		short := strings.ReplaceAll(threadID, "-", "")
 		if len(short) > 8 {
@@ -485,7 +486,7 @@ func (h *Hub) adoptThreadLocked(threadID, threadName, cwd string) *runtime {
 	_, _ = rand.Read(idBytes)
 	id := hex.EncodeToString(idBytes)
 	meta := &Agent{
-		ID: id, Name: name, Cwd: cwd, ThreadID: threadID,
+		ID: id, Name: name, DisplayName: displayName, Cwd: cwd, ThreadID: threadID,
 		Sandbox: "danger-full-access", ApprovalPolicy: "never", Status: "idle",
 		CreatedAt: now(), UpdatedAt: now(), Source: "remote",
 	}

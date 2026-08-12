@@ -7,6 +7,7 @@ import { CapacityPane, UsagePane } from "./UsagePane";
 import { DailyActivityTimeline } from "./DailyActivityTimeline";
 import { summarizeTask } from "./feed";
 import { executionDotClass, executionLabel, isAgentExecuting, oldestWaitingMs } from "./product-state";
+import { agentLabel } from "./agent-label";
 import { Button } from "./components/ui/button";
 import { readUsageLocation, type UsageDateRange } from "./usage";
 
@@ -130,7 +131,7 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
               {executing.map((agent) => (
                 <button key={agent.id} type="button" onClick={() => onSelectAgent(agent.id)} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
                   <span className={`size-2 shrink-0 rounded-full ${executionDotClass(agent)}`} />
-                  <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{agent.name}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{summarizeTask(agent.currentTask || "") || "Turn in progress"}</span></span>
+                  <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{agentLabel(agent)}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{summarizeTask(agent.currentTask || "") || "Turn in progress"}</span></span>
                   <span className="font-mono text-[9px] uppercase text-success">{executionLabel(agent)}</span>
                 </button>
               ))}
@@ -158,7 +159,7 @@ function StatusOverview({ agents, requests, entries, remote, onSelectAgent, onOp
                 {agentHealth.map(({ agent, failedEntries: count }) => (
                   <button key={agent.id} type="button" onClick={() => onSelectAgent(agent.id)} className="flex w-full min-w-0 items-center gap-3 px-2 py-3 text-left hover:bg-muted/40">
                     <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
-                    <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{agent.name}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{[agent.lastError ? "Runtime issue" : "", count ? `${count} handling ${count === 1 ? "failure" : "failures"}` : ""].filter(Boolean).join(" · ")}</span></span>
+                    <span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{agentLabel(agent)}</span><span className="mt-0.5 block truncate text-[10.5px] text-muted-foreground">{[agent.lastError ? "Runtime issue" : "", count ? `${count} handling ${count === 1 ? "failure" : "failures"}` : ""].filter(Boolean).join(" · ")}</span></span>
                   </button>
                 ))}
                 {connectionsQuery.isError || connectorIssues.length > 0 ? (

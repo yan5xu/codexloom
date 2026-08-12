@@ -66,6 +66,7 @@ type TurnSummary struct {
 type Agent struct {
 	ID                    string                  `json:"id"`
 	Name                  string                  `json:"name"`
+	DisplayName           string                  `json:"displayName,omitempty"`
 	Cwd                   string                  `json:"cwd"`
 	ThreadID              string                  `json:"threadId"`
 	Sandbox               string                  `json:"sandbox"`
@@ -115,7 +116,18 @@ type ApprovalView struct {
 type ActiveAgent struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
 	CurrentTask string `json:"currentTask"`
+}
+
+func agentDisplayName(agent *Agent) string {
+	if agent != nil {
+		if displayName := strings.TrimSpace(agent.DisplayName); displayName != "" {
+			return displayName
+		}
+		return agent.Name
+	}
+	return ""
 }
 
 // RunningSession is the pre-CodexLoom compatibility name.
@@ -912,6 +924,7 @@ func (h *Hub) emitStatusLocked(meta *Agent, status string) {
 	data := map[string]any{
 		"id":             meta.ID,
 		"name":           meta.Name,
+		"displayName":    meta.DisplayName,
 		"cwd":            meta.Cwd,
 		"threadId":       meta.ThreadID,
 		"source":         meta.Source,
@@ -1041,7 +1054,7 @@ func (h *Hub) initRuntime(agentID string, rt *runtime) {
 		rt.initErr = errf(404, "agent vanished")
 		return
 	}
-	threadID, threadName, sandbox, cwd := meta.ThreadID, meta.Name, meta.Sandbox, meta.Cwd
+	threadID, threadName, sandbox, cwd := meta.ThreadID, agentDisplayName(meta), meta.Sandbox, meta.Cwd
 	providerID, model := effectiveProviderBinding(meta)
 	disabledSkillPaths := h.disabledSkillPathsLocked(meta.ID)
 	skillConfigHash := agentSkillConfigHash(disabledSkillPaths)

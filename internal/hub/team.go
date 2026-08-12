@@ -16,6 +16,7 @@ type TeamView struct {
 
 type TeamAgent struct {
 	Name          string       `json:"name"`
+	DisplayName   string       `json:"displayName,omitempty"`
 	ID            string       `json:"id"`
 	Cwd           string       `json:"cwd,omitempty"`
 	Status        string       `json:"status,omitempty"`
@@ -53,7 +54,7 @@ func (h *Hub) Team() TeamView {
 	for _, s := range h.agents {
 		goal := cloneGoal(h.goals[s.ID])
 		agents[s.ID] = &TeamAgent{
-			Name: s.Name, ID: s.ID, Cwd: s.Cwd, Status: s.Status, Source: s.Source,
+			Name: s.Name, DisplayName: s.DisplayName, ID: s.ID, Cwd: s.Cwd, Status: s.Status, Source: s.Source,
 			Goal: goal, Profile: profileCopy(h.profiles[s.ID], s.ID),
 		}
 	}

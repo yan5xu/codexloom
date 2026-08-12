@@ -1,6 +1,7 @@
 import { Archive, Bot, CirclePause, LocateFixed, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { filterAgentDirectory } from "./agent-directory";
+import { agentLabel } from "./agent-label";
 import { summarizeTask } from "./feed";
 import { executionDotClass, executionLabel, isAgentExecuting } from "./product-state";
 import { Button } from "./components/ui/button";
@@ -82,8 +83,8 @@ export function SidebarAgentDirectory({
             variant="ghost"
             size="icon-xs"
             onClick={locateCurrent}
-            title={`Locate current agent: ${currentAgent.name}`}
-            aria-label={`Locate current agent ${currentAgent.name}`}
+            title={`Locate current agent: ${agentLabel(currentAgent)}`}
+            aria-label={`Locate current agent ${agentLabel(currentAgent)}`}
             className="-mr-1 text-muted-foreground"
           >
             <LocateFixed />
@@ -155,7 +156,7 @@ export function SidebarAgentDirectory({
                     aria-hidden="true"
                   />
                 )}
-                <span className={`min-w-0 flex-1 truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}>{agent.name}</span>
+                <span className={`min-w-0 flex-1 truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}>{agentLabel(agent)}</span>
                 {unseenIds.has(agent.id) ? (
                   <span className="size-1.5 shrink-0 rounded-full bg-ring" title="New result from Owner-started work">
                     <span className="sr-only">New result</span>
@@ -174,7 +175,7 @@ export function SidebarAgentDirectory({
                   onClick={() => onSelectRequest(humanRequests.find((request) => request.agentId === agent.id)?.id)}
                   className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-sm bg-warning/15 px-1 font-mono text-[8.5px] font-semibold text-warning outline-none hover:bg-warning/25 focus-visible:ring-2 focus-visible:ring-warning/40"
                   title={`${needsYou} request${needsYou === 1 ? "" : "s"} need your input`}
-                  aria-label={`Open ${needsYou} human request${needsYou === 1 ? "" : "s"} from ${agent.name}`}
+                  aria-label={`Open ${needsYou} human request${needsYou === 1 ? "" : "s"} from ${agentLabel(agent)}`}
                 >
                   {needsYou}
                 </button>
@@ -187,8 +188,8 @@ export function SidebarAgentDirectory({
                 className={`mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-destructive/30 disabled:opacity-50 ${
                   active ? "visible opacity-70" : "invisible opacity-0 group-hover/agent:visible group-hover/agent:opacity-70 group-focus-within/agent:visible group-focus-within/agent:opacity-70"
                 }`}
-                title={`Archive ${agent.name}`}
-                aria-label={`Archive ${agent.name}`}
+                title={`Archive ${agentLabel(agent)}`}
+                aria-label={`Archive ${agentLabel(agent)}`}
               >
                 <Archive className={`size-3 ${archiving ? "animate-pulse" : ""}`} />
               </button>

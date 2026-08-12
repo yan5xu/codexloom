@@ -92,6 +92,18 @@ func (h *Hub) UpdateProfile(key string, p ProfileParams) (AgentProfile, error) {
 	if current == nil && identity == "" && domain == "" && scope == "" {
 		return AgentProfile{AgentID: agentID}, nil
 	}
+	// Clearing a configured profile must remove the durable record instead of
+	// preserving an empty, versioned orphan that still appears in Team data.
+	if current != nil && identity == "" && domain == "" && scope == "" {
+		delete(h.profiles, agentID)
+		if err := h.st.SaveProfiles(h.profiles); err != nil {
+			h.profiles[agentID] = current
+			return AgentProfile{}, errf(500, "save profiles: %s", err)
+		}
+		cleared := &AgentProfile{AgentID: agentID}
+		h.emitGlobalLocked("loom/profile-updated", map[string]any{"profile": cleared})
+		return *cleared, nil
+	}
 	if current != nil && current.Identity == identity && current.Domain == domain && current.Scope == scope {
 		return *current, nil
 	}

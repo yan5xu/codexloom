@@ -23,6 +23,7 @@ import {
   type Agent,
   type ThreadContext,
 } from "./types";
+import { agentLabel } from "./agent-label";
 
 type InboxFilter = "all" | InboxItem["state"];
 type Mode = "inbox" | "outbox";
@@ -268,7 +269,7 @@ export function InboxPane({ agents, onError }: { agents: Agent[]; onError: (mess
         <section className="grid shrink-0 gap-2 border-b border-border bg-card px-4 py-3 sm:grid-cols-2 xl:grid-cols-[180px_280px_1fr_auto]">
           <select value={sendAgent} onChange={(event) => { setSendAgent(event.target.value); setSendMembership(""); }} className={controlClass}>
             <option value="">Agent</option>
-            {agents.map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}
+            {agents.map((agent) => <option key={agent.id} value={agent.name}>{agentLabel(agent)}</option>)}
           </select>
           <select value={sendMembership} onChange={(event) => setSendMembership(event.target.value)} className={controlClass}>
             <option value="">Authorized destination</option>

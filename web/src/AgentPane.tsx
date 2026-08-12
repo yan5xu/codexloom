@@ -12,6 +12,7 @@ import { UsageBarTooltip, usageDayLabel } from "./components/UsageBarTooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { subscribeThreadEvents } from "./thread-events";
 import { oldestWaitingMs } from "./product-state";
+import { agentLabel } from "./agent-label";
 
 const CUSTOM_MODEL_VALUE = "__custom";
 const FALLBACK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -112,6 +113,7 @@ export function AgentPane({
   const [configOpen, setConfigOpen] = useState(false);
   const [configSection, setConfigSection] = useState<"profile" | "team" | "external" | "triggers" | "runtime" | "usage">("profile");
   const [nameDraft, setNameDraft] = useState(agent.name);
+  const [displayNameDraft, setDisplayNameDraft] = useState(agentLabel(agent));
   const [providerDraft, setProviderDraft] = useState(agent.providerId || "openai");
   const [modelDraft, setModelDraft] = useState(agent.model || "");
   const [modelCustomOpen, setModelCustomOpen] = useState(isCustomModel(agent.model || "", agent.providerId, modelProviders));
@@ -274,13 +276,14 @@ export function AgentPane({
 
   useEffect(() => {
     setNameDraft(agent.name);
+    setDisplayNameDraft(agentLabel(agent));
     setProviderDraft(agent.providerId || "openai");
     setModelDraft(agent.model || "");
     setModelCustomOpen(isCustomModel(agent.model || "", agent.providerId, modelProviders));
     setEffortDraft(agent.effort || "");
     setSandboxDraft(agent.sandbox || "danger-full-access");
     setApprovalDraft(agent.approvalPolicy || "never");
-  }, [agent.id, agent.name, agent.providerId, agent.model, agent.effort, agent.sandbox, agent.approvalPolicy]);
+  }, [agent.id, agent.name, agent.displayName, agent.providerId, agent.model, agent.effort, agent.sandbox, agent.approvalPolicy]);
 
   useEffect(() => {
     if (cwdCopyTimerRef.current !== null) {
@@ -776,12 +779,17 @@ export function AgentPane({
   const saveConfig = async () => {
     if (running || savingConfig) return;
     const nextName = nameDraft.trim();
+    const nextDisplayName = displayNameDraft.trim();
     if (!nextName) {
       onError("name is required");
       return;
     }
     if (!/^[a-zA-Z0-9_-]+$/.test(nextName)) {
       onError("name must match [a-zA-Z0-9_-]+");
+      return;
+    }
+    if (!nextDisplayName) {
+      onError("display name is required");
       return;
     }
     setSavingConfig(true);
@@ -797,6 +805,7 @@ export function AgentPane({
       }
       const data = await api("PATCH", `/api/agents/${agent.id}/config`, {
         name: nextName,
+        displayName: nextDisplayName,
         model: modelDraft.trim(),
         effort: effortDraft,
         sandbox: sandboxDraft,
@@ -1038,7 +1047,17 @@ export function AgentPane({
               {configSection === "runtime" ? (
                 <>
                   <label className="mb-2 block">
-                    <span className="mb-1 block text-[11px] text-muted-foreground">Name</span>
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Display name</span>
+                    <input
+                      value={displayNameDraft}
+                      onChange={(e) => setDisplayNameDraft(e.target.value)}
+                      disabled={running}
+                      placeholder="短篇改编"
+                      className="h-8 w-full rounded-md bg-background px-2.5 text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
+                    />
+                  </label>
+                  <label className="mb-2 block">
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Internal identifier</span>
                     <input
                       value={nameDraft}
                       onChange={(e) => setNameDraft(e.target.value)}
@@ -1423,7 +1442,7 @@ export function AgentPane({
                   send();
                 }
               }}
-              placeholder={answeringRequest ? `Answer ${agent.name}…` : `Send a task to ${agent.name}…`}
+              placeholder={answeringRequest ? `Answer ${agentLabel(agent)}…` : `Send a task to ${agentLabel(agent)}…`}
               className="max-h-[200px] min-h-10 resize-none overflow-y-auto bg-transparent px-2.5 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground/60 disabled:cursor-wait disabled:opacity-60"
             />
             <div className="flex min-h-8 items-center justify-between gap-2 px-1">

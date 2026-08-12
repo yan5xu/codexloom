@@ -3,6 +3,11 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +32,29 @@ func (s *Server) registerSystemRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/backups", s.adminListBackups)
 	mux.HandleFunc("POST /api/admin/backup", s.adminBackup)
 	mux.HandleFunc("POST /api/admin/backups/prune", s.adminPruneBackups)
+	mux.HandleFunc("POST /api/files/open", func(w http.ResponseWriter, r *http.Request) {
+		if !allowAdminRequest(r) {
+			writeErr(w, &hub.HubError{Status: 403, Message: "opening local files is only allowed from localhost"})
+			return
+		}
+		var body struct {
+			Path string `json:"path"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		path, err := resolveLocalOpenPath(body.Path)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := s.openLocalPath(path); err != nil {
+			writeErr(w, fmt.Errorf("open local file: %w", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"opened": true, "path": path})
+	})
 	mux.HandleFunc("POST /api/skills/reload", func(w http.ResponseWriter, r *http.Request) {
 		inventory, err := s.hub.ReloadSkills()
 		if err != nil {
@@ -121,6 +149,88 @@ func (s *Server) registerSystemRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"revoked": true})
 	})
 
+}
+
+func resolveLocalOpenPath(raw string) (string, error) {
+	path := strings.TrimSpace(raw)
+	if strings.HasPrefix(strings.ToLower(path), "file://") {
+		parsed, err := url.Parse(path)
+		if err != nil || parsed.Scheme != "file" || parsed.Host != "" && parsed.Host != "localhost" {
+			return "", &hub.HubError{Status: 400, Message: "invalid local file URL"}
+		}
+		path, err = url.PathUnescape(parsed.Path)
+		if err != nil {
+			return "", &hub.HubError{Status: 400, Message: "invalid local file URL"}
+		}
+	}
+	if path == "" {
+		return "", &hub.HubError{Status: 400, Message: "path is required"}
+	}
+	if !filepath.IsAbs(path) {
+		return "", &hub.HubError{Status: 400, Message: "path must be absolute"}
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		// Codex-style file links may append :line or :line:column. Only strip
+		// that suffix after the exact path failed, so filenames containing a
+		// colon continue to work when they exist.
+		if candidate := stripFilePosition(path); candidate != path {
+			if candidateInfo, candidateErr := os.Stat(candidate); candidateErr == nil {
+				path, info, err = candidate, candidateInfo, nil
+			}
+		}
+	}
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", &hub.HubError{Status: 404, Message: "local file not found"}
+		}
+		return "", fmt.Errorf("inspect local file: %w", err)
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return "", &hub.HubError{Status: 400, Message: "path must be a file or directory"}
+	}
+	return path, nil
+}
+
+func stripFilePosition(path string) string {
+	parts := strings.Split(path, ":")
+	if len(parts) < 2 || !allDigits(parts[len(parts)-1]) {
+		return path
+	}
+	parts = parts[:len(parts)-1]
+	if len(parts) > 1 && allDigits(parts[len(parts)-1]) {
+		parts = parts[:len(parts)-1]
+	}
+	return strings.Join(parts, ":")
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func systemOpenPath(path string) error {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		command = exec.Command("open", path)
+	case "windows":
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+	default:
+		command = exec.Command("xdg-open", path)
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return command.Process.Release()
 }
 
 func dailyActivityWindowFromRequest(r *http.Request, now time.Time) (time.Time, time.Time, int, error) {

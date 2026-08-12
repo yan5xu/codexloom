@@ -69,6 +69,32 @@ func TestEmptyProfileDoesNotCreateVersionOrPersist(t *testing.T) {
 	}
 }
 
+func TestClearingProfileRemovesDurableRecord(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	h.agents["sess_a"] = &Agent{ID: "sess_a", Name: "agent-a", Status: "idle"}
+	if _, err := h.UpdateProfile("agent-a", ProfileParams{Domain: "temporary"}); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := h.UpdateProfile("agent-a", ProfileParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Version != 0 || h.profiles["sess_a"] != nil {
+		t.Fatalf("clear should remove profile: returned=%#v stored=%#v", cleared, h.profiles["sess_a"])
+	}
+	loaded := map[string]*AgentProfile{}
+	if err := st.LoadProfiles(&loaded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded["sess_a"]; ok {
+		t.Fatalf("cleared profile persisted: %#v", loaded)
+	}
+}
+
 func TestRelationshipAndTeamUseStableAgentIDsAcrossRename(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {

@@ -23,7 +23,7 @@ export function sortAgentDirectory(agents: Agent[]) {
 }
 
 function searchableAgentText(agent: Agent) {
-  return agent.name.normalize("NFKC").toLocaleLowerCase("en-US");
+  return [agent.name, agent.displayName || ""].join(" ").normalize("NFKC").toLocaleLowerCase("en-US");
 }
 
 export function filterAgentDirectory(agents: Agent[], query: string) {

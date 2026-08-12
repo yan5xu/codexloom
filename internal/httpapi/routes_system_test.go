@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -13,6 +16,62 @@ import (
 	"github.com/yan5xu/codex-loom/internal/hub"
 	"github.com/yan5xu/codex-loom/internal/store"
 )
+
+func TestOpenLocalFile(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hub.New(st)
+	file := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(file, []byte("# Plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var opened string
+	server := NewWithOptions(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}}, Options{
+		OpenPath: func(path string) error {
+			opened = path
+			return nil
+		},
+	}).Handler()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/files/open", bytes.NewReader([]byte(`{"path":`+strconv.Quote(file+":12")+`}`)))
+	request.RemoteAddr = "127.0.0.1:12345"
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if opened != file {
+		t.Fatalf("opened = %q, want %q", opened, file)
+	}
+}
+
+func TestOpenLocalFileRejectsRemoteAndMissingPaths(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hub.New(st)
+	server := NewWithOptions(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}}, Options{
+		OpenPath: func(string) error { t.Fatal("opener must not run"); return nil },
+	}).Handler()
+
+	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/files/open", bytes.NewReader([]byte(`{"path":"/tmp/missing.md"}`)))
+	remoteResponse := httptest.NewRecorder()
+	server.ServeHTTP(remoteResponse, remoteRequest)
+	if remoteResponse.Code != http.StatusForbidden {
+		t.Fatalf("remote status = %d, want 403", remoteResponse.Code)
+	}
+
+	missingRequest := httptest.NewRequest(http.MethodPost, "/api/files/open", bytes.NewReader([]byte(`{"path":"/tmp/codexloom-missing-file.md"}`)))
+	missingRequest.RemoteAddr = "127.0.0.1:12345"
+	missingResponse := httptest.NewRecorder()
+	server.ServeHTTP(missingResponse, missingRequest)
+	if missingResponse.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want 404", missingResponse.Code)
+	}
+}
 
 func TestVersionReportsRunningArtifact(t *testing.T) {
 	st, err := store.Open(t.TempDir())

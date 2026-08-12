@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yan5xu/codex-loom/internal/modelcatalog"
 	"github.com/yan5xu/codex-loom/internal/rollout"
@@ -102,7 +104,7 @@ func (h *Hub) ActiveAgents() []ActiveAgent {
 		if view.Status != "running" {
 			continue
 		}
-		out = append(out, ActiveAgent{ID: view.ID, Name: view.Name, CurrentTask: view.CurrentTask})
+		out = append(out, ActiveAgent{ID: view.ID, Name: view.Name, DisplayName: view.DisplayName, CurrentTask: view.CurrentTask})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
@@ -118,6 +120,7 @@ func (h *Hub) RunningSessions() []RunningSession { return h.ActiveAgents() }
 
 type CreateParams struct {
 	Name           string `json:"name"`
+	DisplayName    string `json:"displayName"`
 	Cwd            string `json:"cwd"`
 	Sandbox        string `json:"sandbox"`
 	ApprovalPolicy string `json:"approvalPolicy"`
@@ -132,6 +135,7 @@ type CreateParams struct {
 type RestoreAgentParams struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
+	DisplayName    string `json:"displayName"`
 	Cwd            string `json:"cwd"`
 	ThreadID       string `json:"threadId"`
 	Sandbox        string `json:"sandbox"`
@@ -144,6 +148,7 @@ type RestoreAgentParams struct {
 
 type ConfigParams struct {
 	Name           *string `json:"name"`
+	DisplayName    *string `json:"displayName"`
 	Model          *string `json:"model"`
 	Effort         *string `json:"effort"`
 	Sandbox        *string `json:"sandbox"`
@@ -152,11 +157,20 @@ type ConfigParams struct {
 }
 
 func (h *Hub) CreateAgent(p CreateParams) (AgentView, error) {
+	p.Name = strings.TrimSpace(p.Name)
+	p.DisplayName = strings.TrimSpace(p.DisplayName)
+	p.Cwd = strings.TrimSpace(p.Cwd)
 	if p.Name == "" || p.Cwd == "" {
 		return AgentView{}, errf(400, "name and cwd are required")
 	}
 	if !nameRe.MatchString(p.Name) {
 		return AgentView{}, errf(400, "name must match [a-zA-Z0-9_-]+")
+	}
+	if p.DisplayName == "" {
+		p.DisplayName = p.Name
+	}
+	if !validAgentDisplayName(p.DisplayName) {
+		return AgentView{}, errf(400, "displayName must be 1-80 visible characters")
 	}
 	if p.Sandbox == "" {
 		p.Sandbox = "danger-full-access"
@@ -201,7 +215,7 @@ func (h *Hub) CreateAgent(p CreateParams) (AgentView, error) {
 		return AgentView{}, errf(409, "agent %q already exists", p.Name)
 	}
 	meta := &Agent{
-		ID: id, Name: p.Name, Cwd: p.Cwd,
+		ID: id, Name: p.Name, DisplayName: p.DisplayName, Cwd: p.Cwd,
 		Sandbox: p.Sandbox, ApprovalPolicy: p.ApprovalPolicy, ProviderID: p.ProviderID, Model: p.Model, Effort: p.Effort,
 		Status: "idle", CreatedAt: now(), UpdatedAt: now(),
 	}
@@ -240,7 +254,7 @@ func (h *Hub) CreateAgent(p CreateParams) (AgentView, error) {
 		return AgentView{}, errf(500, "save agent: %s", err)
 	}
 	h.emitLocked(id, "loom/agent-created", map[string]any{
-		"id": id, "name": meta.Name, "cwd": meta.Cwd, "threadId": meta.ThreadID, "providerId": meta.ProviderID,
+		"id": id, "name": meta.Name, "displayName": meta.DisplayName, "cwd": meta.Cwd, "threadId": meta.ThreadID, "providerId": meta.ProviderID,
 	})
 	h.emitStatusLocked(meta, meta.Status)
 	view := h.viewLocked(meta)
@@ -251,6 +265,7 @@ func (h *Hub) CreateAgent(p CreateParams) (AgentView, error) {
 func (h *Hub) RestoreAgent(p RestoreAgentParams) (AgentView, error) {
 	p.ID = strings.TrimSpace(p.ID)
 	p.Name = strings.TrimSpace(p.Name)
+	p.DisplayName = strings.TrimSpace(p.DisplayName)
 	p.Cwd = strings.TrimSpace(p.Cwd)
 	p.ThreadID = strings.TrimSpace(p.ThreadID)
 	if p.ID == "" || p.Name == "" || p.Cwd == "" || p.ThreadID == "" {
@@ -258,6 +273,12 @@ func (h *Hub) RestoreAgent(p RestoreAgentParams) (AgentView, error) {
 	}
 	if !nameRe.MatchString(p.Name) {
 		return AgentView{}, errf(400, "name must match [a-zA-Z0-9_-]+")
+	}
+	if p.DisplayName == "" {
+		p.DisplayName = p.Name
+	}
+	if !validAgentDisplayName(p.DisplayName) {
+		return AgentView{}, errf(400, "displayName must be 1-80 visible characters")
 	}
 	if p.Sandbox == "" {
 		p.Sandbox = "danger-full-access"
@@ -298,7 +319,7 @@ func (h *Hub) RestoreAgent(p RestoreAgentParams) (AgentView, error) {
 		}
 	}
 	meta := &Agent{
-		ID: p.ID, Name: p.Name, Cwd: p.Cwd, ThreadID: p.ThreadID,
+		ID: p.ID, Name: p.Name, DisplayName: p.DisplayName, Cwd: p.Cwd, ThreadID: p.ThreadID,
 		Sandbox: p.Sandbox, ApprovalPolicy: p.ApprovalPolicy,
 		ProviderID: p.ProviderID, Model: p.Model, Effort: p.Effort,
 		Status: "idle", CreatedAt: p.CreatedAt, UpdatedAt: now(),
@@ -311,7 +332,7 @@ func (h *Hub) RestoreAgent(p RestoreAgentParams) (AgentView, error) {
 		return AgentView{}, errf(500, "save restored agent: %s", err)
 	}
 	h.emitLocked(p.ID, "loom/agent-restored", map[string]any{
-		"id": p.ID, "name": p.Name, "cwd": p.Cwd, "threadId": p.ThreadID, "providerId": p.ProviderID,
+		"id": p.ID, "name": p.Name, "displayName": p.DisplayName, "cwd": p.Cwd, "threadId": p.ThreadID, "providerId": p.ProviderID,
 	})
 	h.emitStatusLocked(meta, meta.Status)
 	return h.viewLocked(meta), nil
@@ -333,6 +354,7 @@ func (h *Hub) UpdateAgentConfig(key string, p ConfigParams) (AgentView, error) {
 	}
 
 	nextName := meta.Name
+	nextDisplayName := agentDisplayName(meta)
 	nextModel := meta.Model
 	nextEffort := meta.Effort
 	nextSandbox := meta.Sandbox
@@ -359,6 +381,17 @@ func (h *Hub) UpdateAgentConfig(key string, p ConfigParams) (AgentView, error) {
 			}
 		}
 		nextName = name
+		if p.DisplayName == nil && (strings.TrimSpace(meta.DisplayName) == "" || meta.DisplayName == meta.Name) {
+			nextDisplayName = name
+		}
+	}
+	if p.DisplayName != nil {
+		displayName := strings.TrimSpace(*p.DisplayName)
+		if !validAgentDisplayName(displayName) {
+			h.mu.Unlock()
+			return AgentView{}, errf(400, "displayName must be 1-80 visible characters")
+		}
+		nextDisplayName = displayName
 	}
 	if p.Model != nil {
 		nextModel = strings.TrimSpace(*p.Model)
@@ -406,8 +439,10 @@ func (h *Hub) UpdateAgentConfig(key string, p ConfigParams) (AgentView, error) {
 	}
 	previous := *meta
 	nameChanged := meta.Name != nextName
+	displayNameChanged := agentDisplayName(meta) != nextDisplayName
 	meta.Source = "" // editing config adopts an edge mirror into CodexLoom's registry
 	meta.Name = nextName
+	meta.DisplayName = nextDisplayName
 	meta.ProviderID = nextProviderID
 	meta.Model = nextModel
 	meta.Effort = nextEffort
@@ -425,14 +460,27 @@ func (h *Hub) UpdateAgentConfig(key string, p ConfigParams) (AgentView, error) {
 	rt := h.runtimes[meta.ID]
 	h.mu.Unlock()
 
-	if nameChanged && threadID != "" {
-		if err := h.syncThreadName(rt, threadID, nextName); err != nil {
+	if (nameChanged || displayNameChanged) && threadID != "" {
+		if err := h.syncThreadName(rt, threadID, nextDisplayName); err != nil {
 			// The Hub name remains authoritative. Runtime initialization and the
 			// startup backfill retry the Codex-side title later.
 			log.Printf("[codex-loom] sync renamed thread %s to %q: %v", threadID, nextName, err)
 		}
 	}
 	return view, nil
+}
+
+func validAgentDisplayName(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || utf8.RuneCountInString(value) > 80 {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateConfig is the pre-CodexLoom compatibility method.

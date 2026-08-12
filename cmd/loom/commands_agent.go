@@ -272,7 +272,7 @@ func printRemoteStatus(resp map[string]any) {
 
 func cmdCreate(a args) {
 	if len(a.positional) < 1 || a.flags["cwd"] == "" {
-		usage("create <name> --cwd <path>")
+		usage("create <name> --cwd <path> [--display-name TEXT]")
 	}
 	cwd, err := filepath.Abs(a.flags["cwd"])
 	if err != nil {
@@ -280,6 +280,7 @@ func cmdCreate(a args) {
 	}
 	resp, err := api("POST", "/api/agents", map[string]any{
 		"name":           a.positional[0],
+		"displayName":    a.flags["display-name"],
 		"cwd":            cwd,
 		"approvalPolicy": a.flags["approval"],
 		"sandbox":        a.flags["sandbox"],

@@ -1,1 +1,2 @@
 2026-08-12T02:33:08-07:00 | PM-BUG-003-lark-multi-bot-routing-gap | 双 Lark Bot 事件不对称导致后台问题无人回复 | P1 | file | file internal/hub/integration.go | action=printed
+2026-08-12T02:51:30-07:00 | PM-BUG-003-lark-multi-bot-routing-gap | 双 Lark Bot 事件不对称导致后台问题无人回复 | P1 | file | file internal/hub/inbox.go | action=printed

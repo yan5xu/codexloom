@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,24 @@ func TestMaterializeAndInspectBundledSkills(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(status.Path, "agents", "openai.yaml")); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestExternalMessagingSkillDocumentsDelegationTerminal(t *testing.T) {
+	data, err := bundledFS.ReadFile("loom-external-messaging/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"`delegate_command`",
+		"loom integration delegate --reply-to INBOX_ITEM_ID",
+		"A successful delegation is the source Agent's terminal action",
+		"reply, delegation, no-reply, defer, or failed",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("external messaging Skill omitted %q", want)
 		}
 	}
 }

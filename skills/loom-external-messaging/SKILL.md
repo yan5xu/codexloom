@@ -1,6 +1,6 @@
 ---
 name: loom-external-messaging
-description: "Send and resolve governed external messages through CodexLoom. Use whenever an Agent receives an external Inbox message from Feishu/Lark, Slack, Parall, or another Connector; must reply, explicitly decline, or defer an external Inbox item; needs to publish proactively to an authorized Conversation Membership; sends text, images, or files externally; or must verify or retry an Outbox delivery. Do not use this Skill to configure Connections, Addresses, Memberships, credentials, or gateway processes."
+description: "Send and resolve governed external messages through CodexLoom. Use whenever an Agent receives an external Inbox message from Feishu/Lark, Slack, Parall, or another Connector; must reply, delegate, explicitly decline, or defer an external Inbox item; needs to publish proactively to an authorized Conversation Membership; sends text, images, or files externally; or must verify or retry an Outbox delivery. Do not use this Skill to configure Connections, Addresses, Memberships, credentials, or gateway processes."
 ---
 
 # Loom External Messaging
@@ -20,10 +20,22 @@ An Inbox message may contain `<thread_context>` with the external thread root an
 Choose exactly one path from `reply_policy`:
 
 - `final_answer`: return the intended external response as the final answer. Loom sends it automatically. Do not call `loom integration send`, or the recipient may receive duplicates.
-- `explicit`: use the supplied `reply_command`, `reply_with_attachment_command`, or `no_reply_command`. A final answer alone is not delivered externally.
+- `explicit`: use the supplied `reply_command`, `reply_with_attachment_command`, `delegate_command`, or `no_reply_command`. A final answer alone is not delivered externally.
 - `none`: do not send a response. Do not invent a reply command.
 
 If an attachment is required but the message uses `final_answer`, report the policy mismatch to the Integration owner. Do not manually send the attachment and then also return a deliverable final answer. Attachment replies require an `explicit` delivery contract.
+
+## Delegate the Inbox owner
+
+Delegation is available only when the Inbox envelope contains a `delegate_command` for the exact target Agent and the Conversation Membership guidance assigns the whole message to that target. Execute the supplied command exactly; do not reconstruct the Inbox ID, source Agent, or target Agent from display text:
+
+```sh
+loom integration delegate --reply-to INBOX_ITEM_ID \
+  --from SOURCE_AGENT --to TARGET_AGENT \
+  --reason "Why the target owns this message"
+```
+
+A successful delegation is the source Agent's terminal action for that Inbox item. Do not reply, no-reply, defer, or send a second external message after it. The target receives the same original Inbox message under its own governed Address and Membership and becomes the only Agent allowed to reply. `loom msg` remains internal collaboration and does not transfer Inbox ownership.
 
 ## Reply explicitly
 
@@ -48,7 +60,7 @@ loom inbox defer INBOX_ITEM_ID --agent AGENT \
   --reason "Waiting for the approved report"
 ```
 
-Do not leave an `explicit` Inbox item unresolved. It must end as reply, no-reply, defer, or failed.
+Do not leave an `explicit` Inbox item unresolved. It must end as reply, delegation, no-reply, defer, or failed.
 
 ## Publish proactively
 

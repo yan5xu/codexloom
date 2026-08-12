@@ -9,14 +9,18 @@ severity: P1
 status: draft
 author: codex
 created_at: '2026-08-12T02:21:30-07:00'
-trigger_commits: []
-fix_commits: []
+trigger_commits:
+- 035151cbb9898eea68f865f237f5d2814b51841b
+fix_commits:
+- fcdf7f13a9a7862e03eec7488b7685fce65f151f
 affected_files:
 - internal/hub/inbox.go
 - internal/hub/integration.go
 - internal/hub/external_message.go
 - internal/httpapi/routes_integration.go
 - cmd/loom/commands_integration.go
+- skills/loom-external-messaging/SKILL.md
+- skills/builtin_test.go
 affected_modules:
 - internal/hub
 - internal/httpapi
@@ -76,7 +80,8 @@ detection: user_report
 - source 先后经历 target `pending_delegation` 持久化、source `handled/delegated`、target `queued`；周期队列恢复与启动恢复将半完成 target 收敛为 queued 或 cancelled。
 - 定向 TeamRelationship 只是必要授权；Hub 还要求 target 在同 provider/conversation 下恰有一个启用的 `explicit_dispatch` Membership。
 - target reply Outbox 使用 target Address/Connection，原 conversation/thread/provider message ID 保持不变。
-- 当前仅完成本地实现和回归；Mac mini 构建、Membership 切换及 Lark provider receipt 仍是开放门禁。
+- 内置 `loom-external-messaging` Skill 把受控 `delegate_command` 定义为 source Agent 的合法终态，并明确成功委派后不得再 reply、no-reply 或 defer。
+- Mac mini 已完成 release 与 Membership 切换；真实 Lark provider receipt 仍是开放门禁。
 
 ## Action Items
 
@@ -84,7 +89,8 @@ detection: user_report
 | --- | --- | --- | --- | --- |
 | prevent | 为 Inbox 委派增加唯一 owner、Relationship/Membership 校验、幂等和重启恢复回归 | @codex | done | `go test ./internal/hub -run TestInboxDelegation -count=1` |
 | detect | 在 Inbox 投影中保留 source/target ID 与 delegated outcome | @codex | done | Hub/API 回归检查两个 receipt |
-| prevent | 在 Mac mini 切换 CRM all、Inwish explicit_dispatch，并保留旧 release 与配置快照 | @codex | open | 部署记录与 `/api/version` |
+| prevent | 在 Mac mini 切换 CRM all、Inwish explicit_dispatch，并保留旧 release 与配置快照 | @codex | done | 部署记录与 `/api/version` |
+| prevent | 让内置外部消息 Skill 明确委派是 source 的合法终态 | @codex | done | `go test ./skills -run TestExternalMessagingSkillDocumentsDelegationTerminal -count=1` |
 | detect | 从 Lark 客户端发送标注路由测试并保存唯一 Inwish Outbox 的 provider receipt | @thinkrandom | open | source/target Inbox、Outbox sent、external message ID、delivery receipt |
 
 ## Lessons Learned

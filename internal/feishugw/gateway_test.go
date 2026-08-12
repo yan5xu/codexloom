@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	channeltypes "github.com/larksuite/oapi-sdk-go/v3/channel/types"
+	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
 	loomfeishu "github.com/yan5xu/codex-loom/internal/feishu"
@@ -57,6 +58,51 @@ func TestGatewayAlwaysConfiguresFeishuEventDispatcher(t *testing.T) {
 		if _, err := gateway.wsClient.EventHandler().Do(context.Background(), payload); err != nil {
 			t.Fatalf("%s must be acknowledged: %v", eventType, err)
 		}
+	}
+}
+
+func TestGatewayRegistersLegacyMessageEvent(t *testing.T) {
+	gateway, err := New(Config{
+		ConnectionID: "conn-1", AddressID: "addr-1", AppID: "cli-test", AppSecret: "secret",
+		StateFile: filepath.Join(t.TempDir(), "state.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"ts":"1700000000","uuid":"evt-legacy","token":"verification-token","type":"event_callback","event":{"type":"message"}}`)
+	_, err = gateway.wsClient.EventHandler().Do(context.Background(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNormalizeLegacyMessagePreservesRoutingSemantics(t *testing.T) {
+	event := &larkim.P1MessageReceiveV1{
+		EventBase: &larkevent.EventBase{Ts: "1700000000", UUID: "evt-legacy"},
+		Event: &larkim.P1MessageReceiveV1Data{
+			OpenMessageID: "om-legacy", OpenChatID: "oc-support", ChatType: "group",
+			OpenID: "ou-human", MsgType: "text", Text: "普通反馈", RootID: "om-root",
+		},
+	}
+	message := normalizeLegacyMessage(event)
+	if message == nil {
+		t.Fatal("legacy event was not normalized")
+	}
+	if message.EventID != "evt-legacy" || message.MessageID != "om-legacy" || message.ChatID != "oc-support" {
+		t.Fatalf("legacy identity = %#v", message)
+	}
+	if message.UserID != "ou-human" || message.Content != "普通反馈" || message.ChatType != "group" || message.MentionedBot {
+		t.Fatalf("legacy routing/content = %#v", message)
+	}
+	if message.CreateTimeMs != 1_700_000_000_000 {
+		t.Fatalf("legacy timestamp = %d", message.CreateTimeMs)
+	}
+	params := ingressParams("conn-1", "addr-1", message)
+	if params.Conversation.ThreadID != "om-root" || params.Trigger.Mentioned || params.Trigger.Direct {
+		t.Fatalf("legacy conversation/trigger = %#v / %#v", params.Conversation, params.Trigger)
+	}
+	if params.ProviderMetadata["eventType"] != "message" {
+		t.Fatalf("legacy provider metadata = %#v", params.ProviderMetadata)
 	}
 }
 

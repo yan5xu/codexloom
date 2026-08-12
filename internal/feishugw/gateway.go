@@ -127,6 +127,17 @@ func New(cfg Config) (*Gateway, error) {
 	ch.OnReaction(func(context.Context, *channeltypes.ReactionEvent) error { return nil })
 	eventDispatcher.OnP2MessageReadV1(func(context.Context, *larkim.P2MessageReadV1) error { return nil })
 	g := &Gateway{cfg: cfg, client: apiClient, wsClient: wsClient, channel: ch, http: cfg.HTTPClient, names: map[string]cachedName{}, state: stateFile{Reactions: map[string]*reactionRecord{}, Deliveries: map[string]*deliveryRecord{}}}
+	eventDispatcher.OnP1MessageReceiveV1(func(ctx context.Context, event *larkim.P1MessageReceiveV1) error {
+		msg := normalizeLegacyMessage(event)
+		if msg == nil {
+			return nil
+		}
+		if identity := g.channel.GetBotIdentity(ctx); identity != nil && msg.UserID == identity.OpenID {
+			return nil
+		}
+		go g.ingestMessage(ctx, msg)
+		return nil
+	})
 	if g.http == nil {
 		g.http = &http.Client{}
 	}
@@ -341,8 +352,12 @@ func ingressParams(connectionID, addressID string, msg *channeltypes.NormalizedM
 		}
 	}
 	params.Trigger = hub.TriggerEvidence{Direct: msg.ChatType == "p2p", Mentioned: msg.MentionedBot, ExplicitDispatch: false}
+	eventType := "im.message.receive_v1"
+	if _, ok := msg.RawEvent.(*larkim.P1MessageReceiveV1); ok {
+		eventType = "message"
+	}
 	params.ProviderMetadata = map[string]any{
-		"eventType": "im.message.receive_v1", "messageType": msg.RawContentType,
+		"eventType": eventType, "messageType": msg.RawContentType,
 		"chatType": msg.ChatType, "mentionIds": mentionIDs,
 	}
 	if msg.CreateTimeMs > 0 {
@@ -357,7 +372,65 @@ func ingressParams(connectionID, addressID string, msg *channeltypes.NormalizedM
 			applyFeishuPostContent(&params, pointerString(event.Event.Message.Content), "receive-event")
 		}
 	}
+	if event, ok := msg.RawEvent.(*larkim.P1MessageReceiveV1); ok && event.Event != nil {
+		params.Conversation.ThreadID = strings.TrimSpace(event.Event.RootID)
+		if params.Conversation.ThreadID == "" {
+			params.Conversation.ThreadID = strings.TrimSpace(event.Event.ParentID)
+		}
+	}
 	return params
+}
+
+func normalizeLegacyMessage(event *larkim.P1MessageReceiveV1) *channeltypes.NormalizedMessage {
+	if event == nil || event.Event == nil {
+		return nil
+	}
+	data := event.Event
+	chatType := strings.ToLower(strings.TrimSpace(data.ChatType))
+	if chatType == "private" {
+		chatType = "p2p"
+	}
+	userID := strings.TrimSpace(data.OpenID)
+	if userID == "" {
+		userID = strings.TrimSpace(data.EmployeeID)
+	}
+	if userID == "" {
+		userID = strings.TrimSpace(data.UnionID)
+	}
+	content := strings.TrimSpace(data.TextWithoutAtBot)
+	if content == "" {
+		content = strings.TrimSpace(data.Text)
+	}
+	if title := strings.TrimSpace(data.Title); title != "" {
+		content = strings.TrimSpace(title + "\n\n" + content)
+	}
+	msg := &channeltypes.NormalizedMessage{
+		MessageID: strings.TrimSpace(data.OpenMessageID), ChatID: strings.TrimSpace(data.OpenChatID),
+		ChatType: chatType, UserID: userID, Content: content,
+		RawContentType: strings.ToLower(strings.TrimSpace(data.MsgType)), MentionedBot: data.IsMention,
+		RawEvent: event,
+	}
+	if event.EventBase != nil {
+		msg.EventID = strings.TrimSpace(event.EventBase.UUID)
+		if seconds, err := strconv.ParseInt(strings.TrimSpace(event.EventBase.Ts), 10, 64); err == nil && seconds > 0 {
+			msg.CreateTimeMs = seconds * 1000
+		}
+	}
+	for _, key := range data.ImageKeys {
+		if key = strings.TrimSpace(key); key != "" {
+			msg.Resources = append(msg.Resources, channeltypes.Resource{Type: "image", FileKey: key})
+		}
+	}
+	if key := strings.TrimSpace(data.ImageKey); key != "" {
+		msg.Resources = append(msg.Resources, channeltypes.Resource{Type: "image", FileKey: key})
+	}
+	if key := strings.TrimSpace(data.FileKey); key != "" {
+		msg.Resources = append(msg.Resources, channeltypes.Resource{Type: "file", FileKey: key})
+	}
+	if msg.MessageID == "" || msg.ChatID == "" {
+		return nil
+	}
+	return msg
 }
 
 func resourceMimeType(kind string) string {

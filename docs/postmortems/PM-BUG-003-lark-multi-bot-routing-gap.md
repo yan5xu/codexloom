@@ -6,13 +6,14 @@ legacy_bug_refs: []
 title: 双 Lark Bot 事件不对称导致后台问题无人回复
 impact_summary: 客服群中的 qdomain.com 管理后台问题被 CRM 放弃回复，但没有进入 Inwish Inbox，最终无人回复。
 severity: P1
-status: draft
+status: verified
 author: codex
 created_at: '2026-08-12T02:21:30-07:00'
 trigger_commits:
 - 035151cbb9898eea68f865f237f5d2814b51841b
 fix_commits:
 - fcdf7f13a9a7862e03eec7488b7685fce65f151f
+- b3e6370ad9f15d22977d909d28b91576e9aae32b
 affected_files:
 - internal/hub/inbox.go
 - internal/hub/integration.go
@@ -39,9 +40,11 @@ supersedes: []
 migrated_from: []
 evidence:
 - type: provider_observation
-  value: 2026-08-12 路由测试中 CRM Inbox inb_d767e7f943de8072 结束为 handled/no_reply，Inwish Connection connected 但不存在同一 Lark event 的 Inbox，群内无回复。
+  value: 2026-08-12 修复前 CRM Inbox inb_d767e7f943de8072 结束为 handled/no_reply 且 Inwish 无同一事件；修复后测试 1756 的 CRM source 为 handled/delegated、Inwish target 为 handled/reply，并取得唯一 Inwish Outbox 的 Lark 文本 delivery receipt。
 - type: repo_code
   path: internal/hub/inbox_test.go
+- type: commit
+  value: b3e6370ad9f15d22977d909d28b91576e9aae32b
 detection: user_report
 ---
 
@@ -58,7 +61,9 @@ detection: user_report
 - 2026-08-12：普通 CRM 消息由 `crm-rebot` 唯一认领并取得 provider delivery receipt，证明 CRM 入口和外发链路可用。
 - 2026-08-12：发送标注为非真实故障的后台路由测试。
 - 2026-08-12：CRM 创建 Inbox `inb_d767e7f943de8072` 并结束为 `handled/no_reply`；Inwish 没有同一 Lark event 的 Inbox，群内无回复。
-- 2026-08-12：确认改为 CRM 唯一入口和 Hub 机械委派；先补失败回归，再实现中央所有权转移。当前尚未部署。
+- 2026-08-12：确认改为 CRM 唯一入口和 Hub 机械委派；先补失败回归，再实现中央所有权转移。
+- 2026-08-12：Mac mini 切换到 `b3e6370ad9f1`，CRM Membership 设为 `all`，Inwish Membership 设为 `explicit_dispatch`，两个 Gateway 恢复 connected。
+- 2026-08-12：Lark 测试 `1756` 产生 CRM source `inb_9bf9b94ec2ffdd3c` 与 Inwish target `inb_7c2f32cc7292bbac`；两者共享 `imsg_fbddca944f6a4fc7`，只有 Inwish Outbox `out_9876e6fcf25c549d`，发送成功并取得文本 delivery receipt。
 
 ## Proximate Cause
 
@@ -81,7 +86,7 @@ detection: user_report
 - 定向 TeamRelationship 只是必要授权；Hub 还要求 target 在同 provider/conversation 下恰有一个启用的 `explicit_dispatch` Membership。
 - target reply Outbox 使用 target Address/Connection，原 conversation/thread/provider message ID 保持不变。
 - 内置 `loom-external-messaging` Skill 把受控 `delegate_command` 定义为 source Agent 的合法终态，并明确成功委派后不得再 reply、no-reply 或 defer。
-- Mac mini 已完成 release 与 Membership 切换；真实 Lark provider receipt 仍是开放门禁。
+- Mac mini 已完成 release 与 Membership 切换。真实 Lark 回放确认 source/target 共用同一个原始消息，source 失去回复权，唯一 Outbox 使用 Inwish Address、Membership 与 Connection，且 provider 一次发送成功。
 
 ## Action Items
 
@@ -91,7 +96,7 @@ detection: user_report
 | detect | 在 Inbox 投影中保留 source/target ID 与 delegated outcome | @codex | done | Hub/API 回归检查两个 receipt |
 | prevent | 在 Mac mini 切换 CRM all、Inwish explicit_dispatch，并保留旧 release 与配置快照 | @codex | done | 部署记录与 `/api/version` |
 | prevent | 让内置外部消息 Skill 明确委派是 source 的合法终态 | @codex | done | `go test ./skills -run TestExternalMessagingSkillDocumentsDelegationTerminal -count=1` |
-| detect | 从 Lark 客户端发送标注路由测试并保存唯一 Inwish Outbox 的 provider receipt | @thinkrandom | open | source/target Inbox、Outbox sent、external message ID、delivery receipt |
+| detect | 从 Lark 客户端发送标注路由测试并保存唯一 Inwish Outbox 的 provider receipt | @thinkrandom | done | source `inb_9bf9b94ec2ffdd3c`、target `inb_7c2f32cc7292bbac`、Outbox `out_9876e6fcf25c549d`、Lark 文本 delivery receipt |
 
 ## Lessons Learned
 

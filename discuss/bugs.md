@@ -18,12 +18,12 @@
 
 ### BUG-003 双 Lark Bot 事件不对称导致后台问题无人回复
 
-- **状态**: 🛠️ 已部署，待 Lark provider 验证
+- **状态**: ✅ 已修复并通过 Lark provider 验证
 - **commit**: 本提交（2026-08-12）
 - **文件**: `internal/hub/inbox.go`、`internal/hub/integration.go`、`internal/hub/external_message.go`、`internal/httpapi/routes_integration.go`、`cmd/loom/commands_integration.go`、`skills/loom-external-messaging/SKILL.md`、`skills/builtin_test.go`
 - **现场证据**: 同一条后台路由测试只在 CRM 产生 Inbox `inb_d767e7f943de8072`，CRM 结束为 `handled/no_reply`；Inwish Connection 保持 connected，但没有收到同一 Lark event，因此群内无回复。
 - **近因**: `crm-rebot` 判断后台问题后只执行 no-reply，系统期待另一 Lark Bot 独立收到相同事件再由 `inwish-admin` 认领；现场的第二条事件没有到达 Inwish。
 - **根因**: 路由正确性依赖两个独立 Bot 对同一群事件的对称分发，没有 Hub 级的所有权转移、唯一回复权和可恢复委派状态机。
 - **修复**: `crm-rebot` 保持唯一原始入口；Hub 在定向 Relationship 与唯一 `explicit_dispatch` Membership 双重校验后，把同一个 `InboxMessage` 委派给 `inwish-admin`。source 进入 `handled/delegated` 并失去回复权，target 使用 Inwish Address/Connection 回复；重复委派幂等，`pending_delegation` 在周期队列恢复或重启后收敛。内置外部消息 Skill 同步把 `delegate_command` 定义为 source 的合法终态，避免 Agent 被旧的 reply/no-reply/defer 清单误导。
-- **部署证据**: Mac mini 已切换到包含中央派发的 release，CRM Membership 为 `trigger=all`，Inwish Membership 为 `trigger=explicit_dispatch`，两个 Lark Gateway 已恢复 `connected`；正式 revision 以部署回执中的 `/api/version` 为准。
-- **剩余门禁**: 尚无新的 Lark provider delivery receipt；必须用真实群消息证明 source=`handled/delegated`、target=`handled/reply`、唯一 Inwish Outbox=`sent`，不得只凭连接状态报告线上修复完成。
+- **部署证据**: Mac mini 运行 `b3e6370ad9f1`，CRM Membership 为 `trigger=all`，Inwish Membership 为 `trigger=explicit_dispatch`，两个 Lark Gateway 已恢复 `connected`。
+- **Lark 验证**: 测试消息 `1756` 只产生 CRM source `inb_9bf9b94ec2ffdd3c`（`handled/delegated`）和 Inwish target `inb_7c2f32cc7292bbac`（`handled/reply`），两者引用同一个 `InboxMessage` `imsg_fbddca944f6a4fc7`。全链路只有 Inwish Outbox `out_9876e6fcf25c549d`，经 Inwish Connection `conn_bcfa26e2bfdee11f` 一次发送成功，并取得 Lark 文本 delivery receipt。

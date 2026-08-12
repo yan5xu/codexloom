@@ -17,6 +17,7 @@ type PlatformConnection struct {
 	Provider        string   `json:"provider"`
 	AccountRef      string   `json:"accountRef,omitempty"`
 	ScopeRef        string   `json:"scopeRef,omitempty"`
+	Domain          string   `json:"domain,omitempty"`
 	CredentialRef   string   `json:"credentialRef,omitempty"`
 	Status          string   `json:"status"`
 	Capabilities    []string `json:"capabilities,omitempty"`
@@ -264,6 +265,7 @@ type ConnectionParams struct {
 	Provider      string   `json:"provider"`
 	AccountRef    string   `json:"accountRef"`
 	ScopeRef      string   `json:"scopeRef"`
+	Domain        string   `json:"domain"`
 	CredentialRef string   `json:"credentialRef"`
 	Capabilities  []string `json:"capabilities"`
 	Enabled       *bool    `json:"enabled"`
@@ -679,6 +681,10 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 	if credentialRef != "" && !validCredentialRef(credentialRef) {
 		return PlatformConnection{}, errf(400, "credentialRef must use env:, keychain:, or managed:")
 	}
+	domain, err := normalizeConnectionDomain(provider, p.Domain)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
 	enabled := true
 	if p.Enabled != nil {
 		enabled = *p.Enabled
@@ -686,7 +692,7 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 	ts := now()
 	connection := PlatformConnection{
 		ID: newIntegrationID("conn"), Provider: provider, AccountRef: strings.TrimSpace(p.AccountRef), ScopeRef: strings.TrimSpace(p.ScopeRef),
-		CredentialRef: credentialRef, Status: "disconnected", Capabilities: normalizeCapabilities(p.Capabilities),
+		Domain: domain, CredentialRef: credentialRef, Status: "disconnected", Capabilities: normalizeCapabilities(p.Capabilities),
 		Enabled: enabled, CreatedAt: ts, UpdatedAt: ts,
 	}
 	unlock := h.gatewayCoordinatorForUse().lock(connection.ID)
@@ -1151,6 +1157,14 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 	if p.ScopeRef != "" {
 		next.ScopeRef = strings.TrimSpace(p.ScopeRef)
 	}
+	if p.Domain != "" {
+		next.Domain = strings.ToLower(strings.TrimSpace(p.Domain))
+	}
+	domain, err := normalizeConnectionDomain(next.Provider, next.Domain)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
+	next.Domain = domain
 	if p.CredentialRef != "" {
 		value := strings.TrimSpace(p.CredentialRef)
 		if !validCredentialRef(value) {
@@ -1184,6 +1198,20 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 	next.Capabilities = append([]string(nil), h.connections[next.ID].Capabilities...)
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
 	return clonePlatformConnectionValue(next), nil
+}
+
+func normalizeConnectionDomain(provider, value string) (string, error) {
+	domain := strings.ToLower(strings.TrimSpace(value))
+	if domain == "" {
+		return "", nil
+	}
+	if provider != "lark" && provider != "feishu" {
+		return "", errf(400, "domain is supported only for Lark/Feishu connections")
+	}
+	if domain != "lark" && domain != "feishu" {
+		return "", errf(400, "Lark/Feishu domain must be lark or feishu")
+	}
+	return domain, nil
 }
 
 func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (PlatformConnection, error) {

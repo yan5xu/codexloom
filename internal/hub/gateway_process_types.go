@@ -73,6 +73,7 @@ type gatewayLaunchDescriptor struct {
 	Provider             string                `json:"provider,omitempty"`
 	AddressID            string                `json:"addressId,omitempty"`
 	AccountRef           string                `json:"accountRef,omitempty"`
+	Domain               string                `json:"domain,omitempty"`
 	ManagedCredentialRef string                `json:"managedCredentialRef,omitempty"`
 	ServiceID            string                `json:"serviceId"`
 	UnitPath             string                `json:"unitPath"`
@@ -200,7 +201,7 @@ func validateGatewayLaunchPlan(plan gatewayLaunchPlan) error {
 		plan.Target.UnitPath != anchor.UnitPath || plan.Target.HubURL != anchor.HubURL ||
 		plan.Target.DataDir != anchor.DataDir || plan.Target.LogPath != anchor.LogPath ||
 		plan.Target.Provider != anchor.Provider || plan.Target.AddressID != anchor.AddressID ||
-		plan.Target.AccountRef != anchor.AccountRef {
+		plan.Target.AccountRef != anchor.AccountRef || plan.Target.Domain != anchor.Domain {
 		return fmt.Errorf("Gateway target and registration anchor identify different services")
 	}
 	if plan.Target.Provider != "" {
@@ -253,13 +254,16 @@ func validateGatewayLaunchDescriptor(value gatewayLaunchDescriptor) error {
 	if !gatewayServiceIdentifierCanonical(value.ConnectionID) || !gatewayServiceIdentifierCanonical(value.ServiceID) {
 		return fmt.Errorf("Gateway Connection/service identifier is not canonical")
 	}
-	hasTypedProvider := value.Provider != "" || value.AddressID != "" || value.AccountRef != "" || value.ManagedCredentialRef != ""
+	hasTypedProvider := value.Provider != "" || value.AddressID != "" || value.AccountRef != "" || value.Domain != "" || value.ManagedCredentialRef != ""
 	if hasTypedProvider {
 		provider := strings.ToLower(strings.TrimSpace(value.Provider))
 		if (provider != "lark" && provider != "feishu") || value.Provider != provider ||
 			!gatewayServiceIdentifierCanonical(value.AddressID) || value.AccountRef == "" || value.AccountRef != strings.TrimSpace(value.AccountRef) ||
 			len(value.AccountRef) > gatewayProcessStringMax || strings.ContainsAny(value.AccountRef, "\r\n\x00") || gatewayStringMayContainSecret(value.AccountRef) {
 			return fmt.Errorf("Gateway provider launch identity is not canonical")
+		}
+		if value.Domain != "" && value.Domain != "lark" && value.Domain != "feishu" {
+			return fmt.Errorf("Gateway provider domain is not canonical")
 		}
 		if value.ManagedCredentialRef != "" && (value.ManagedCredentialRef != strings.TrimSpace(value.ManagedCredentialRef) || !credentials.IsManagedRef(value.ManagedCredentialRef)) {
 			return fmt.Errorf("managed credential reference is not canonical")

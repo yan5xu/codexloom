@@ -55,6 +55,7 @@ func validRuntimeGatewayLaunchProofFixture(t *testing.T) gatewayFoundationStateS
 	control := value.Controls["conn-r1"]
 	control.Binding.Connection.Provider = "lark"
 	control.Binding.Connection.AccountRef = "cli_l2a"
+	control.Binding.Connection.Domain = "lark"
 	control.Binding.Connection.CredentialRef = "managed:" + strings.Repeat("c", 64)
 	control.Binding.Addresses = []gatewayFoundationAddressShape{{
 		ID: "addr-l2a", AgentID: "agent-l2a", ConnectionID: "conn-r1", ExternalIdentity: "lark://ou_l2a",
@@ -66,6 +67,7 @@ func validRuntimeGatewayLaunchProofFixture(t *testing.T) gatewayFoundationStateS
 		descriptor.Provider = "lark"
 		descriptor.AddressID = "addr-l2a"
 		descriptor.AccountRef = "cli_l2a"
+		descriptor.Domain = "lark"
 	}
 	plan.Target.ManagedCredentialRef = control.Binding.Connection.CredentialRef
 	anchorJSON, err := json.Marshal(struct {

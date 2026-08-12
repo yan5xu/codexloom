@@ -27,7 +27,7 @@ func newL2aFixture(t *testing.T) r0bFixture {
 	seedInboxAgent(t, h, "agent-l2a", "l2a-agent")
 	credentialRef := "managed:" + strings.Repeat("a", 64)
 	connection, err := h.CreateConnection(ConnectionParams{
-		Provider: "lark", AccountRef: "cli_l2a_app", CredentialRef: credentialRef,
+		Provider: "lark", AccountRef: "cli_l2a_app", Domain: "lark", CredentialRef: credentialRef,
 		Capabilities: []string{"receive_events", "proactive_send"},
 	})
 	if err != nil {
@@ -105,7 +105,7 @@ func TestL2aProductionCallerFreezesBindingRunsOneEffectAndAcceptsPrivateHeartbea
 	}
 	if attempt.Phase != gatewayAttemptAwaitingTargetProof || attempt.Plan.Target.ManagedCredentialRef != fixture.connection.CredentialRef ||
 		attempt.Plan.Target.AddressID != fixture.address.ID || attempt.Plan.Target.AccountRef != fixture.connection.AccountRef ||
-		attempt.Plan.IntegritySHA256 == "" {
+		attempt.Plan.Target.Domain != "lark" || attempt.Plan.IntegritySHA256 == "" {
 		t.Fatalf("production launch did not freeze the complete binding: %#v", attempt)
 	}
 	if calls := adapter.snapshotCalls(); len(calls) != 1 || !strings.HasPrefix(calls[0], "apply:"+attempt.ID+":"+attempt.TargetGeneration) {
@@ -358,7 +358,7 @@ func TestL2aProductionCallerWaitsForExactRecoveryProofAfterTargetFailure(t *test
 func TestL2aFeishuUnitsUseRealFlagsAndFreezeAttemptProofIdentity(t *testing.T) {
 	ref := "managed:" + strings.Repeat("c", 64)
 	base := gatewayLaunchDescriptor{
-		ConnectionID: "conn_l2a", Provider: "lark", AddressID: "addr_l2a", AccountRef: "cli_l2a",
+		ConnectionID: "conn_l2a", Provider: "lark", AddressID: "addr_l2a", AccountRef: "cli_l2a", Domain: "lark",
 		ManagedCredentialRef: ref, ServiceID: "com.codexloom.feishu.conn_l2a",
 		Executable: "/opt/codexloom/loom-feishu-gateway", WorkingDirectory: "/opt/codexloom",
 		HubURL: "http://127.0.0.1:4870", DataDir: "/var/tmp/codexloom", LogPath: "/var/tmp/codexloom/gateway/feishu.log",
@@ -381,7 +381,7 @@ func TestL2aFeishuUnitsUseRealFlagsAndFreezeAttemptProofIdentity(t *testing.T) {
 			text := string(unit)
 			for _, want := range []string{
 				"--hub", descriptor.HubURL, "--connection", descriptor.ConnectionID, "--address", descriptor.AddressID,
-				"--app-id", descriptor.AccountRef, "CODEX_LOOM_DATA", "CODEX_LOOM_MANAGED_CREDENTIAL_REF", ref,
+				"--app-id", descriptor.AccountRef, "--domain", descriptor.Domain, "CODEX_LOOM_DATA", "CODEX_LOOM_MANAGED_CREDENTIAL_REF", ref,
 				"CODEX_LOOM_GATEWAY_ATTEMPT_ID", "gattempt_l2a", "CODEX_LOOM_GATEWAY_GENERATION", "ggen_l2a",
 				"CODEX_LOOM_GATEWAY_BUILD", descriptor.Build, "CODEX_LOOM_GATEWAY_EXECUTABLE_DIGEST", descriptor.ExecutableDigest,
 			} {

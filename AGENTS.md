@@ -85,3 +85,10 @@ time. A process restart does not reread files from that directory.
 - When a frontend feature adds an API, verify that API returns JSON after the
   restart. An HTML response from an `/api/...` URL means the running binary
   does not contain that route and the SPA fallback handled the request.
+
+## Postmortem
+
+- 本项目启用 postmortem-first。
+- 正式事故流程写在 `docs/current/postmortem-process.md`。
+- 正式事故档案写在 `docs/postmortems/`。
+- 发布前默认执行 `scripts/postmortem-lint.sh`，并以 warning-only 方式执行 `scripts/postmortem-scan.sh`。

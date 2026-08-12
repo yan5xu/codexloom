@@ -35,6 +35,7 @@ type gatewayConnectionBinding struct {
 	Provider      string   `json:"provider"`
 	AccountRef    string   `json:"accountRef,omitempty"`
 	ScopeRef      string   `json:"scopeRef,omitempty"`
+	Domain        string   `json:"domain,omitempty"`
 	CredentialRef string   `json:"credentialRef,omitempty"`
 	Capabilities  []string `json:"capabilities,omitempty"`
 	Enabled       bool     `json:"enabled"`
@@ -533,6 +534,9 @@ func gatewayBindingCanonical(binding gatewayConfiguredBinding) bool {
 		!gatewayStringSlicesEqual(binding.Connection.Capabilities, normalizeCapabilities(binding.Connection.Capabilities)) {
 		return false
 	}
+	if _, err := normalizeConnectionDomain(binding.Connection.Provider, binding.Connection.Domain); err != nil {
+		return false
+	}
 	previous := ""
 	for _, address := range binding.Addresses {
 		if address.ID == "" || address.AgentID == "" || address.ConnectionID != binding.Connection.ID || address.ExternalIdentity == "" || address.ID <= previous ||
@@ -554,7 +558,7 @@ func (h *Hub) gatewayBindingLocked(connectionID string) (gatewayConfiguredBindin
 	}
 	binding := gatewayConfiguredBinding{Connection: gatewayConnectionBinding{
 		ID: connection.ID, Provider: connection.Provider, AccountRef: connection.AccountRef,
-		ScopeRef: connection.ScopeRef, CredentialRef: connection.CredentialRef,
+		ScopeRef: connection.ScopeRef, Domain: connection.Domain, CredentialRef: connection.CredentialRef,
 		Capabilities: normalizeCapabilities(connection.Capabilities), Enabled: connection.Enabled,
 		SupersededBy: connection.SupersededBy, ArchivedAt: connection.ArchivedAt, CreatedAt: connection.CreatedAt,
 	}}

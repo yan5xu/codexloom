@@ -83,16 +83,19 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     await refreshSelectedInbox(selectedAddressIDsRef.current);
   }, [refresh, refreshSelectedInbox]);
 
-  const discoverLark = async (appID = "") => {
+  const discoverLark = async (appID = "", domain = "") => {
     setLarkDiscoveryLoading(true);
     try {
-      const suffix = appID.trim() ? `?appId=${encodeURIComponent(appID.trim())}` : "";
+      const params = new URLSearchParams();
+      if (appID.trim()) params.set("appId", appID.trim());
+      if (domain.trim()) params.set("domain", domain.trim());
+      const suffix = params.size ? `?${params}` : "";
       const data = await api("GET", `/api/integrations/providers/lark/discovery${suffix}`);
       const discovery = normalizeLarkDiscovery(data.discovery as LarkDiscovery);
       setLarkDiscovery(discovery);
       return discovery;
     } catch (error: any) {
-      const discovery = { available: false, runtime: "native", credentialStored: false, botReady: false, chats: [], error: error.message } as LarkDiscovery;
+      const discovery = { available: false, runtime: "native", domain: domain === "lark" ? "lark" : "feishu", credentialStored: false, botReady: false, chats: [], error: error.message } as LarkDiscovery;
       setLarkDiscovery(discovery);
       return discovery;
     } finally {
@@ -100,10 +103,10 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     }
   };
 
-  const saveLarkCredentials = async (appID: string, appSecret: string) => {
+  const saveLarkCredentials = async (appID: string, appSecret: string, domain: "feishu" | "lark") => {
     setLarkDiscoveryLoading(true);
     try {
-      const data = await api("POST", "/api/integrations/providers/lark/credentials", { appId: appID.trim(), appSecret });
+      const data = await api("POST", "/api/integrations/providers/lark/credentials", { appId: appID.trim(), appSecret, domain });
       const discovery = normalizeLarkDiscovery(data.discovery as LarkDiscovery);
       setLarkDiscovery(discovery);
       return discovery;
@@ -112,15 +115,15 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
     }
   };
 
-  const openLarkSetup = (appID = "", mode: "connect" | "add-group" = "connect") => {
+  const openLarkSetup = (appID = "", mode: "connect" | "add-group" = "connect", domain = "") => {
     setCreateOpen(false);
     setLarkSetupMode(mode);
     setLarkSetupOpen(true);
     window.history.replaceState(null, "", "#external?setup=lark");
     if (appID.trim()) {
-      discoverLark(appID);
+      discoverLark(appID, domain);
     } else {
-      setLarkDiscovery({ available: true, runtime: "native", appId: "", credentialStored: false, botReady: false, chats: [] });
+      setLarkDiscovery({ available: true, runtime: "native", appId: "", domain: domain === "lark" ? "lark" : "feishu", credentialStored: false, botReady: false, chats: [] });
     }
   };
 
@@ -643,6 +646,7 @@ export function IntegrationsPane({ agents, onError }: { agents: Agent[]; onError
                   onSetup={() => openLarkSetup(
                     selected.accountRef,
                     larkDiscovery && larkDiscovery.appId === selected.accountRef && larkDiscovery.credentialStored && larkDiscovery.botReady && isNativeFeishuConnection(selected) ? "add-group" : "connect",
+                    selected.domain,
                   )}
                 />
               )}
@@ -764,8 +768,8 @@ function LarkSetup({
   loading: boolean;
   working: boolean;
   requireGroup: boolean;
-  onRefreshDiscovery: (appID?: string) => Promise<LarkDiscovery>;
-  onSaveCredentials: (appID: string, appSecret: string) => Promise<LarkDiscovery>;
+  onRefreshDiscovery: (appID?: string, domain?: string) => Promise<LarkDiscovery>;
+  onSaveCredentials: (appID: string, appSecret: string, domain: "feishu" | "lark") => Promise<LarkDiscovery>;
   onClose: () => void;
   onAdvanced: () => void;
   onComplete: (connectionID: string) => Promise<void>;
@@ -779,6 +783,7 @@ function LarkSetup({
   const [agent, setAgent] = useState("");
   const [appID, setAppID] = useState("");
   const [appSecret, setAppSecret] = useState("");
+  const [domain, setDomain] = useState<"feishu" | "lark">(discovery?.domain === "lark" ? "lark" : "feishu");
   const [chatID, setChatID] = useState("");
   const [query, setQuery] = useState("");
   const [purpose, setPurpose] = useState("");
@@ -791,21 +796,25 @@ function LarkSetup({
   useEffect(() => {
     if (!appID && discovery?.appId) setAppID(discovery.appId);
   }, [discovery?.appId]);
+  useEffect(() => {
+    if (discovery?.domain === "lark" || discovery?.domain === "feishu") setDomain(discovery.domain);
+  }, [discovery?.domain]);
 
   const chats = (discovery?.chats || []).filter((chat) => {
     const haystack = `${chat.name} ${chat.description || ""}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase());
   });
   const selectedChat = discovery?.chats.find((chat) => chat.id === chatID);
-  const ready = Boolean(discovery?.available && discovery.credentialStored && discovery.botReady && discovery.appId);
+  const ready = Boolean(discovery?.available && discovery.credentialStored && discovery.botReady && discovery.appId && discovery.domain === domain);
   const nativeConnection = isNativeFeishuConnection(connection);
+  const providerLabel = domain === "lark" ? "Lark (Global)" : "Feishu (China)";
   const verifyCredentials = async () => {
     if (!appID.trim() || !appSecret.trim()) {
       onError("Enter the Feishu App ID and App Secret");
       return;
     }
     try {
-      await onSaveCredentials(appID, appSecret);
+      await onSaveCredentials(appID, appSecret, domain);
       setAppSecret("");
     } catch (error: any) {
       onError(error.message);
@@ -824,6 +833,7 @@ function LarkSetup({
       const data = await api("POST", "/api/integrations/providers/lark/setup", {
         agent,
         appId: discovery?.appId || appID.trim(),
+        domain,
         chatId: chatID,
         purpose: purpose.trim(),
         role: role.trim(),
@@ -839,7 +849,7 @@ function LarkSetup({
         <div className="min-w-0 border-b border-border pb-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-5">
           <div className="flex items-center gap-2">
             <div className="flex size-9 items-center justify-center rounded-md bg-muted"><Bot className="size-4" /></div>
-            <div className="min-w-0"><h2 className="text-[15px] font-semibold">Connect Feishu</h2><p className="text-[11px] text-muted-foreground">Native connection, managed by CodexLoom.</p></div>
+            <div className="min-w-0"><h2 className="text-[15px] font-semibold">Connect {providerLabel}</h2><p className="text-[11px] text-muted-foreground">Native connection, managed by CodexLoom.</p></div>
             <button onClick={onClose} title="Close" className="ml-auto flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"><X className="size-4" /></button>
           </div>
           <div className="mt-4 space-y-2 text-[11px]">
@@ -848,6 +858,15 @@ function LarkSetup({
             <SetupCheck complete={Boolean(discovery?.botReady)} label={discovery?.botName ? `${discovery.botName} verified` : "Bot verified"} />
             <SetupCheck complete={Boolean(discovery?.botReady)} label={`${discovery?.chats.length || 0} visible groups found`} />
           </div>
+          <label className="mt-4 block text-[10.5px] font-medium text-muted-foreground">Platform region</label>
+          <select value={domain} onChange={(event) => {
+            const next = event.target.value as "feishu" | "lark";
+            setDomain(next);
+            if (appID.trim()) void onRefreshDiscovery(appID, next);
+          }} className={`${controlClass} mt-1 w-full`}>
+            <option value="lark">Lark (Global)</option>
+            <option value="feishu">Feishu (China)</option>
+          </select>
           {discovery?.appId && <div className="mt-3 truncate font-mono text-[9.5px] text-muted-foreground">{discovery.appId}</div>}
           <p className="mt-4 text-[10.5px] leading-4 text-muted-foreground">The App Secret stays in the operating system Keychain and is never written to Loom data files.</p>
           <button onClick={onAdvanced} className="mt-3 text-[11px] text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground">Advanced configuration</button>
@@ -855,18 +874,18 @@ function LarkSetup({
 
         <div className="min-w-0">
           {loading ? (
-            <div className="flex min-h-44 items-center justify-center gap-2 text-[12px] text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Checking Feishu on this Mac…</div>
+            <div className="flex min-h-44 items-center justify-center gap-2 text-[12px] text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Checking {providerLabel} on this Mac…</div>
           ) : !ready ? (
             <div className="mx-auto max-w-md py-2">
-              <h3 className="text-[14px] font-semibold">Connect your Feishu app</h3>
-              <p className="mt-1 text-[11.5px] leading-5 text-muted-foreground">Copy these two values from Feishu Developer Console → Credentials & Basic Info. CodexLoom verifies them before saving.</p>
+              <h3 className="text-[14px] font-semibold">Connect your {providerLabel} app</h3>
+              <p className="mt-1 text-[11.5px] leading-5 text-muted-foreground">Copy these two values from the developer console → Credentials & Basic Info. CodexLoom verifies them against the selected region before saving.</p>
               <label className="mt-4 block text-[10.5px] font-medium text-muted-foreground">App ID</label>
               <input value={appID} disabled={Boolean(connection?.accountRef)} onChange={(event) => setAppID(event.target.value)} placeholder="cli_..." autoComplete="off" className={`${controlClass} mt-1 w-full font-mono`} />
               <label className="mt-3 block text-[10.5px] font-medium text-muted-foreground">App Secret</label>
               <input value={appSecret} onChange={(event) => setAppSecret(event.target.value)} placeholder="Paste App Secret" type="password" autoComplete="new-password" className={`${controlClass} mt-1 w-full font-mono`} />
               {discovery?.error && <div className="mt-3 border-l-2 border-warning bg-warning/5 px-3 py-2 text-[10.5px] leading-4 text-muted-foreground">{discovery.error}</div>}
               <button onClick={verifyCredentials} disabled={!appID.trim() || !appSecret.trim()} className="mt-4 flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-[12px] font-medium text-primary-foreground disabled:opacity-45"><ShieldCheck className="size-3.5" />Verify and continue</button>
-              {discovery?.credentialStored && <button onClick={() => onRefreshDiscovery(appID)} className="mx-auto mt-3 flex h-8 items-center gap-1.5 px-3 text-[11px] text-muted-foreground hover:text-foreground"><RefreshCw className="size-3.5" />Check again</button>}
+              {discovery?.credentialStored && <button onClick={() => onRefreshDiscovery(appID, domain)} className="mx-auto mt-3 flex h-8 items-center gap-1.5 px-3 text-[11px] text-muted-foreground hover:text-foreground"><RefreshCw className="size-3.5" />Check again</button>}
             </div>
           ) : (
             <div className="grid gap-4 xl:grid-cols-2">
@@ -882,7 +901,7 @@ function LarkSetup({
                   <label className="text-[11px] font-semibold">Where may it work?</label>
                   <div className="flex items-center gap-1">
                     <div className="relative"><Search className="pointer-events-none absolute left-2 top-2 size-3 text-muted-foreground" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a group" className="h-7 w-32 rounded-md border border-border bg-background pl-7 pr-2 text-[10.5px] outline-none focus:border-ring" /></div>
-                    <button onClick={() => onRefreshDiscovery(discovery?.appId || appID)} title="Refresh Feishu groups" className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted hover:text-foreground"><RefreshCw className="size-3" /></button>
+                    <button onClick={() => onRefreshDiscovery(discovery?.appId || appID, domain)} title="Refresh groups" className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted hover:text-foreground"><RefreshCw className="size-3" /></button>
                   </div>
                 </div>
                 <div className="mt-1.5 max-h-44 overflow-y-auto border-y border-border">
@@ -1773,7 +1792,8 @@ function CopyCommand({ value }: { value: string }) {
 function gatewayCommand(connection: PlatformConnection, address: AgentAddress) {
   const base = `node gateway/${connection.provider}.mjs --connection ${shellArg(connection.id)} --address ${shellArg(address.id)}`;
   if (connection.provider === "lark") {
-    return `bin/loom-feishu-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --app-id ${shellArg(connection.accountRef || stripIdentity(address.externalIdentity))}`;
+    const domain = connection.domain === "lark" ? ` --domain ${shellArg("lark")}` : "";
+    return `bin/loom-feishu-gateway --connection ${shellArg(connection.id)} --address ${shellArg(address.id)} --app-id ${shellArg(connection.accountRef || stripIdentity(address.externalIdentity))}${domain}`;
   }
   if (connection.provider === "slack") {
     const app = slackAppIDFromCredentialRef(connection.credentialRef);
@@ -1826,7 +1846,7 @@ function normalizeLarkDiscovery(discovery: LarkDiscovery): LarkDiscovery {
       external: current.external || chat.external,
     });
   }
-  return { ...discovery, chats: Array.from(chats.values()) };
+  return { ...discovery, domain: discovery.domain === "lark" ? "lark" : "feishu", chats: Array.from(chats.values()) };
 }
 
 function normalizeSlackDiscovery(discovery?: SlackDiscovery): SlackDiscovery {

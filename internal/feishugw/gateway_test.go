@@ -14,8 +14,28 @@ import (
 	channeltypes "github.com/larksuite/oapi-sdk-go/v3/channel/types"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
+	loomfeishu "github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/hub"
 )
+
+func TestGatewayNormalizesLarkDomainForBothSDKClients(t *testing.T) {
+	gateway, err := New(Config{
+		ConnectionID: "conn-1", AddressID: "addr-1", AppID: "cli-test", AppSecret: "secret",
+		Domain: loomfeishu.DomainLark, StateFile: filepath.Join(t.TempDir(), "state.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateway.cfg.Domain != loomfeishu.DomainLark || gateway.client == nil || gateway.wsClient == nil {
+		t.Fatalf("gateway domain/client configuration = %q / %v / %v", gateway.cfg.Domain, gateway.client != nil, gateway.wsClient != nil)
+	}
+	if _, err := New(Config{
+		ConnectionID: "conn-1", AddressID: "addr-1", AppID: "cli-test", AppSecret: "secret",
+		Domain: "https://example.com", StateFile: filepath.Join(t.TempDir(), "state.json"),
+	}); err == nil {
+		t.Fatal("gateway accepted an arbitrary provider domain")
+	}
+}
 
 func TestGatewayAlwaysConfiguresFeishuEventDispatcher(t *testing.T) {
 	gateway, err := New(Config{

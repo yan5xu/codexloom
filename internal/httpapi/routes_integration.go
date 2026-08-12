@@ -78,7 +78,7 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"device": flow})
 	})
 	mux.HandleFunc("GET /api/integrations/providers/lark/discovery", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"discovery": s.discoverLark(r.Context(), r.URL.Query().Get("appId"))})
+		writeJSON(w, 200, map[string]any{"discovery": s.discoverLark(r.Context(), r.URL.Query().Get("appId"), r.URL.Query().Get("domain"))})
 	})
 	mux.HandleFunc("POST /api/integrations/providers/lark/credentials", func(w http.ResponseWriter, r *http.Request) {
 		var body larkCredentialParams

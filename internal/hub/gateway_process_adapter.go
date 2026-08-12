@@ -327,6 +327,9 @@ func renderLarkGatewayServiceUnit(descriptor gatewayLaunchDescriptor, attemptID,
 		"--address", descriptor.AddressID,
 		"--app-id", descriptor.AccountRef,
 	}
+	if descriptor.Domain == "lark" {
+		args = append(args, "--domain", descriptor.Domain)
+	}
 	environment := [][2]string{{"CODEX_LOOM_DATA", descriptor.DataDir}}
 	if descriptor.ManagedCredentialRef != "" {
 		environment = append(environment, [2]string{"CODEX_LOOM_MANAGED_CREDENTIAL_REF", descriptor.ManagedCredentialRef})

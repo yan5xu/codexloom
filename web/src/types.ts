@@ -263,6 +263,7 @@ export interface PlatformConnection {
   provider: string;
   accountRef?: string;
   scopeRef?: string;
+  domain?: "feishu" | "lark";
   credentialRef?: string;
   status: "disconnected" | "connecting" | "connected" | "degraded";
   capabilities: string[];
@@ -345,6 +346,7 @@ export interface LarkDiscovery {
   available: boolean;
   runtime: "native" | string;
   appId?: string;
+  domain: "feishu" | "lark";
   credentialStored: boolean;
   botReady: boolean;
   botOpenId?: string;

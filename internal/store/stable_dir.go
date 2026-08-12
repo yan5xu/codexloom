@@ -73,6 +73,7 @@ type gatewayFoundationLaunchDescriptorShape struct {
 	Provider             string `json:"provider,omitempty"`
 	AddressID            string `json:"addressId,omitempty"`
 	AccountRef           string `json:"accountRef,omitempty"`
+	Domain               string `json:"domain,omitempty"`
 	ManagedCredentialRef string `json:"managedCredentialRef,omitempty"`
 	ServiceID            string `json:"serviceId"`
 	UnitPath             string `json:"unitPath"`
@@ -137,6 +138,7 @@ type gatewayFoundationConnectionShape struct {
 	Provider      string   `json:"provider"`
 	AccountRef    string   `json:"accountRef,omitempty"`
 	ScopeRef      string   `json:"scopeRef,omitempty"`
+	Domain        string   `json:"domain,omitempty"`
 	CredentialRef string   `json:"credentialRef,omitempty"`
 	Capabilities  []string `json:"capabilities,omitempty"`
 	Enabled       bool     `json:"enabled"`
@@ -615,6 +617,10 @@ func validateGatewayFoundationBinding(id string, binding gatewayFoundationBindin
 	if binding.Connection.ID != id || binding.Connection.Provider == "" || !foundationStringsCanonical(binding.Connection.Capabilities, true) {
 		return false
 	}
+	if binding.Connection.Domain != "" && (binding.Connection.Provider != "lark" && binding.Connection.Provider != "feishu" ||
+		binding.Connection.Domain != "lark" && binding.Connection.Domain != "feishu") {
+		return false
+	}
 	previousAddressID := ""
 	for _, address := range binding.Addresses {
 		if address.ID == "" || address.ID <= previousAddressID || address.ConnectionID != id || address.AgentID == "" || address.ExternalIdentity == "" || address.Version < 1 ||
@@ -645,7 +651,8 @@ func validateGatewayFoundationLaunchPlan(plan gatewayFoundationLaunchPlanShape) 
 	anchor := plan.Anchor.Descriptor
 	if plan.Target.Manager != anchor.Manager || plan.Target.ServiceID != anchor.ServiceID || plan.Target.UnitPath != anchor.UnitPath ||
 		plan.Target.HubURL != anchor.HubURL || plan.Target.DataDir != anchor.DataDir || plan.Target.LogPath != anchor.LogPath ||
-		plan.Target.Provider != anchor.Provider || plan.Target.AddressID != anchor.AddressID || plan.Target.AccountRef != anchor.AccountRef {
+		plan.Target.Provider != anchor.Provider || plan.Target.AddressID != anchor.AddressID || plan.Target.AccountRef != anchor.AccountRef ||
+		plan.Target.Domain != anchor.Domain {
 		return fmt.Errorf("launch plan registration mismatch")
 	}
 	if plan.Target.Provider != "" && !foundationManagedCredentialRef(plan.Target.ManagedCredentialRef) {
@@ -701,11 +708,14 @@ func validateGatewayFoundationLaunchDescriptor(value gatewayFoundationLaunchDesc
 	if !foundationGatewayServiceIdentifier(value.ConnectionID) || !foundationGatewayServiceIdentifier(value.ServiceID) {
 		return fmt.Errorf("invalid launch descriptor identifier")
 	}
-	hasTypedProvider := value.Provider != "" || value.AddressID != "" || value.AccountRef != "" || value.ManagedCredentialRef != ""
+	hasTypedProvider := value.Provider != "" || value.AddressID != "" || value.AccountRef != "" || value.Domain != "" || value.ManagedCredentialRef != ""
 	if hasTypedProvider {
 		if (value.Provider != "lark" && value.Provider != "feishu") || !foundationGatewayServiceIdentifier(value.AddressID) ||
 			value.AccountRef == "" || value.AccountRef != strings.TrimSpace(value.AccountRef) || len(value.AccountRef) > 4096 || strings.ContainsAny(value.AccountRef, "\r\n\x00") {
 			return fmt.Errorf("invalid provider launch identity")
+		}
+		if value.Domain != "" && value.Domain != "lark" && value.Domain != "feishu" {
+			return fmt.Errorf("invalid provider domain")
 		}
 		if foundationStringMayContainSecret(value.AccountRef) {
 			return fmt.Errorf("provider launch identity may contain secret material")

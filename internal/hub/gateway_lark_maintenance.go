@@ -47,7 +47,7 @@ func (h *Hub) larkGatewayLaunchCutoverReady(connectionID string) bool {
 	connection := h.connections[connectionID]
 	plan := h.gatewayState.LaunchPlans[connectionID]
 	if connection == nil || plan == nil || plan.Target.Provider == "" ||
-		plan.Target.ManagedCredentialRef != strings.TrimSpace(connection.CredentialRef) {
+		plan.Target.ManagedCredentialRef != strings.TrimSpace(connection.CredentialRef) || plan.Target.Domain != strings.TrimSpace(connection.Domain) {
 		return false
 	}
 	attempt := h.gatewayState.Attempts[connectionID]
@@ -133,7 +133,7 @@ func (h *Hub) PreflightLarkGatewayLaunch(connectionID, executable string) error 
 	anchorDescriptor := gatewayLaunchDescriptor{
 		Manager: launchSpec.Manager, ConnectionID: launchSpec.ConnectionID,
 		Provider:  strings.ToLower(strings.TrimSpace(connection.Provider)),
-		AddressID: launchSpec.AddressID, AccountRef: strings.TrimSpace(connection.AccountRef),
+		AddressID: launchSpec.AddressID, AccountRef: strings.TrimSpace(connection.AccountRef), Domain: strings.TrimSpace(connection.Domain),
 		ServiceID: launchSpec.ServiceID, UnitPath: launchSpec.UnitPath,
 		Executable: launchSpec.Anchor.Executable, WorkingDirectory: launchSpec.WorkingDirectory,
 		HubURL: launchSpec.HubURL, DataDir: launchSpec.DataDir, LogPath: launchSpec.LogPath,

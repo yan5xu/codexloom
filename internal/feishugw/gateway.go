@@ -30,6 +30,7 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
+	loomfeishu "github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/hub"
 )
 
@@ -39,6 +40,7 @@ type Config struct {
 	AddressID      string
 	AppID          string
 	AppSecret      string
+	Domain         loomfeishu.Domain
 	ConnectorToken string
 	StateFile      string
 	// ProcessProof carries the frozen R1 attempt identity for a managed launch.
@@ -102,12 +104,22 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.StateFile == "" {
 		cfg.StateFile = filepath.Join(defaultDataDir(), "gateway", "feishu-"+cfg.ConnectionID+".json")
 	}
+	domain, err := loomfeishu.ParseDomain(string(cfg.Domain))
+	if err != nil {
+		return nil, err
+	}
+	cfg.Domain = domain
 	if err := os.MkdirAll(filepath.Dir(cfg.StateFile), 0o700); err != nil {
 		return nil, fmt.Errorf("create gateway state directory: %w", err)
 	}
-	apiClient := lark.NewClient(cfg.AppID, cfg.AppSecret, lark.WithLogLevel(larkcore.LogLevelInfo))
+	baseURL := loomfeishu.OpenBaseURL(domain)
+	apiClient := lark.NewClient(cfg.AppID, cfg.AppSecret,
+		lark.WithOpenBaseUrl(baseURL),
+		lark.WithLogLevel(larkcore.LogLevelInfo),
+	)
 	eventDispatcher := dispatcher.NewEventDispatcher("", "")
 	wsClient := larkws.NewClient(cfg.AppID, cfg.AppSecret,
+		larkws.WithDomain(baseURL),
 		larkws.WithEventHandler(eventDispatcher),
 		larkws.WithLogLevel(larkcore.LogLevelInfo),
 	)

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/yan5xu/codex-loom/internal/feishu"
 	"github.com/yan5xu/codex-loom/internal/hub"
 )
 
@@ -34,9 +35,9 @@ func (s *Server) installFeishuGateway(connection hub.PlatformConnection, address
 		return managedFeishuGateway{}, err
 	}
 	logPath := filepath.Join(logDir, "feishu-"+connection.ID+".log")
-	arguments := []string{
-		binary, "--hub", hubURL, "--connection", connection.ID,
-		"--address", address.ID, "--app-id", appID,
+	arguments, err := feishuGatewayArguments(connection, address, appID, hubURL, binary)
+	if err != nil {
+		return managedFeishuGateway{}, err
 	}
 	switch runtime.GOOS {
 	case "darwin":
@@ -46,6 +47,21 @@ func (s *Server) installFeishuGateway(connection hub.PlatformConnection, address
 	default:
 		return managedFeishuGateway{}, fmt.Errorf("automatic Feishu gateway management is not supported on %s", runtime.GOOS)
 	}
+}
+
+func feishuGatewayArguments(connection hub.PlatformConnection, address hub.AgentAddress, appID, hubURL, binary string) ([]string, error) {
+	domain, err := feishu.ParseDomain(connection.Domain)
+	if err != nil {
+		return nil, err
+	}
+	arguments := []string{
+		binary, "--hub", hubURL, "--connection", connection.ID,
+		"--address", address.ID, "--app-id", appID,
+	}
+	if domain == feishu.DomainLark {
+		arguments = append(arguments, "--domain", string(domain))
+	}
+	return arguments, nil
 }
 
 func (s *Server) installFeishuLaunchAgent(connectionID string, arguments []string, logPath string) (managedFeishuGateway, error) {

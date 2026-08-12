@@ -164,7 +164,7 @@ func buildLarkGatewayLaunchPlan(binding gatewayConfiguredBinding, spec larkGatew
 
 	base := gatewayLaunchDescriptor{
 		Manager: spec.Manager, ConnectionID: connection.ID, Provider: provider,
-		AddressID: spec.AddressID, AccountRef: connection.AccountRef,
+		AddressID: spec.AddressID, AccountRef: connection.AccountRef, Domain: connection.Domain,
 		ServiceID: spec.ServiceID, UnitPath: spec.UnitPath, WorkingDirectory: spec.WorkingDirectory,
 		HubURL: spec.HubURL, DataDir: spec.DataDir, LogPath: spec.LogPath,
 	}
@@ -197,7 +197,7 @@ func validateGatewayLaunchPlanForBinding(plan gatewayLaunchPlan, binding gateway
 	}
 	connection := binding.Connection
 	if plan.ConnectionID != connection.ID || plan.Target.Provider != strings.ToLower(strings.TrimSpace(connection.Provider)) ||
-		plan.Target.AccountRef != connection.AccountRef || plan.Target.ManagedCredentialRef != connection.CredentialRef {
+		plan.Target.AccountRef != connection.AccountRef || plan.Target.Domain != connection.Domain || plan.Target.ManagedCredentialRef != connection.CredentialRef {
 		return fmt.Errorf("Gateway launch plan does not match its frozen configured binding")
 	}
 	for _, address := range binding.Addresses {

@@ -17,6 +17,7 @@ type larkDiscovery struct {
 	BotReady         bool       `json:"botReady"`
 	BotOpenID        string     `json:"botOpenId,omitempty"`
 	BotName          string     `json:"botName,omitempty"`
+	Domain           string     `json:"domain"`
 	Chats            []larkChat `json:"chats"`
 	Error            string     `json:"error,omitempty"`
 }
@@ -32,11 +33,13 @@ type larkChat struct {
 type larkCredentialParams struct {
 	AppID     string `json:"appId"`
 	AppSecret string `json:"appSecret"`
+	Domain    string `json:"domain"`
 }
 
 type larkSetupParams struct {
 	Agent       string `json:"agent"`
 	AppID       string `json:"appId"`
+	Domain      string `json:"domain"`
 	ChatID      string `json:"chatId"`
 	Purpose     string `json:"purpose"`
 	Role        string `json:"role"`
@@ -50,7 +53,7 @@ var (
 	discoverFeishu   = feishu.Discover
 )
 
-func (s *Server) discoverLark(ctx context.Context, requestedAppID string) larkDiscovery {
+func (s *Server) discoverLark(ctx context.Context, requestedAppID, requestedDomain string) larkDiscovery {
 	appID := strings.TrimSpace(requestedAppID)
 	if appID == "" {
 		for _, connection := range s.hub.ListConnections() {
@@ -60,7 +63,12 @@ func (s *Server) discoverLark(ctx context.Context, requestedAppID string) larkDi
 			}
 		}
 	}
-	result := larkDiscovery{Available: true, Runtime: "native", AppID: appID, Chats: []larkChat{}}
+	domain, domainErr := s.resolveLarkDomain(appID, requestedDomain)
+	result := larkDiscovery{Available: true, Runtime: "native", AppID: appID, Domain: string(domain), Chats: []larkChat{}}
+	if domainErr != nil {
+		result.Error = domainErr.Error()
+		return result
+	}
 	if appID == "" {
 		return result
 	}
@@ -74,7 +82,7 @@ func (s *Server) discoverLark(ctx context.Context, requestedAppID string) larkDi
 		result.Error = "Enter the App Secret once to migrate this Feishu connection to the native gateway"
 		return result
 	}
-	discovery, err := discoverFeishu(ctx, appID, secret)
+	discovery, err := discoverFeishu(ctx, appID, secret, domain)
 	if err != nil {
 		result.Error = err.Error()
 		return result
@@ -106,13 +114,17 @@ func (s *Server) saveLarkCredentials(ctx context.Context, p larkCredentialParams
 	if appID == "" || appSecret == "" {
 		return larkDiscovery{}, &hub.HubError{Status: 400, Message: "Feishu App ID and App Secret are required"}
 	}
-	if _, err := discoverFeishu(ctx, appID, appSecret); err != nil {
+	domain, err := s.resolveLarkDomain(appID, p.Domain)
+	if err != nil {
+		return larkDiscovery{}, &hub.HubError{Status: 400, Message: err.Error()}
+	}
+	if _, err := discoverFeishu(ctx, appID, appSecret, domain); err != nil {
 		return larkDiscovery{}, &hub.HubError{Status: 400, Message: "Feishu verification failed: " + err.Error()}
 	}
 	if err := saveFeishuSecret(appID, appSecret); err != nil {
 		return larkDiscovery{}, &hub.HubError{Status: 500, Message: "Save Feishu credential: " + err.Error()}
 	}
-	return s.discoverLark(ctx, appID), nil
+	return s.discoverLark(ctx, appID, string(domain)), nil
 }
 
 func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string) (map[string]any, error) {
@@ -132,7 +144,11 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 		return nil, &hub.HubError{Status: 404, Message: "Agent not found: " + agentKey}
 	}
 
-	discovery := s.discoverLark(ctx, p.AppID)
+	domain, err := s.resolveLarkDomain(p.AppID, p.Domain)
+	if err != nil {
+		return nil, &hub.HubError{Status: 400, Message: err.Error()}
+	}
+	discovery := s.discoverLark(ctx, p.AppID, string(domain))
 	if !discovery.BotReady {
 		message := discovery.Error
 		if message == "" {
@@ -148,11 +164,10 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 			break
 		}
 	}
-	var err error
 	credentialRef := "keychain:" + feishu.CredentialService(discovery.AppID)
 	if connection.ID == "" {
 		connection, err = s.hub.CreateConnection(hub.ConnectionParams{
-			Provider: "lark", AccountRef: discovery.AppID, CredentialRef: credentialRef,
+			Provider: "lark", AccountRef: discovery.AppID, Domain: discovery.Domain, CredentialRef: credentialRef,
 			Capabilities: []string{"receive_events", "threads", "mentions", "attachments", "reactions", "proactive_send"},
 		})
 		if err != nil {
@@ -160,7 +175,7 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 		}
 	} else {
 		enabled := true
-		connection, err = s.hub.UpdateConnection(connection.ID, hub.ConnectionParams{CredentialRef: credentialRef, Enabled: &enabled})
+		connection, err = s.hub.UpdateConnection(connection.ID, hub.ConnectionParams{Domain: discovery.Domain, CredentialRef: credentialRef, Enabled: &enabled})
 		if err != nil {
 			return nil, err
 		}
@@ -262,6 +277,19 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 		"connection": connection, "address": address, "memberships": memberships,
 		"discovery": discovery, "gateway": gateway,
 	}, nil
+}
+
+func (s *Server) resolveLarkDomain(appID, requested string) (feishu.Domain, error) {
+	if strings.TrimSpace(requested) == "" {
+		appID = strings.TrimSpace(appID)
+		for _, connection := range s.hub.ListConnections() {
+			if connection.Provider == "lark" && connection.AccountRef == appID {
+				requested = connection.Domain
+				break
+			}
+		}
+	}
+	return feishu.ParseDomain(requested)
 }
 
 func nativeHubURL(host string) string {

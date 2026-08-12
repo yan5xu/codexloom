@@ -31,13 +31,17 @@ type Discovery struct {
 	Chats []Chat `json:"chats"`
 }
 
-func Discover(ctx context.Context, appID, appSecret string) (Discovery, error) {
+func Discover(ctx context.Context, appID, appSecret string, domain Domain) (Discovery, error) {
 	appID = strings.TrimSpace(appID)
 	appSecret = strings.TrimSpace(appSecret)
 	if appID == "" || appSecret == "" {
 		return Discovery{}, fmt.Errorf("Feishu App ID and App Secret are required")
 	}
-	client := lark.NewClient(appID, appSecret)
+	domain, err := ParseDomain(string(domain))
+	if err != nil {
+		return Discovery{}, err
+	}
+	client := lark.NewClient(appID, appSecret, lark.WithOpenBaseUrl(OpenBaseURL(domain)))
 	ch := channel.NewChannel(client, nil)
 	identity := ch.GetBotIdentity(ctx)
 	if identity == nil || identity.OpenID == "" {

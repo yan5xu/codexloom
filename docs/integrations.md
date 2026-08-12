@@ -67,18 +67,24 @@ Restart Loom 会同时重启已启用的 managed Feishu、Slack 和 Parall gatew
 
 ## 飞书 / Lark
 
-推荐从 WebUI 侧边栏的集成管理入口 **External → Add integration** 开始。飞书使用 CodexLoom 内置的原生 Go
-gateway 和飞书官方 SDK，不依赖 `lark-cli`。首次连接需要从飞书开发者后台复制 App ID 和 App
-Secret；CodexLoom 验证身份后将 Secret 写入操作系统 Keychain，并自动识别 Bot 身份及已加入的群。
+推荐从 WebUI 侧边栏的集成管理入口 **External → Add integration** 开始。飞书/Lark 使用 CodexLoom 内置的原生 Go
+gateway 和官方 SDK，不依赖 `lark-cli`。首次连接需要从开发者后台复制 App ID 和 App Secret；CodexLoom
+验证身份后将 Secret 写入操作系统 Keychain，并自动识别 Bot 身份及已加入的群。
+
+向导必须选择与应用一致的平台区域：全球 Lark 选择 **Lark (Global)**，中国飞书选择 **Feishu (China)**。
+两者分别使用 `open.larksuite.com` 和 `open.feishu.cn`；选择错误会导致凭据验证或 WebSocket 连接报
+`Incorrect domain name`。Connection 将该选择保存为受限的 `domain` 枚举，REST 与 WebSocket 始终使用同一值。
+历史 Connection 没有该字段时继续按 Feishu 处理。
 
 用户只需要：
 
-1. 在飞书开发者后台创建企业自建应用，启用机器人、长连接事件订阅和消息/表情权限。另开启 `im:chat.members:read`，让 Loom 能把成员 Open ID 解析为姓名；没有该权限时消息仍可正常收发，但发送者会显示为 `ou_...`。
-2. 在向导中输入 App ID 和 App Secret；Secret 只需输入一次。
-3. 选择代表这个飞书身份的长期 Agent。
-4. 选择允许 Agent 工作的群，或者只启用私聊。
-5. 描述群的用途、Agent 在群里的职责和需要遵守的边界。
-6. 保存后点击群右侧的发送按钮；只有测试消息真实经过 Outbox 和 gateway 发到飞书，UI 才显示成功。
+1. 在开发者后台创建企业自建应用，启用机器人、长连接事件订阅和消息/表情权限。另开启 `im:chat.members:read`，让 Loom 能把成员 Open ID 解析为姓名；没有该权限时消息仍可正常收发，但发送者会显示为 `ou_...`。
+2. 在向导中选择 Lark (Global) 或 Feishu (China)。
+3. 输入 App ID 和 App Secret；Secret 只需输入一次。
+4. 选择代表这个平台身份的长期 Agent。
+5. 选择允许 Agent 工作的群，或者只启用私聊。
+6. 描述群的用途、Agent 在群里的职责和需要遵守的边界。
+7. 保存后点击群右侧的发送按钮；只有测试消息真实经过 Outbox 和 gateway 发到平台，UI 才显示成功。
 
 一个飞书 App 身份只能归属于一个 Agent。同一个 Agent 可以进入多个群，但每个群都有独立的
 Conversation Membership。App ID、Open ID、credential ref 和 gateway 信息默认收在 **Advanced
@@ -112,8 +118,11 @@ Keychain 读取。需要手动诊断时可以运行：
 ./bin/loom-feishu-gateway \
   --connection <connection-id> \
   --address <address-id> \
-  --app-id cli_your_app_id
+  --app-id cli_your_app_id \
+  --domain lark
 ```
+
+`--domain lark` 只用于全球 Lark；中国飞书可以省略该参数，或显式使用 `--domain feishu`。
 
 gateway 通过飞书长连接监听 `im.message.receive_v1`，因此不需要公网域名或 webhook。DM 按 Address 的私聊策略进入；
 群消息必须先建立 Conversation Membership，并按结构化 mention 判断是否 @ 当前 Bot。消息进入 Agent

@@ -209,6 +209,12 @@ func writeL2aAnchorUnit(t *testing.T, fixture r0bFixture, executable, home strin
 	t.Helper()
 	logPath := filepath.Join(fixture.st.Dir(), "gateway", "feishu-"+fixture.connection.ID+".log")
 	hubURL := "http://127.0.0.1:4870"
+	domainLaunchd := ""
+	domainSystemd := ""
+	if fixture.connection.Domain == "lark" {
+		domainLaunchd = "      <string>--domain</string>\n      <string>lark</string>"
+		domainSystemd = " --domain lark"
+	}
 	switch goruntime.GOOS {
 	case "darwin":
 		label := "com.codexloom.feishu." + fixture.connection.ID
@@ -232,6 +238,7 @@ func writeL2aAnchorUnit(t *testing.T, fixture r0bFixture, executable, home strin
       <string>` + fixture.address.ID + `</string>
       <string>--app-id</string>
       <string>` + fixture.connection.AccountRef + `</string>
+` + domainLaunchd + `
     </array>
     <key>EnvironmentVariables</key>
     <dict><key>CODEX_LOOM_DATA</key><string>` + fixture.st.Dir() + `</string></dict>
@@ -256,7 +263,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=` + executable + ` --hub ` + hubURL + ` --connection ` + fixture.connection.ID + ` --address ` + fixture.address.ID + ` --app-id ` + fixture.connection.AccountRef + `
+	ExecStart=` + executable + ` --hub ` + hubURL + ` --connection ` + fixture.connection.ID + ` --address ` + fixture.address.ID + ` --app-id ` + fixture.connection.AccountRef + domainSystemd + `
 Environment=CODEX_LOOM_DATA=` + fixture.st.Dir() + `
 Restart=always
 RestartSec=2
@@ -294,7 +301,7 @@ func TestPreflightAnchorRenderMatchesInstalledUnitBytes(t *testing.T) {
 	fixture.h.mu.Unlock()
 	anchorDescriptor := gatewayLaunchDescriptor{
 		Manager: launchSpec.Manager, ConnectionID: launchSpec.ConnectionID,
-		Provider: "lark", AddressID: launchSpec.AddressID, AccountRef: connection.AccountRef,
+		Provider: "lark", AddressID: launchSpec.AddressID, AccountRef: connection.AccountRef, Domain: connection.Domain,
 		ServiceID: launchSpec.ServiceID, UnitPath: launchSpec.UnitPath,
 		Executable: launchSpec.Anchor.Executable, WorkingDirectory: launchSpec.WorkingDirectory,
 		HubURL: launchSpec.HubURL, DataDir: launchSpec.DataDir, LogPath: launchSpec.LogPath,

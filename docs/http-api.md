@@ -260,6 +260,9 @@ version，并让 `confirm` 精确等于 `aop_*` ID。成功结果包含变更后
 | Parall | `POST /api/integrations/providers/parall/gateway` |
 | Parall | `POST /api/integrations/providers/parall/operations` |
 
+Lark / Feishu 的 discovery query 与 credentials/setup JSON 接受 `domain`：`lark` 表示全球 Lark，
+`feishu` 表示中国飞书。Connection 响应持久返回同一字段；旧 Connection 缺失时按 `feishu` 处理。
+
 `GET /api/integrations/provider-operations/{id}` 用于读取异步 Provider
 Operation 状态。
 

@@ -3,7 +3,10 @@ package httpapi
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/yan5xu/codex-loom/internal/hub"
 )
 
 func TestRemoveLegacyLaunchAgentsPreservesCurrentUnit(t *testing.T) {
@@ -23,5 +26,31 @@ func TestRemoveLegacyLaunchAgentsPreservesCurrentUnit(t *testing.T) {
 	}
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Fatalf("legacy unit still exists: %v", err)
+	}
+}
+
+func TestFeishuGatewayArgumentsAddOnlyExplicitGlobalDomain(t *testing.T) {
+	connection := hub.PlatformConnection{ID: "conn-1"}
+	address := hub.AgentAddress{ID: "addr-1"}
+	legacy, err := feishuGatewayArguments(connection, address, "cli-test", "http://127.0.0.1:4870", "/opt/loom-feishu-gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLegacy := []string{
+		"/opt/loom-feishu-gateway", "--hub", "http://127.0.0.1:4870", "--connection", "conn-1",
+		"--address", "addr-1", "--app-id", "cli-test",
+	}
+	if !reflect.DeepEqual(legacy, wantLegacy) {
+		t.Fatalf("legacy arguments = %v", legacy)
+	}
+
+	connection.Domain = "lark"
+	global, err := feishuGatewayArguments(connection, address, "cli-test", "http://127.0.0.1:4870", "/opt/loom-feishu-gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGlobal := append(append([]string(nil), wantLegacy...), "--domain", "lark")
+	if !reflect.DeepEqual(global, wantGlobal) {
+		t.Fatalf("global arguments = %v", global)
 	}
 }

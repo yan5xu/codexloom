@@ -2,6 +2,26 @@ package feishu
 
 import "testing"
 
+func TestDomainUsesOfficialRegionalBaseURL(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  Domain
+		url   string
+	}{
+		{input: "", want: DomainFeishu, url: "https://open.feishu.cn"},
+		{input: "feishu", want: DomainFeishu, url: "https://open.feishu.cn"},
+		{input: " LARK ", want: DomainLark, url: "https://open.larksuite.com"},
+	} {
+		domain, err := ParseDomain(test.input)
+		if err != nil || domain != test.want || OpenBaseURL(domain) != test.url {
+			t.Fatalf("ParseDomain(%q) = %q, %v, URL %q", test.input, domain, err, OpenBaseURL(domain))
+		}
+	}
+	if _, err := ParseDomain("example.com"); err == nil {
+		t.Fatal("arbitrary provider domain was accepted")
+	}
+}
+
 func TestNormalizeChatsDeduplicatesAndKeepsUsefulMetadata(t *testing.T) {
 	chats := normalizeChats([]Chat{
 		{ID: "oc_beta", Name: "Beta"},

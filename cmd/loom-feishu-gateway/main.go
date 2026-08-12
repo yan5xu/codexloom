@@ -28,8 +28,13 @@ func main() {
 	connectionID := flag.String("connection", envFirst("CODEX_LOOM_CONNECTION_ID", "CHUB_CONNECTION_ID"), "integration connection ID")
 	addressID := flag.String("address", envFirst("CODEX_LOOM_ADDRESS_ID", "CHUB_ADDRESS_ID"), "Agent address ID")
 	appID := flag.String("app-id", os.Getenv("FEISHU_APP_ID"), "Feishu App ID")
+	domainName := flag.String("domain", envFirst("LARK_DOMAIN", "FEISHU_DOMAIN"), "provider domain: lark (Global) or feishu (China)")
 	stateFile := flag.String("state-file", "", "gateway state file")
 	flag.Parse()
+	domain, err := feishu.ParseDomain(*domainName)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	processProof := gatewayProcessProofFromEnv()
 	managedRef, managedRefSet, err := managedRefFromEnv()
@@ -66,7 +71,7 @@ func main() {
 	}
 	gateway, err := feishugw.New(feishugw.Config{
 		HubURL: *hubURL, ConnectionID: *connectionID, AddressID: *addressID,
-		AppID: *appID, AppSecret: secret, ConnectorToken: os.Getenv("CODEX_LOOM_CONNECTOR_TOKEN"),
+		AppID: *appID, AppSecret: secret, Domain: domain, ConnectorToken: os.Getenv("CODEX_LOOM_CONNECTOR_TOKEN"),
 		StateFile: *stateFile, ProcessProof: processProof,
 	})
 	if err != nil {

@@ -41,7 +41,11 @@ type Config struct {
 	AppSecret      string
 	ConnectorToken string
 	StateFile      string
-	HTTPClient     *http.Client
+	// ProcessProof carries the frozen R1 attempt identity for a managed launch.
+	// It is attached only to connected observations after the provider socket
+	// is open; it never carries secret material.
+	ProcessProof *hub.GatewayProcessHeartbeatParams
+	HTTPClient   *http.Client
 }
 
 type reactionRecord struct {
@@ -1067,6 +1071,9 @@ func (g *Gateway) sendHeartbeat(ctx context.Context) {
 	body := hub.ConnectionHeartbeatParams{
 		Status: status, Error: g.errorText(),
 		Capabilities: []string{"receive_events", "threads", "mentions", "attachments", "reactions", "proactive_send"},
+	}
+	if status == "connected" && g.cfg.ProcessProof != nil {
+		body.GatewayProcess = g.cfg.ProcessProof
 	}
 	var ignored map[string]any
 	if err := g.hubJSON(ctx, http.MethodPost, "/api/integrations/connections/"+g.cfg.ConnectionID+"/heartbeat", body, &ignored); err != nil && ctx.Err() == nil {

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -609,6 +610,79 @@ func TestInboxEnvelopeCarriesProviderAndDeliveryTimeline(t *testing.T) {
 	}
 }
 
+func TestExternalInboxLiveProjectionUsesDisplayEnvelope(t *testing.T) {
+	logPath := installFakeSharedCodexHost(t)
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	defer h.Shutdown()
+
+	h.messages = map[string]*InboxMessage{}
+	h.inbox = map[string]*InboxItem{}
+	h.attempts = map[string]*HandlingAttempt{}
+	h.addresses = map[string]*AgentAddress{}
+	h.memberships = map[string]*ConversationMembership{}
+	h.agents["agent-lark"] = &Agent{
+		ID: "agent-lark", Name: "lark-agent", Cwd: "/tmp/stale", ThreadID: "thr-stale",
+		Sandbox: "danger-full-access", ApprovalPolicy: "never", Status: "idle",
+		CreatedAt: now(), UpdatedAt: now(),
+	}
+	h.addresses["addr-lark"] = &AgentAddress{
+		ID: "addr-lark", AgentID: "agent-lark", Enabled: true, ReplyPolicy: "explicit",
+	}
+	h.memberships["mem-lark"] = &ConversationMembership{
+		ID: "mem-lark", AddressID: "addr-lark", ConversationID: "chat-lark",
+		DisplayName: "Product community", Enabled: true, Version: 3,
+	}
+	h.messages["imsg-lark"] = &InboxMessage{
+		ID: "imsg-lark", Origin: "lark",
+		Sender:       ActorRef{ExternalID: "ou-member", DisplayName: "Community member"},
+		Conversation: ConversationRef{Provider: "lark", ConversationID: "chat-lark", ConversationType: "group"},
+		Content:      MessageContent{Text: "How do I continue the same Agent?"},
+		ReceivedAt:   "2026-07-30T10:52:00Z",
+	}
+	h.inbox["inb-lark"] = &InboxItem{
+		ID: "inb-lark", AgentID: "agent-lark", AddressID: "addr-lark", MessageID: "imsg-lark",
+		MembershipID: "mem-lark", State: "queued", CreatedAt: now(), UpdatedAt: now(),
+	}
+	h.inboxOrder = []string{"inb-lark"}
+
+	h.deliverNextInboxForAgent("agent-lark")
+
+	events, err := st.ReadEvents("agent-lark", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var displayText string
+	for _, event := range events {
+		if event.Type != "loom/user-message" {
+			continue
+		}
+		var data struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		displayText = data.Text
+	}
+	if !strings.Contains(displayText, `<inbox_message version="1"`) ||
+		!strings.Contains(displayText, `<body><![CDATA[How do I continue the same Agent?]]></body>`) ||
+		!strings.Contains(displayText, `<sender id="ou-member">Community member</sender>`) ||
+		strings.Contains(displayText, "<loom_context") {
+		t.Fatalf("live External display envelope = %s", displayText)
+	}
+
+	turn := lastRequestParams(t, logPath, "turn/start")
+	modelInput := fmt.Sprint(turn["input"])
+	if strings.Count(modelInput, "How do I continue the same Agent?") != 1 ||
+		!strings.Contains(modelInput, `<body source="original_input" />`) {
+		t.Fatalf("model input duplicated or lost the External original input: %s", modelInput)
+	}
+}
+
 func TestResolveLoomCLIPathHonorsEnvironment(t *testing.T) {
 	t.Setenv("CODEX_LOOM_CLI", "/custom/bin/loom")
 	if got := resolveLoomCLIPath(); got != "/custom/bin/loom" {
@@ -1075,7 +1149,11 @@ func TestInboxRecoveryOnlyUsesLatestProjection(t *testing.T) {
 	}
 
 	for restart := 1; restart <= 2; restart++ {
-		h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+		ro, err := st.OpenReadOnly()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := OpenWithOptions(ro, OpenOptions{Passive: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1089,6 +1167,9 @@ func TestInboxRecoveryOnlyUsesLatestProjection(t *testing.T) {
 			t.Fatalf("restart %d attempt = %#v", restart, got)
 		}
 		h.Shutdown()
+		if err := ro.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -1098,8 +1179,16 @@ func stoppedInboxTestHub(t *testing.T) *Hub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(st)
-	h.Shutdown()
+	h := testHub(st)
+	h.addresses = map[string]*AgentAddress{}
+	h.memberships = map[string]*ConversationMembership{}
+	h.conversationCandidates = map[string]*ConversationCandidate{}
+	h.messages = map[string]*InboxMessage{}
+	h.externalMessages = map[string]string{}
+	h.inbox = map[string]*InboxItem{}
+	h.attempts = map[string]*HandlingAttempt{}
+	h.outbox = map[string]*OutboxItem{}
+	h.providerOperations = map[string]*ProviderOperation{}
 	seedInboxAgent(t, h, "agent-a", "alpha")
 	return h
 }

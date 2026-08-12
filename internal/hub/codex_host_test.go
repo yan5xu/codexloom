@@ -549,6 +549,207 @@ func TestMissingUserSkillsLetsUserSkillWin(t *testing.T) {
 	}
 }
 
+func TestAgentSkillDisableIsScopedPersistedAndCompiledIntoColdResume(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PINIX_EDGE_NAMES", filepath.Join(t.TempDir(), "missing.json"))
+	logPath := installFakeSharedCodexHost(t)
+	dataDir := t.TempDir()
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+
+	cici, err := h.CreateAgent(CreateParams{Name: "cici-web", Cwd: "/tmp/one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.RestoreAgent(RestoreAgentParams{
+		ID: "other-agent", Name: "coze-user", Cwd: "/tmp/one", ThreadID: "thr-other",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const skillPath = "/tmp/skill/SKILL.md"
+	config, err := h.UpdateAgentSkillConfig(cici.ID, AgentSkillConfigParams{
+		Path: skillPath, Enabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.RestartRequired || config.Applied {
+		t.Fatalf("loaded Thread config = %#v, want restart required", config)
+	}
+
+	inventory, err := h.ReloadSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciciInventory := findAgentSkillInventory(t, inventory, cici.ID)
+	otherInventory := findAgentSkillInventory(t, inventory, "other-agent")
+	if len(ciciInventory.Skills) != 2 || ciciInventory.Skills[1].Path != skillPath || ciciInventory.Skills[1].Enabled {
+		t.Fatalf("cici-web inventory = %#v, want target Skill disabled", ciciInventory)
+	}
+	if len(otherInventory.Skills) != 2 || !otherInventory.Skills[1].Enabled {
+		t.Fatalf("other Agent inventory = %#v, want shared Skill enabled", otherInventory)
+	}
+
+	var persisted map[string]*AgentSkillConfig
+	if err := st.LoadAgentSkillConfigs(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if got := persisted[cici.ID]; got == nil || len(got.DisabledPaths) != 1 || got.DisabledPaths[0] != skillPath {
+		t.Fatalf("persisted Agent Skill config = %#v", persisted)
+	}
+
+	h.Shutdown()
+	h = New(st)
+	defer h.Shutdown()
+	h.mu.Lock()
+	rt, err := h.getRuntimeLocked(h.agents[cici.ID])
+	h.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(rt); err != nil {
+		t.Fatal(err)
+	}
+
+	resume := lastRequestParams(t, logPath, "thread/resume")
+	skillsConfig, ok := resume["config"].(map[string]any)["skills"].(map[string]any)
+	if !ok {
+		t.Fatalf("thread/resume config = %#v", resume["config"])
+	}
+	entries, ok := skillsConfig["config"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("thread/resume skills.config = %#v, want one entry", skillsConfig["config"])
+	}
+	entry, _ := entries[0].(map[string]any)
+	if entry["path"] != skillPath || entry["enabled"] != false {
+		t.Fatalf("thread/resume Skill entry = %#v", entry)
+	}
+
+	applied, err := h.GetAgentSkillConfig(cici.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Applied || applied.RestartRequired {
+		t.Fatalf("cold-resumed Agent Skill config = %#v, want applied", applied)
+	}
+	inventory, err = h.ReloadSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciciInventory = findAgentSkillInventory(t, inventory, cici.ID)
+	otherInventory = findAgentSkillInventory(t, inventory, "other-agent")
+	if !ciciInventory.Applied || ciciInventory.RestartRequired || ciciInventory.Skills[1].Enabled {
+		t.Fatalf("cold-resumed cici-web inventory = %#v", ciciInventory)
+	}
+	if !otherInventory.Skills[1].Enabled {
+		t.Fatalf("cold-resumed other Agent inventory = %#v", otherInventory)
+	}
+}
+
+func TestAgentSkillConfigRejectsNonAbsoluteOrNonSkillPath(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	h.agents["agent-1"] = &Agent{
+		ID: "agent-1", Name: "agent", Cwd: "/tmp", Status: "idle",
+		CreatedAt: now(), UpdatedAt: now(),
+	}
+	for _, path := range []string{"relative/SKILL.md", "/tmp/not-a-skill.md"} {
+		if _, err := h.UpdateAgentSkillConfig("agent", AgentSkillConfigParams{Path: path}); err == nil {
+			t.Fatalf("accepted invalid Skill path %q", path)
+		}
+	}
+}
+
+func TestAgentSkillConfigViewDistinguishesUnloadedAndStaleRuntime(t *testing.T) {
+	const (
+		agentID   = "agent-1"
+		skillPath = "/tmp/skill/SKILL.md"
+	)
+	h := &Hub{
+		agents: map[string]*Agent{
+			agentID: {ID: agentID, Name: "agent", Status: "idle"},
+		},
+		agentSkillConfigs: map[string]*AgentSkillConfig{
+			agentID: {AgentID: agentID, DisabledPaths: []string{skillPath}},
+		},
+		runtimes: map[string]*runtime{},
+	}
+	meta := h.agents[agentID]
+
+	view := h.agentSkillConfigViewLocked(meta)
+	if view.Applied || view.RestartRequired {
+		t.Fatalf("unloaded config view = %#v, want pending cold load", view)
+	}
+
+	h.runtimes[agentID] = &runtime{}
+	view = h.agentSkillConfigViewLocked(meta)
+	if view.Applied || view.RestartRequired {
+		t.Fatalf("notification-only runtime view = %#v, want pending cold load", view)
+	}
+
+	h.runtimes[agentID] = &runtime{
+		skillConfigLoaded: true,
+		skillConfigHash:   agentSkillConfigHash(nil),
+	}
+	view = h.agentSkillConfigViewLocked(meta)
+	if view.Applied || !view.RestartRequired {
+		t.Fatalf("stale loaded runtime view = %#v, want restart required", view)
+	}
+
+	h.runtimes[agentID].skillConfigHash = agentSkillConfigHash([]string{skillPath})
+	view = h.agentSkillConfigViewLocked(meta)
+	if !view.Applied || view.RestartRequired {
+		t.Fatalf("matching loaded runtime view = %#v, want applied", view)
+	}
+}
+
+func TestResumeAgentThreadRejectsStaleLoadedSkillPolicy(t *testing.T) {
+	const (
+		agentID   = "agent-1"
+		skillPath = "/tmp/skill/SKILL.md"
+	)
+	h := &Hub{
+		agents: map[string]*Agent{
+			agentID: {
+				ID: agentID, Name: "agent", ThreadID: "thread-1",
+				Sandbox: "read-only", Cwd: "/tmp", Status: "idle",
+			},
+		},
+		agentSkillConfigs: map[string]*AgentSkillConfig{
+			agentID: {AgentID: agentID, DisabledPaths: []string{skillPath}},
+		},
+		runtimes: map[string]*runtime{},
+	}
+	rt := &runtime{
+		skillConfigLoaded: true,
+		skillConfigHash:   agentSkillConfigHash(nil),
+	}
+	h.runtimes[agentID] = rt
+
+	err := h.resumeAgentThread(agentID, rt)
+	if err == nil || !strings.Contains(err.Error(), "restart CodexLoom") {
+		t.Fatalf("resume stale loaded runtime error = %v, want restart requirement", err)
+	}
+}
+
+func findAgentSkillInventory(t *testing.T, inventory SkillInventory, agentID string) AgentSkillInventoryEntry {
+	t.Helper()
+	for _, entry := range inventory.Agents {
+		if entry.AgentID == agentID {
+			return entry
+		}
+	}
+	t.Fatalf("Agent %s missing from Skill inventory: %#v", agentID, inventory.Agents)
+	return AgentSkillInventoryEntry{}
+}
+
 func installFakeSharedCodexHost(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -602,6 +803,29 @@ while IFS= read -r line; do
 	*'"method":"thread/resume"'*)
 	  : > "$CODEX_HOST_RESUMED"
 	  printf '{"id":%s,"result":{"thread":{"id":"thr-stale"}}}\n' "$id" ;;
+	*'"method":"turn/start"'*'"model":"Example-Model"'*'"threadId":"thr-stale"'*)
+	  printf '{"id":%s,"result":{"turn":{"id":"turn-model-route"}}}\n' "$id"
+	  printf '{"method":"turn/started","params":{"threadId":"thr-stale","turn":{"id":"turn-model-route","status":"inProgress"}}}\n'
+	  printf '{"method":"error","params":{"threadId":"thr-stale","turnId":"turn-model-route","willRetry":true,"error":{"message":"unexpected status 503 Service Unavailable: No available channel for model Example-Model under group default (distributor)"}}}\n' ;;
+	*'"method":"turn/interrupt"'*'"turnId":"turn-model-route"'*)
+	  printf '{"id":%s,"result":{}}\n' "$id"
+	  printf '{"method":"turn/completed","params":{"threadId":"thr-stale","turn":{"id":"turn-model-route","status":"interrupted"}}}\n' ;;
+	*'"method":"turn/start"'*'"model":"Vendor/Model-X"'*'"threadId":"thr-stale"'*)
+	  printf '{"id":%s,"result":{"turn":{"id":"turn-provider-outage"}}}\n' "$id"
+	  printf '{"method":"turn/started","params":{"threadId":"thr-stale","turn":{"id":"turn-provider-outage","status":"inProgress"}}}\n'
+	  printf '{"method":"error","params":{"threadId":"thr-stale","turnId":"turn-provider-outage","willRetry":true,"error":{"message":"unexpected status 503 Service Unavailable: upstream temporarily unavailable"}}}\n'
+	  printf '{"method":"turn/completed","params":{"threadId":"thr-stale","turn":{"id":"turn-provider-outage","status":"failed","error":{"message":"unexpected status 503 Service Unavailable: upstream temporarily unavailable"}}}}\n' ;;
+	*'"method":"turn/start"'*'"model":"Vendor/CaseSensitive-ID"'*'"threadId":"thr-stale"'*)
+	  printf '{"id":%s,"result":{"turn":{"id":"turn-provider-success"}}}\n' "$id"
+	  printf '{"method":"turn/started","params":{"threadId":"thr-stale","turn":{"id":"turn-provider-success","status":"inProgress"}}}\n'
+	  printf '{"method":"turn/completed","params":{"threadId":"thr-stale","turn":{"id":"turn-provider-success","status":"completed"}}}\n' ;;
+	*'"method":"turn/start"'*'"model":"example-model"'*'"threadId":"thr-stale"'*)
+	  printf '{"id":%s,"result":{"turn":{"id":"turn-corrected-model"}}}\n' "$id"
+	  printf '{"method":"turn/started","params":{"threadId":"thr-stale","turn":{"id":"turn-corrected-model","status":"inProgress"}}}\n'
+	  printf '{"method":"turn/completed","params":{"threadId":"thr-stale","turn":{"id":"turn-corrected-model","status":"completed"}}}\n' ;;
+	*'"method":"turn/interrupt"'*'"threadId":"thr-model-route-fence"'*'"turnId":"turn-successor"'*)
+	  printf '{"id":%s,"result":{}}\n' "$id"
+	  printf '{"method":"turn/completed","params":{"threadId":"thr-model-route-fence","turn":{"id":"turn-successor","status":"interrupted"}}}\n' ;;
 	*'"method":"turn/start"'*'"threadId":"thr-stale"'*)
 	  if [ -f "$CODEX_HOST_RESUMED" ]; then
 	    printf '{"id":%s,"result":{"turn":{"id":"turn-stale"}}}\n' "$id"

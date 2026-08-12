@@ -137,6 +137,11 @@ CodexLoom 的核心主张是：让 Thread 在一次任务结束后继续承接�
 
 Compaction 不等于上下文清零。历史被压缩后，保留下来的摘要和近期工作轨迹仍能提供大量可用信息。长期使用 Thread 不意味着无限累积原始消息，而是允许上下文通过缓存与压缩持续演进。Compaction 是维持连续性的机制，而不是放弃 Thread 的理由。
 
+CodexLoom 也不把摘要当作长期声明的唯一保证。Compaction 后的下一 Turn 会按新的
+context epoch 重新覆盖当前 Loom Agent Prompt、完整 Agent Profile 和直接关系快照；
+只有可回放 rollout 与同 Turn 模型事件都成立，系统才把对应 revision 标记为
+`covered`。完整机制见 [Epoch Context Coverage](docs/epoch-context-coverage.md)。
+
 长期 Thread 还会积累一种难以通过单次 Prompt 重建的隐性上下文。人类在持续协作中留下的纠正、偏好、术语、判断方式与协作习惯，会随着多轮交互进入 Thread，并在连续的 Compaction 中被反复提炼。它们未必适合逐条写入 Profile，却共同形成该 Agent 独有的工作默契；另起 Thread，丢失的也正是这部分难以显式迁移的知识。
 
 > **Task Agent 从任务开始；Domain Agent 从过往工作继续。**

@@ -41,7 +41,7 @@ import {
 } from "./team-graph-layout";
 import { stableTeamGraphNodeGeometry } from "./team-graph-node";
 import { EDGE_CONTROL_SIZE_TOLERANCE, edgeControlMeetsMinimum } from "./team-graph-controls";
-import { projectCollaborationGroup, relationshipContractAriaLabel } from "./collaboration-groups";
+import { normalizeCollaborationGroup, projectCollaborationGroup, relationshipContractAriaLabel } from "./collaboration-groups";
 import { subscribeGlobalEvents } from "./global-events";
 import {
   api,
@@ -161,7 +161,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent, onOpenMessa
         ...next,
         organizationLinks: next.organizationLinks || [],
         collaborationLinks: next.collaborationLinks || next.explicitLinks || [],
-        collaborationGroups: next.collaborationGroups || [],
+        collaborationGroups: (next.collaborationGroups || []).map(normalizeCollaborationGroup),
         observedLinks: next.observedLinks || [],
         explicitLinks: next.explicitLinks || next.collaborationLinks || [],
       });
@@ -249,7 +249,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent, onOpenMessa
   );
 
   useEffect(() => {
-    if (viewMode === "directory" || graphMode === "activity" || baseGraph.nodes.length === 0) return;
+    if (viewMode === "directory" || baseGraph.nodes.length === 0) return;
     let cancelled = false;
     const edges = baseGraph.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target }));
     layoutTeamGraph(baseGraph.visibleAgentIds, edges, graphMode as TeamGraphLayoutMode)
@@ -272,7 +272,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent, onOpenMessa
 
   useEffect(() => {
     if (viewMode === "directory" || !flowInstance || graph.nodes.length === 0) return;
-    if ((graphMode === "organization" || graphMode === "collaboration") && !graph.layout?.ready) return;
+    if (!graph.layout?.ready) return;
     const timer = window.setTimeout(() => flowInstance.fitView({ padding: 0.14, duration: 240 }), 80);
     return () => window.clearTimeout(timer);
   }, [flowInstance, graphFitKey, graphMode, viewMode]);
@@ -617,7 +617,7 @@ export function TeamPane({ onError, onMessageAgent, onScheduleAgent, onOpenMessa
               </aside>
             )}
             {viewMode === "collaboration" && (
-              <aside className="min-h-0 border-b border-border bg-card/35 p-3 lg:overflow-y-auto lg:border-b-0 lg:border-r">
+              <aside className="border-b border-border bg-card/35 p-3 lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r">
                 {groupEditor ? (
                   <CollaborationGroupEditor
                     team={team}
@@ -1799,7 +1799,6 @@ function applyTeamGraphLayout(
   mode: GraphViewMode,
   groupID: string,
 ): TeamGraph {
-  if (mode === "activity") return graph;
   if (!layout) {
     return {
       ...graph,

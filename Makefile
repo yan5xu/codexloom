@@ -1,6 +1,7 @@
-.PHONY: all web binaries verify-embedded-web build release run clean
+.PHONY: all check-pnpm web binaries verify-embedded-web build release run clean
 
 VERSION ?= 0.1.0-dev
+PNPM_VERSION := $(shell node -p "require('./web/package.json').packageManager.split('@').pop()")
 COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)$(shell test -z "$$(git status --porcelain 2>/dev/null)" || printf -- -dirty)
 BUILT_AT := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X github.com/yan5xu/codex-loom/internal/buildinfo.Version=$(VERSION) -X github.com/yan5xu/codex-loom/internal/buildinfo.Commit=$(COMMIT) -X github.com/yan5xu/codex-loom/internal/buildinfo.BuiltAt=$(BUILT_AT)
@@ -8,9 +9,14 @@ GO_BUILD := go build -ldflags "$(LDFLAGS)"
 
 all: build
 
+check-pnpm:
+	@command -v pnpm >/dev/null 2>&1 || { echo "pnpm $(PNPM_VERSION) is required" >&2; exit 1; }
+	@actual="$$(pnpm --version)"; test "$$actual" = "$(PNPM_VERSION)" || { echo "pnpm $(PNPM_VERSION) is required (found $$actual)" >&2; exit 1; }
+
 # Build the React console into internal/webui/dist (embedded by Go).
-web:
-	cd web && npm install && npm run build
+web: check-pnpm
+	pnpm --dir web install --frozen-lockfile
+	pnpm --dir web run build
 
 # Build CodexLoom binaries only after refreshing the WebUI. The WebUI is
 # embedded by Go at compile time, so reversing this dependency publishes a

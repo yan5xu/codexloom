@@ -11,12 +11,21 @@ Do not create a request merely to report progress, seek reassurance, or delegate
 
 ## Create a request
 
+Use `question` as a short, single-line title. Put all multi-line background and
+explanation in `context`, which supports Markdown. `--blocks` is stored as
+`blockedWork`; keep it short and plain text. Do not put multi-line content in
+`question` or `--blocks`. Pass real newline characters in `context`; do not
+write the literal two-character sequence `\n`.
+
 ```bash
-loom ask-user --from <your-agent-name> --question "What decision is needed?" \
-  --context "Why the decision matters and the minimum facts the human needs." \
-  --blocks "The work that cannot continue without this answer." \
-  --option "Recommended choice::Impact or tradeoff" \
-  --option "Alternative::Impact or tradeoff"
+loom ask-user --from <your-agent-name> --question "应选择哪个发布窗口？" \
+  --context "有两个发布窗口可选。
+
+**明早（推荐）：** 风险较低，有完整的支持窗口。
+**今晚：** 更快，但支持窗口较短。" \
+  --blocks "安排并发布迁移通知" \
+  --option "明早（推荐）::风险较低，有完整的支持窗口。" \
+  --option "今晚::更快，但支持窗口较短。"
 ```
 
 Use `--optional` when the answer would improve the work but does not block it. Required is the default.

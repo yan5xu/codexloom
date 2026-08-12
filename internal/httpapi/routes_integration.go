@@ -362,6 +362,43 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, map[string]any{"address": address})
 	})
+	mux.HandleFunc("POST /api/integrations/addresses/{id}/lifecycle", func(w http.ResponseWriter, r *http.Request) {
+		var body hub.AddressLifecycleParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		result, err := s.hub.ApplyAddressLifecycle(r.PathValue("id"), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	})
+	mux.HandleFunc("GET /api/integrations/address-operations", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"operations": s.hub.ListAddressLifecycleOperations(r.URL.Query().Get("address"))})
+	})
+	mux.HandleFunc("GET /api/integrations/address-operations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		operation, err := s.hub.GetAddressLifecycleOperation(r.PathValue("id"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"operation": operation})
+	})
+	mux.HandleFunc("POST /api/integrations/address-operations/{id}/rollback", func(w http.ResponseWriter, r *http.Request) {
+		var body hub.AddressTransferRollbackParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		result, err := s.hub.RollbackAddressTransfer(r.PathValue("id"), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	})
 	mux.HandleFunc("GET /api/integrations/conversations", func(w http.ResponseWriter, r *http.Request) {
 		memberships, err := s.hub.ListConversationMemberships(r.URL.Query().Get("agent"), r.URL.Query().Get("address"))
 		if err != nil {

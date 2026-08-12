@@ -351,7 +351,7 @@ func (h *Hub) verifyProviderRequest(providerID, model string) (requestStatus, au
 	if bindingID == "openai" {
 		bindingID = ""
 	}
-	startParams := threadBindingParams("read-only", cwd, bindingID, model)
+	startParams := threadBindingParams("read-only", cwd, bindingID, model, nil)
 	raw, err := client.Request("thread/start", startParams, 30*time.Second)
 	if err != nil {
 		return "failed", authFailureStatus(err), safeProviderError(err)

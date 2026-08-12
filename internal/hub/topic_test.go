@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -155,7 +157,12 @@ func TestTopicPersistsVersionedBriefAndOwnerAttention(t *testing.T) {
 		t.Fatalf("read Topic = %#v err=%v", read, err)
 	}
 
-	reloaded, err := OpenWithOptions(h.st, OpenOptions{Passive: true})
+	ro, err := h.st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	reloaded, err := OpenWithOptions(ro, OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,6 +351,58 @@ func TestTopicContextIncludesBoundedExplicitEvidence(t *testing.T) {
 	}
 	if strings.Count(context, `<link type=`) != 8 || strings.Contains(context, `id="art-0"`) || !strings.Contains(context, `id="art-9"`) {
 		t.Fatalf("bounded key links missing from context:\n%s", context)
+	}
+}
+
+func TestTopicArtifactsResolvePublishedLinkedArtifactsAcrossAgents(t *testing.T) {
+	h := topicTestHub(t)
+	topic := createClipTopic(t, h)
+	published, err := h.StageThreadArtifact("parall-edge-dev", "evidence.txt", "text/plain", strings.NewReader("topic evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err = h.PublishThreadArtifact("parall-edge-dev", published.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpublished, err := h.StageThreadArtifact("parall-edge-dev", "draft.txt", "text/plain", strings.NewReader("not published"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlinked, err := h.StageThreadArtifact("parall-edge-dev", "private.txt", "text/plain", strings.NewReader("not linked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.PublishThreadArtifact("parall-edge-dev", unlinked.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, artifactID := range []string{published.ID, unpublished.ID} {
+		if _, err := h.LinkTopic(topic.ID, "parall-dev-lead", TopicLink{Type: "artifact", ID: artifactID, Label: "Evidence"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	artifacts, err := h.TopicArtifacts(topic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 1 || artifacts[0].ID != published.ID || artifacts[0].AgentID != "edge" {
+		t.Fatalf("Topic artifacts = %#v", artifacts)
+	}
+	opened, file, err := h.OpenTopicArtifact(topic.ID, published.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.ID != published.ID || !bytes.Equal(data, []byte("topic evidence")) {
+		t.Fatalf("opened artifact = %#v data=%q", opened, data)
+	}
+	if _, _, err := h.OpenTopicArtifact(topic.ID, unlinked.ID); err == nil {
+		t.Fatal("unlinked artifact must not be readable through a Topic")
 	}
 }
 

@@ -20,9 +20,16 @@ CodexLoom 的文档服务于不同读者。请从与你当前决定相匹配的�
 Owner Guide 是主要的用户旅程文档。它说明何时使用某个 Loom 概念，以及这些概念
 如何组合在一起。下面的参考文档提供确切的对象、命令、集成与实现细节。
 
+docs.codexloom.ai 的“全量双语用户文档”当前指 40 个 Owner-facing 逻辑页面及其逐页
+`zh-CN`／`en` 配对（80 个 locale 文件），不是把本仓库 `docs/` 下全部技术
+文档翻译成双语。站点负责从安装、长期 Agent、Team、持续工作、External、Operations、
+Troubleshooting 到 Reference 的 Owner 任务路径；本地图继续说明仓库内更高分辨率的
+实现与运维参考及其实际语言。
+
 ## Owner 与 Agent 参考文档
 
-以下参考文档目前只有英文版本。
+以下参考文档以文件实际语言为准；多数只有英文版本，`loom-cli.md` 等个别文件
+当前以中文为主。链接标题或英文文件名不代表正文语言。
 
 | 文档 | 用于 | 说明 |
 |---|---|---|
@@ -50,10 +57,16 @@ Owner Guide 是主要的用户旅程文档。它说明何时使用某个 Loom �
 | 文档 | 角色 |
 |---|---|
 | [Development handbook](handbook.md) | 架构、存储、API、迁移、构建与运维 |
+| [HTTP/SSE API reference](http-api.md) | 当前 REST 与 SSE 路由契约，按领域分组 |
+| [Documentation coverage matrix](documentation-coverage.md) | 代码区域与权威文档的覆盖审计与剩余缺口 |
+| [Model Provider 与模型目录](model-provider.md) | per-Agent Provider 切换与静态模型目录运维 |
 | [Codex app-server protocol](codex-app-server-protocol.md) | 适配器与协议观察记录 |
+| [Epoch Context Coverage](epoch-context-coverage.md) | Developer／Input 分层、epoch ledger、compaction 恢复与生产验收 |
 | [Agent platform integration design](agent-platform-integration.md) | Connector 架构与设计依据 |
 | [WebUI validation](webui-validation.md) | 浏览器与移动端验证实践 |
+| [WebUI pane reference](webui-panes.md) | 页面级数据源、写操作、SSE 订阅与关键状态 |
 | [Technical debt audit](technical-debt-audit.md) | 工程审计与修复记录 |
+| [Operations checklist](operations.md) | 发布、重启、回滚、备份与恢复演练 |
 | [Markdown rendering fixture](markdown-rendering-fixture.md) | 渲染器测试内容 |
 | [chub compatibility](chub-communication.md) | 历史兼容说明 |
 

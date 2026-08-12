@@ -8,8 +8,9 @@
 > [owner-guide.md](owner-guide.md) 是它的英文译本，用于对外阅读。
 > 两者含义出现分歧时，以本文为准，并应回头修订英文译本。
 
-本草稿中的“当前行为”陈述已对照 `origin/main` 的 `81696e1` 提交核验。
-Topic 与 Trigger 被单独标记为开发构建行为，因为它们不属于该基线。
+本草稿中的“当前行为”陈述已对照 `origin/main` 的
+`bf7c2017cc8669bf8d3383773c48d0a6edfeb8a8` 提交核验。Topic 与 Trigger
+均已进入该 `main` 基线与对应运行构建。
 
 CodexLoom 帮助一个人建立、使用、协调和调整一支长期在岗的 Codex Agent 团队。
 Codex 仍然是 Agent Runtime；Loom 在其之上增加稳定身份、持续责任、通信、
@@ -108,7 +109,7 @@ CodexLoom 有多个工作界面，因为 Owner 使用它们的频率不同。
 |---|---|---|
 | 一天中的大部分时间 | Agent workspace | 我正在和哪个长期 Agent 一起工作？ |
 | 被请求时 | Needs You | 哪个事实、选择或授权需要我？ |
-| 跨天或跨 Agent 推进时 | Topics（开发构建） | 同一件有边界的事项现在由谁负责、在等什么？ |
+| 跨天或跨 Agent 推进时 | Topics | 同一件有边界的事项现在由谁负责、在等什么？ |
 | 周期性 | Overview | 团队运转是否正常，什么值得进一步调查？ |
 | 责任发生变化时 | Team | 谁负责什么，已声明的关系是否仍然符合真实工作？ |
 | 外部角色发生变化时 | External | 哪个 Agent 可以在哪个 Conversation 中以哪个身份行动？ |
@@ -163,7 +164,8 @@ Agent workspace 是默认界面。Overview 是观察界面，不是公司仪表�
 1. 在 Agent workspace 中给出目标、问题或具体工作。
 2. Agent 在自己的 Thread 中工作、使用工具，并在需要其他 Agent 的判断时与其联系。
 3. 普通的内部回复和外部交互回到直接负责的 Agent，而不是回到 Owner。
-4. 真正需要人来决定的事项出现在 Needs You。
+4. Agent 显式识别出确需人的事实、选择或授权，并通过 `loom ask-user` 创建请求
+   后，该事项进入 Needs You。
 5. Agent 把可读的结果返回给发起这项工作的那段关系。
 
 关键区分是因果关系：
@@ -171,7 +173,8 @@ Agent workspace 是默认界面。Overview 是观察界面，不是公司仪表�
 > 不要问每一条输出看起来是否重要，而要问它完成了谁的工作、这个结果应该回到哪里。
 
 Agent Inbox 属于 Agent 自己。它可以作为负载、路由或工具问题的有用证据，但不是
-Owner 的第二份任务清单。Needs You 才包含需要 Owner 采取行动的事项。
+Owner 的第二份任务清单。Needs You 汇集 Agent 已通过 `loom ask-user` 显式创建
+的 Owner 请求，但不是全部待批、待决或异常状态的完备清单。
 
 **已验证实践：** 普通的 Agent 间回复应当回到发起请求的 Agent，由它完成整合。
 把每一条中间回复都发给 Owner，会重新制造出这支团队本应减少的转发负担。
@@ -211,14 +214,12 @@ Lead 也不应成为更大的全能 Agent。它负责整体目标、优先级、
 | 请求另一个 Agent 的领域判断 | Message | 请求、回复、投递与因果归属 |
 | 获取人的事实、选择或授权 | Needs You | 一次持久的人类决定与恢复路径 |
 | 在已知时间唤醒工作 | Schedule | 基于时间的重复 |
-| 在跨天、跨 Agent 之间共享一件有边界的事项 | Topic（开发构建） | 一个 Responsible Agent、限定范围的 Participants、brief、等待状态和证据链接 |
-| 在外部事实变化时恢复工作 | Trigger（开发构建） | 一个受治理的、去重新核验 Provider 状态的理由 |
+| 在跨天、跨 Agent 之间共享一件有边界的事项 | Topic | 一个 Responsible Agent、限定范围的 Participants、brief、等待状态和证据链接 |
+| 在外部事实变化时恢复工作 | Trigger | 一个受治理的、去重新核验 Provider 状态的理由 |
 
 **当前行为：** 在本草稿所依据的 `main` 基线上，Agent Thread、Goal、Message、
-Needs You 和 Schedule 均已存在。
-
-**开发构建：** Topic 与 Trigger 正在当前本地开发构建中运行，但不在该 `main`
-基线中。它们最终面向用户的说明必须在实现被集成之后重新核验。
+Needs You、Schedule、Topic 与 Trigger 均已存在。Topic resolved 不级联关闭其他工作
+对象；Trigger 只提供重新核验外部事实的理由。
 
 ### Message 用于直接的责任边界
 
@@ -272,13 +273,19 @@ Owner 处，出现异常或需要复盘时可以沿证据链接逐层下钻。
 
 ### Needs You 用于人的决定
 
-只有当工作在缺少 Owner 的某个事实、选择或授权时无法负责任地继续，才使用
-Needs You。说明什么被阻塞、确切的问题是什么，以及每个可选项的后果。Owner 回应
-之后，原来的 Agent 应当继续同一项工作，而不是要求 Owner 重新陈述上下文。
+只有当工作在缺少 Owner 的某个事实、选择或授权时无法负责任地继续，Agent 才应通过
+`loom ask-user` 显式创建 Needs You。请求应说明什么被阻塞、确切的问题是什么，
+以及每个可选项的后果。Owner 回应之后，原来的 Agent 应当继续同一项工作，而不是要求
+Owner 重新陈述上下文。
+
+**当前行为：** silent stall 不会自动创建 Needs You；Codex tool approval 使用独立的
+pending-approval 入口。因此，没有 Needs You 不证明没有待批或待决事项，也不证明系统
+健康。当前产品也不会从 Activity 自动推断并补建这些请求。
 
 ### Topic 用于有边界的共享连续性
 
-**开发构建：** 该机制不属于本草稿所依据的 `main` 基线。
+**当前行为：** Topic 已进入本草稿所依据的 `main` 基线。它仍只是薄共享协调
+记录，不拥有 Agent execution lifecycle，也不替代 Thread、Goal 或项目系统。
 
 Topic 不是共享的模型 Session，也不是项目管理看板。它是一条很薄的协调记录，用于
 一件跨越多个 Turn、多天或多个 Agent 的有边界事项。它有一个 Responsible Agent、
@@ -317,9 +324,9 @@ responsibility 运行。Topic 提供清楚的目的、完成边界、Responsible
 
 ### Trigger 是重新核验的理由，而不是结论
 
-**开发构建：** 该机制不属于本草稿所依据的 `main` 基线。当前适配器只观察受支持的
-GitHub pull request 与 workflow run 变化。部署、审批、Webhook 及其他 Provider
-仍属于未来范围。
+**当前行为：** Trigger 已进入本草稿所依据的 `main` 基线。当前适配器只观察
+受支持的 GitHub pull request 与 workflow run 变化。部署、审批、Webhook 及其他
+Provider 仍属于未来范围；Trigger 不自动改变 Goal，也不向无关 active Turn steer。
 
 一次受支持的 pull request 或 workflow run 变化可以唤醒负责的 Agent。该事件是一个
 去读取当前权威 Provider 状态的理由，不应被当作整体工作已经完成的证明。
@@ -456,7 +463,8 @@ Owner 的目标仍然属于 Owner。Loom 应当减少不必要的配置、查找
 
 - CodexLoom 是本地优先、自托管、处于活跃开发中的项目。
 - 部分行为依赖 Codex experimental 接口，可能随 Codex 版本变化。
-- 上文描述的 Topic 与 Trigger 在其实现被集成进 `main` 之前需要开发构建。
+- Trigger 当前只覆盖列出的 GitHub pull request 与 workflow run 条件；Topic 与
+  Trigger 都不替代各自对象的权威状态回读。
 - 运行指标是诊断证据，且存在已知的数据质量限制；它们无法自动决定组织调整。
 - Profile 与已声明的关系表达当前责任，但不会强制每一条通信路由。
 - 各外部 Provider 的能力与消息形态不同；Loom 治理身份、权限、凭证、投递和审计，

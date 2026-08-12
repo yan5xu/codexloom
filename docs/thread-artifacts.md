@@ -39,6 +39,9 @@ Loom 快照文件，返回稳定 Artifact ID 和下载 URL，并向当前 Agent 
 - Artifact ID 按内容 SHA-256 生成；同一 Agent 重复上传相同内容会复用快照。
 - 每个 Turn 最多 8 个附件，单个文件必须为普通文件、大小在 1 byte 到 25 MB 之间。
 - 下载入口会重新校验 Agent ownership、metadata 和受管文件状态。
+- PNG、JPEG、GIF 和 WebP 响应允许作为跨 Origin 图片子资源嵌入，供同机不同端口或独立 tunnel
+  上的受信工具预览；SVG、PDF、HTML 和其他类型仍保持 `same-origin` resource policy。该响应策略
+  不是认证：任何能够访问 Hub 且知道 Artifact URL 的页面都可以嵌入这些栅格图片。
 - Codex rollout 仍是 Thread 历史的单一真相源；`local_images` 会被历史投影恢复。普通文件通过模型可见的 `loom_attachments` 清单恢复。
 
 内置 `loom-artifacts` Skill 告诉 Agent 如何读取收到的附件并发布生成文件。Loom 只向 Codex 注册 Skill catalog；完整 Skill 正文仍由 Codex 在匹配场景时渐进加载。

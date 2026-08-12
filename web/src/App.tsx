@@ -1,4 +1,4 @@
-import { Activity, Archive, BookOpen, Bot, Cable, ChevronRight, CircleHelp, CirclePause, Inbox as InboxIcon, Info, Languages, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
+import { Activity, BookOpen, Cable, ChevronRight, CircleHelp, CirclePause, Inbox as InboxIcon, Info, Languages, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -16,6 +16,7 @@ import { NeedsYouPane } from "./NeedsYouPane";
 import { TopicsPane } from "./TopicsPane";
 import { WorkspaceErrorBoundary, WorkspaceReady } from "./workspace-recovery";
 import { moveItem, reorderItem, type DropEdge } from "./tab-order";
+import { SidebarAgentDirectory } from "./SidebarAgentDirectory";
 import type { OverviewSection } from "./OverviewPane";
 import type { SettingsSection } from "./SettingsPane";
 import { agentLabel } from "./agent-label";
@@ -1441,62 +1442,18 @@ export default function App() {
           </div>
         </nav>
 
-        <section className="mx-2 mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-md bg-background/45" aria-label={t("shell.agents")}>
-          <div className="flex h-8 shrink-0 items-center gap-2 px-2.5 text-muted-foreground">
-            <Bot className="size-3" />
-            <span className="text-[9px] font-bold uppercase">{t("shell.agents")}</span>
-            <span className="ml-auto font-mono text-[9px] text-muted-foreground/60">{agents.length}</span>
-          </div>
-
-          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1 pb-2">
-            {agents.map((s) => {
-              const active = s.id === current;
-              const archiving = archivingAgentIds.has(s.id);
-              const needsYou = openHumanRequests.filter((request) => request.agentId === s.id).length;
-              const inboxCount = pendingWork.filter((entry) => entry.item.agentId === s.id && !["handled", "cancelled"].includes(entry.item.state)).length;
-              const activity = s.currentTask || "";
-              const detailTitle = [s.cwd, activity ? summarizeTask(activity) : "", interruptedAgentTitle(s)].filter(Boolean).join("\n");
-              return (
-                <div
-                  key={s.id}
-                  className={`group/agent flex h-8 min-w-0 items-center rounded-md ${
-                    active ? "bg-selection text-selection-foreground" : "text-foreground/85 hover:bg-muted"
-                  }`}
-                >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => selectAgent(s.id)}
-                    title={detailTitle}
-                    className="h-8 min-w-0 flex-1 justify-start overflow-hidden bg-transparent px-2.5 text-left hover:bg-transparent hover:text-inherit"
-                  >
-                    {s.status === "interrupted" ? <CirclePause className="size-3.5 shrink-0 text-warning" aria-label="Interrupted by restart" /> : <span className={`size-2 shrink-0 rounded-full ${isAgentWorking(s) ? "pulse" : ""} ${executionDotClass(s)}`} />}
-                    <span className={`min-w-0 flex-1 truncate text-[12.5px] ${active ? "font-semibold" : "font-medium"}`}>{agentLabel(s)}</span>
-                    {unseenAgentIds.has(s.id) ? <span className="size-1.5 shrink-0 rounded-full bg-ring" title="New result from Owner-started work" /> : null}
-                    {inboxCount > 0 ? <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground" title={`${inboxCount} Agent Inbox items`}>{inboxCount}</span> : null}
-                  </Button>
-                  {needsYou > 0 ? <button type="button" onClick={() => selectNeedsYou(openHumanRequests.find((request) => request.agentId === s.id)?.id)} className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-sm bg-warning/15 px-1 font-mono text-[8.5px] font-semibold text-warning outline-none hover:bg-warning/25 focus-visible:ring-2 focus-visible:ring-warning/40" title={`${needsYou} request${needsYou === 1 ? "" : "s"} need your input`} aria-label={`Open ${needsYou} human request${needsYou === 1 ? "" : "s"} from ${s.name}`}>{needsYou}</button> : null}
-                  <button
-                    type="button"
-                    onClick={() => archiveAgent(s)}
-                    disabled={archiving}
-                    tabIndex={active ? 0 : -1}
-                    className={`mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-destructive/30 disabled:opacity-50 ${active ? "visible opacity-70" : "invisible opacity-0 group-hover/agent:visible group-hover/agent:opacity-70 group-focus-within/agent:visible group-focus-within/agent:opacity-70"}`}
-                    title={`Archive ${agentLabel(s)}`}
-                    aria-label={`Archive ${agentLabel(s)}`}
-                  >
-                    <Archive className={`size-3 ${archiving ? "animate-pulse" : ""}`} />
-                  </button>
-                </div>
-              );
-            })}
-            {agents.length === 0 && (
-              <div className="px-3 py-6 text-center text-[12px] text-muted-foreground/50">
-                {t("shell.empty")}
-              </div>
-            )}
-          </div>
-        </section>
+        <SidebarAgentDirectory
+          agents={agents}
+          currentId={current}
+          sidebarOpen={sidebarOpen}
+          humanRequests={openHumanRequests}
+          pendingWork={pendingWork}
+          unseenIds={unseenAgentIds}
+          archivingIds={archivingAgentIds}
+          onSelectAgent={selectAgent}
+          onSelectRequest={selectNeedsYou}
+          onArchiveAgent={archiveAgent}
+        />
 
         <div className="grid shrink-0 grid-cols-[1fr_auto_auto_auto] gap-1 border-t border-sidebar-border/80 bg-sidebar/90 p-2">
           <Button onClick={openNewAgent} title={t("shell.createTitle")}>

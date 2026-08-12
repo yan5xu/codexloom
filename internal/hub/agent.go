@@ -698,6 +698,13 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 	// Serialize readiness, epoch context injection and turn reservation for one
 	// runtime. Concurrent callers must not inject the same context revisions.
 	rt.startMu.Lock()
+	// getRuntimeLocked runs before startMu. Another caller may have timed out a
+	// mutating Thread RPC while this caller was waiting for serialization, so
+	// re-check the per-host fence at the actual control boundary.
+	if err := h.verifyRuntimeThreadControl(agentID, rt); err != nil {
+		rt.startMu.Unlock()
+		return SendResult{}, err
+	}
 	if err := waitReady(rt); err != nil {
 		rt.startMu.Unlock()
 		return SendResult{}, errf(500, "codex not ready: %s", err)

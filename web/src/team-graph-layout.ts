@@ -3,7 +3,7 @@ import type { ELK as ElkApi, ElkNode } from "elkjs/lib/elk.bundled.js";
 export const TEAM_GRAPH_NODE_WIDTH = 240;
 export const TEAM_GRAPH_NODE_HEIGHT = 132;
 
-export type TeamGraphLayoutMode = "organization" | "collaboration";
+export type TeamGraphLayoutMode = "organization" | "collaboration" | "activity";
 
 export type TeamGraphLayoutEdge = {
   id: string;
@@ -54,7 +54,7 @@ export async function layoutTeamGraph(
     .sort((a, b) => a.id.localeCompare(b.id));
   const components = connectedComponents(ids, normalizedEdges);
   const localLayouts = await Promise.all(components.map((component) => layoutComponent(component, normalizedEdges, mode)));
-  const packed = packComponents(localLayouts, mode === "organization" ? 1.65 : 1.75);
+  const packed = packComponents(localLayouts, mode === "organization" ? 1.65 : mode === "activity" ? 1.6 : 1.75);
   const positions: Record<string, TeamGraphPosition> = {};
 
   for (const component of packed.components) {
@@ -130,9 +130,9 @@ async function layoutComponent(
       "elk.direction": "RIGHT",
       "elk.edgeRouting": "SPLINES",
       "elk.padding": "[left=0, top=0, right=0, bottom=0]",
-      "elk.spacing.nodeNode": mode === "organization" ? "48" : "58",
+      "elk.spacing.nodeNode": mode === "organization" ? "48" : mode === "activity" ? "44" : "58",
       "elk.spacing.edgeNode": "36",
-      "elk.layered.spacing.nodeNodeBetweenLayers": mode === "organization" ? "142" : "132",
+      "elk.layered.spacing.nodeNodeBetweenLayers": mode === "organization" ? "142" : mode === "activity" ? "112" : "132",
       "elk.layered.spacing.edgeEdgeBetweenLayers": "28",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",

@@ -17,10 +17,11 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MarkdownContent } from "./pages/agent/markdown";
+import { PublishedArtifactCard } from "./components/ArtifactPreview";
 import { Button } from "./components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { Input } from "./components/ui/input";
-import { api, type Agent, type Topic, type TopicActiveTurn, type TopicStatus, type TopicSummary } from "./types";
+import { api, type Agent, type ThreadArtifact, type Topic, type TopicActiveTurn, type TopicLink, type TopicStatus, type TopicSummary } from "./types";
 import { topicAuditSummary, topicBriefTimeline } from "./topics-view";
 import { agentLabel } from "./agent-label";
 
@@ -95,6 +96,15 @@ export function TopicsPane({
   const agentLabelsByID = useMemo(() => new Map(agents.map((agent) => [agent.id, agentLabel(agent)])), [agents]);
   const selectedResponsibleLabel = selected ? agentLabelsByID.get(selected.responsibleAgentId) || selected.responsibleAgent : "";
   const evidenceLinks = useMemo(() => (selected?.links || []).filter((link) => link.relation !== "activity"), [selected?.links]);
+  const topicArtifactsQuery = useQuery<{ artifacts: ThreadArtifact[] }>({
+    queryKey: ["topic-artifacts", selectedID],
+    queryFn: () => api("GET", `/api/topics/${encodeURIComponent(selectedID)}/artifacts`),
+    enabled: Boolean(selectedID),
+  });
+  const topicArtifacts = useMemo(
+    () => new Map((topicArtifactsQuery.data?.artifacts || []).map((artifact) => [artifact.id, artifact])),
+    [topicArtifactsQuery.data?.artifacts],
+  );
   const briefTimeline = useMemo(() => selected ? topicBriefTimeline(selected) : [], [selected]);
   const counts = useMemo(() => ({
     attention: topics.filter((topic) => topic.needsMeCount > 0 || topic.resultsReady).length,
@@ -119,7 +129,10 @@ export function TopicsPane({
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["topics"] }),
-      selectedID ? queryClient.invalidateQueries({ queryKey: ["topic", selectedID] }) : Promise.resolve(),
+      selectedID ? Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["topic", selectedID] }),
+        queryClient.invalidateQueries({ queryKey: ["topic-artifacts", selectedID] }),
+      ]) : Promise.resolve(),
     ]);
   };
   const run = async (task: () => Promise<unknown>) => {
@@ -338,8 +351,10 @@ export function TopicsPane({
 
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {detailView === "current" ? (
-                  <div className="mx-auto max-w-[980px] px-4 py-5 md:px-7 md:py-7">
-                    <section className="border-b border-border pb-5">
+                  <div className="mx-auto max-w-[1080px] px-4 py-5 md:px-7 md:py-7">
+                    <TopicScope purpose={selected.purpose} completionBoundary={selected.completionBoundary} />
+
+                    <section className="mt-6 border-b border-border pb-6">
                       <div className="flex flex-wrap items-center gap-2">
                         <SectionTitle>Now</SectionTitle>
                         <span className="font-mono text-[9px] text-muted-foreground">brief v{selected.currentBrief.version} · {formatDate(selected.currentBrief.updatedAt)}</span>
@@ -351,28 +366,28 @@ export function TopicsPane({
                       </div>
                     </section>
 
-                    <section className="grid border-b border-border md:grid-cols-2">
+                    <section className="grid border-b border-border md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
                       {selected.waitingOn ? (
-                        <div className="border-b border-border bg-warning/[0.04] px-3 py-4 md:border-b-0 md:border-r">
+                        <div className="border-b border-border bg-warning/[0.04] px-4 py-4 md:border-b-0 md:border-r">
                           <div className="flex items-center gap-2 font-mono text-[9px] uppercase text-warning"><Pause className="size-3.5" />Waiting for {selected.waitingOn.kind}{selected.waitingOn.refId ? ` · ${selected.waitingOn.refId}` : ""}</div>
                           <p className="mt-2 text-[11.5px] leading-5">{selected.waitingOn.summary}</p>
                           <span className="mt-2 block font-mono text-[8.5px] text-muted-foreground">since {formatDate(selected.waitingOn.since)}</span>
                           {selected.waitingOn.resumeAction ? <details className="mt-2 border-t border-border/70 pt-2"><summary className="cursor-pointer font-mono text-[8.5px] uppercase text-muted-foreground">Resume check</summary><p className="mt-1.5 text-[10px] leading-4 text-muted-foreground">{selected.waitingOn.resumeAction}</p></details> : null}
                         </div>
                       ) : (
-                        <div className="border-b border-border px-3 py-4 md:border-b-0 md:border-r"><SectionTitle>Status</SectionTitle><p className="mt-2 text-[11.5px] leading-5 text-muted-foreground">No external waiting condition.</p></div>
+                        <div className="border-b border-border px-4 py-4 md:border-b-0 md:border-r"><SectionTitle>Status</SectionTitle><p className="mt-2 text-[11.5px] leading-5 text-muted-foreground">No external waiting condition.</p></div>
                       )}
-                      <div className="px-3 py-4">
+                      <div className="px-4 py-4">
                         <SectionTitle>Next</SectionTitle>
                         <p className="mt-2 whitespace-pre-wrap text-[11.5px] leading-5">{selected.currentBrief.nextStep || selected.waitingOn?.resumeAction || "The Responsible Agent has not recorded a next step."}</p>
                       </div>
                     </section>
 
                     {selected.currentBrief.limitations ? (
-                      <details className="border-b border-border py-3">
-                        <summary className="cursor-pointer select-none font-mono text-[9px] font-semibold uppercase text-muted-foreground hover:text-foreground">Limits and uncertainty</summary>
-                        <p className="mt-2 whitespace-pre-wrap text-[11px] leading-5 text-foreground/80">{selected.currentBrief.limitations}</p>
-                      </details>
+                      <section className="grid gap-2 border-b border-border px-4 py-4 md:grid-cols-[180px_minmax(0,1fr)] md:gap-5">
+                        <SectionTitle>Limits and uncertainty</SectionTitle>
+                        <p className="whitespace-pre-wrap text-[11px] leading-5 text-foreground/80">{selected.currentBrief.limitations}</p>
+                      </section>
                     ) : null}
 
                     <section className="mt-6 border-b border-border pb-6">
@@ -383,13 +398,13 @@ export function TopicsPane({
                       </div>
                     </section>
 
-                    <details className="mt-3 border-b border-border py-3">
-                      <summary className="cursor-pointer select-none font-mono text-[9px] font-semibold uppercase text-muted-foreground hover:text-foreground">Scope</summary>
-                      <div className="mt-4 grid gap-5 pb-2 md:grid-cols-2">
-                        <TextSection label="Purpose" text={selected.purpose} />
-                        <TextSection label="Complete when" text={selected.completionBoundary} />
-                      </div>
-                    </details>
+                    <TopicCurrentArtifacts
+                      links={evidenceLinks}
+                      artifacts={topicArtifacts}
+                      loading={topicArtifactsQuery.isLoading}
+                      onLink={() => setEvidenceOpen(true)}
+                      onViewAll={() => changeDetailView("history")}
+                    />
                   </div>
                 ) : (
                   <div className="mx-auto max-w-[980px] px-4 py-5 md:px-7 md:py-7">
@@ -421,8 +436,8 @@ export function TopicsPane({
 
                     <section className="mt-7">
                       <div className="flex items-center"><SectionTitle>Evidence anchors</SectionTitle><span className="ml-2 font-mono text-[9px] text-muted-foreground">{evidenceLinks.length}</span><Button variant="ghost" size="icon-xs" className="ml-auto" onClick={() => setEvidenceOpen(true)} title="Link evidence"><Plus /></Button></div>
-                      <div className="mt-3 grid border-y border-border sm:grid-cols-2">
-                        {evidenceLinks.map((link) => <div key={`${link.type}:${link.id}:${link.relation}`} className="min-w-0 border-b border-border px-1 py-2.5 last:border-b-0 sm:odd:border-r"><div className="flex items-center gap-2"><FileText className="size-3 text-muted-foreground" /><span className="font-mono text-[8.5px] uppercase text-muted-foreground">{link.type} · {link.relation}</span></div><div className="mt-1 truncate font-mono text-[10px]" title={link.id}>{link.label || link.id}</div></div>)}
+                      <div className="mt-3 grid gap-2 border-y border-border py-2 sm:grid-cols-2">
+                        {evidenceLinks.map((link) => <TopicEvidenceAnchor key={`${link.type}:${link.id}:${link.relation}`} link={link} artifact={topicArtifacts.get(link.id)} />)}
                         {evidenceLinks.length === 0 ? <div className="py-6 text-center text-[10.5px] text-muted-foreground sm:col-span-2">No evidence anchors linked.</div> : null}
                       </div>
                     </section>
@@ -499,6 +514,102 @@ export function TopicsPane({
         </DialogContent>
       </Dialog>
     </main>
+  );
+}
+
+export function TopicCurrentArtifacts({
+  links,
+  artifacts,
+  loading = false,
+  onLink,
+  onViewAll,
+}: {
+  links: TopicLink[];
+  artifacts: Map<string, ThreadArtifact>;
+  loading?: boolean;
+  onLink: () => void;
+  onViewAll: () => void;
+}) {
+  const artifactLinks = links
+    .filter((link) => link.type.toLowerCase() === "artifact")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (artifactLinks.length === 0) return null;
+
+  const resolved = artifactLinks
+    .map((link) => ({ link, artifact: artifacts.get(link.id) }))
+    .filter((entry): entry is { link: TopicLink; artifact: ThreadArtifact } => Boolean(entry.artifact));
+  const visible = resolved.slice(0, 6);
+
+  return (
+    <section className="mt-6 border-b border-border pb-6" aria-label="Topic artifacts">
+      <div className="flex flex-wrap items-center gap-2">
+        <SectionTitle>Artifacts</SectionTitle>
+        <span className="font-mono text-[9px] text-muted-foreground">{artifactLinks.length} linked · newest first</span>
+        <Button variant="ghost" size="icon-xs" className="ml-auto" onClick={onLink} title="Link evidence"><Plus /></Button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {visible.map(({ link, artifact }) => (
+          <TopicEvidenceAnchor
+            key={`${link.type}:${link.id}:${link.relation}`}
+            link={link}
+            artifact={artifact}
+          />
+        ))}
+        {loading && visible.length === 0 ? (
+          <div className="py-6 text-center text-[10.5px] text-muted-foreground sm:col-span-2">Loading published artifacts…</div>
+        ) : null}
+        {!loading && visible.length === 0 ? (
+          <div className="py-6 text-center text-[10.5px] text-muted-foreground sm:col-span-2">Linked artifacts are not published or are no longer available.</div>
+        ) : null}
+      </div>
+      {artifactLinks.length > visible.length ? (
+        <button type="button" onClick={onViewAll} className="mt-3 font-mono text-[9px] font-semibold text-muted-foreground hover:text-foreground">
+          View all {artifactLinks.length} in History
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+export function TopicScope({ purpose, completionBoundary }: { purpose: string; completionBoundary: string }) {
+  return (
+    <section className="border-y border-border bg-muted/15 px-4 py-5 md:px-5" aria-label="Topic scope">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <SectionTitle>Scope</SectionTitle>
+        <span className="font-mono text-[9px] text-muted-foreground">durable Topic contract</span>
+      </div>
+      <div className="mt-4 grid gap-5 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] md:gap-0">
+        <div className="min-w-0 md:pr-6">
+          <TextSection label="Purpose" text={purpose} />
+        </div>
+        <div className="min-w-0 border-t border-border pt-5 md:border-l md:border-t-0 md:pl-6 md:pt-0">
+          <TextSection label="Complete when" text={completionBoundary} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function TopicEvidenceAnchor({ link, artifact }: { link: TopicLink; artifact?: ThreadArtifact }) {
+  if (link.type.toLowerCase() === "artifact" && artifact) {
+    return (
+      <div data-topic-artifact={artifact.id} className="min-w-0">
+        <PublishedArtifactCard
+          artifact={artifact}
+          publishedAt={artifact.publishedAt}
+          displayName={link.label}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="min-w-0 border border-border px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <FileText className="size-3 text-muted-foreground" />
+        <span className="font-mono text-[8.5px] uppercase text-muted-foreground">{link.type} · {link.relation}</span>
+      </div>
+      <div className="mt-1 truncate font-mono text-[10px]" title={link.id}>{link.label || link.id}</div>
+    </div>
   );
 }
 

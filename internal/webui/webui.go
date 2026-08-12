@@ -1,4 +1,4 @@
-// Package webui embeds the built React console (web/ -> npm run build ->
+// Package webui embeds the built React console (web/ -> pnpm run build ->
 // internal/webui/dist). The Go binary serves it, so the deployed artifact is
 // a single executable.
 package webui

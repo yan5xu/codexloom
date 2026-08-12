@@ -2,6 +2,128 @@ import { describe, expect, it } from "vitest";
 import { emptyFeed, reduceFeed, summarizeTask } from "./feed";
 
 describe("rollout history projection", () => {
+  it("keeps one realtime command block and preserves description when completion omits it", () => {
+    const started = reduceFeed(emptyFeed, {
+      seq: 1,
+      ts: "2026-08-12T01:00:00Z",
+      type: "item/started",
+      data: {
+        item: {
+          type: "commandExecution",
+          id: "cmd-1",
+          command: "printf probe-ok",
+          description: "Run the isolated command probe",
+          status: "inProgress",
+        },
+      },
+    });
+    const completed = reduceFeed(started, {
+      seq: 2,
+      ts: "2026-08-12T01:00:01Z",
+      type: "item/completed",
+      data: {
+        item: {
+          type: "commandExecution",
+          id: "cmd-1",
+          command: "printf probe-ok",
+          status: "completed",
+          exitCode: 0,
+          aggregatedOutput: "probe-ok",
+        },
+      },
+    });
+
+    expect(completed.blocks).toHaveLength(1);
+    expect(completed.blocks[0]).toMatchObject({
+      kind: "command",
+      id: "cmd-1",
+      description: "Run the isolated command probe",
+      status: "completed",
+      exitCode: 0,
+      output: "probe-ok",
+    });
+  });
+
+  it("updates description during realtime lifecycle without creating another block", () => {
+    const started = reduceFeed(emptyFeed, {
+      seq: 1,
+      ts: "2026-08-12T01:00:00Z",
+      type: "item/started",
+      data: {
+        item: {
+          type: "commandExecution",
+          id: "cmd-2",
+          command: "printf probe-ok",
+          status: "inProgress",
+        },
+      },
+    });
+    const updated = reduceFeed(started, {
+      seq: 2,
+      ts: "2026-08-12T01:00:00Z",
+      type: "item/updated",
+      data: {
+        item: {
+          type: "commandExecution",
+          id: "cmd-2",
+          command: "printf probe-ok",
+          description: "Run the isolated command probe",
+          status: "inProgress",
+        },
+      },
+    });
+
+    expect(updated.blocks).toHaveLength(1);
+    expect(updated.blocks[0]).toMatchObject({ id: "cmd-2", description: "Run the isolated command probe" });
+  });
+
+  it("projects commandExecution history and keeps legacy command fallback", () => {
+    const state = reduceFeed(emptyFeed, {
+      seq: 0,
+      ts: "",
+      type: "__history__",
+      data: {
+        turns: [{
+          items: [
+            { type: "commandExecution", command: "printf probe-ok", description: "Historical command", status: "completed", output: "stale", aggregatedOutput: "canonical" },
+            { type: "command", command: "printf legacy", status: "completed" },
+          ],
+        }],
+      },
+    });
+
+    expect(state.blocks).toHaveLength(2);
+    expect(state.blocks[0]).toMatchObject({ kind: "command", description: "Historical command", output: "canonical" });
+    expect(state.blocks[1]).toMatchObject({ kind: "command", command: "printf legacy" });
+    expect((state.blocks[1] as { description?: string }).description).toBeUndefined();
+  });
+
+  it("preserves description across history reconcile and prepend", () => {
+    const current = reduceFeed(emptyFeed, {
+      seq: 0,
+      ts: "",
+      type: "__history__",
+      data: { turns: [{ items: [{ type: "commandExecution", command: "printf current", description: "Current command", status: "completed" }] }] },
+    });
+    const reconciled = reduceFeed(current, {
+      seq: 0,
+      ts: "",
+      type: "__history_reconcile__",
+      data: { turns: [{ items: [{ type: "commandExecution", command: "printf current", description: "Current command", status: "completed" }] }] },
+    });
+    const prepended = reduceFeed(reconciled, {
+      seq: 0,
+      ts: "",
+      type: "__history_prepend__",
+      data: { offset: 1, turns: [{ items: [{ type: "commandExecution", command: "printf older", description: "Older command", status: "completed" }] }] },
+    });
+
+    expect(reconciled.blocks).toHaveLength(1);
+    expect(reconciled.blocks[0]).toMatchObject({ description: "Current command" });
+    expect(prepended.blocks).toHaveLength(2);
+    expect(prepended.blocks.map((block) => (block.kind === "command" ? block.description : ""))).toEqual(["Older command", "Current command"]);
+  });
+
   it("summarizes a Human Input response without exposing its XML envelope", () => {
     const text = `<human_input_response version="1" request_id="hrq_test" expectation="required">
   <question><![CDATA[May I restart?]]></question>
@@ -139,7 +261,7 @@ describe("rollout history projection", () => {
   });
 
   it("restores a v2 External Inbox payload with preceding Conversation context", () => {
-    const text = `Review https://example.test/pr/8<loom_context version="1" epoch_id="window:test">
+    const historyText = `Review https://example.test/pr/8<loom_context version="1" epoch_id="window:test">
   <loom_turn_context origin="external_connector" trust="managed_external" authority="business_input" kind="inbox_message" ref_id="inb_1">
     <original_input location="preceding_turn_input_item" />
     <payload><![CDATA[<conversation_context version="1" membership_id="mem_1" provider="parall">
@@ -156,14 +278,22 @@ This trusted context applies only to the immediately following inbox message.
 </inbox_message>]]></payload>
   </loom_turn_context>
 </loom_context>`;
+    const liveText = `<inbox_message version="1" id="imsg_1" inbox_item_id="inb_1" expectation="optional">
+  <origin provider="parall" address_id="addr_1" />
+  <membership id="mem_1" name="Parall dev" version="4" />
+  <sender id="usr_1">zzh</sender>
+  <conversation id="chat_1" thread_id="thread_1" type="thread" />
+  <reply_policy>final_answer</reply_policy>
+  <body><![CDATA[Review https://example.test/pr/8]]></body>
+</inbox_message>`;
     const project = (type: "__history__" | "loom/user-message") =>
       reduceFeed(emptyFeed, {
         seq: 1,
         ts: "2026-07-28T09:32:50Z",
         type,
         data: type === "__history__"
-          ? { turns: [{ items: [{ type: "user", timestamp: "2026-07-28T09:32:50Z", text }] }] }
-          : { text },
+          ? { turns: [{ items: [{ type: "user", timestamp: "2026-07-28T09:32:50Z", text: historyText }] }] }
+          : { text: liveText },
       }).blocks[0];
 
     for (const block of [project("__history__"), project("loom/user-message")]) {

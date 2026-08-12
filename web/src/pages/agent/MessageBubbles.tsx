@@ -17,6 +17,7 @@
  */
 import { useMemo, useState, useCallback, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { copyText } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import { Check, ChevronRight, Copy, Loader2, Wrench } from "lucide-react";
 import type { ChatMessage, TokenUsage } from "../../lib/chat/types";
@@ -27,13 +28,13 @@ import { LoomContextView, splitTrailingLoomContext } from "./LoomContextView";
    CopyButton — appears on hover, copies text content
    ================================================================ */
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+export function CopyButton({ text }: { text: string }) {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const handleCopy = useCallback(async () => {
+    const copied = await copyText(text);
+    setStatus(copied ? "copied" : "failed");
+    setTimeout(() => setStatus("idle"), 1500);
   }, [text]);
 
   return (
@@ -41,13 +42,16 @@ function CopyButton({ text }: { text: string }) {
       onClick={handleCopy}
       className={cn(
         "flex size-7 cursor-pointer items-center justify-center rounded-md transition-all duration-150",
-        copied
+        status === "copied"
           ? "text-primary bg-primary/10"
+          : status === "failed"
+            ? "bg-destructive/10 text-destructive"
           : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-foreground/[0.04]",
       )}
-      title={copied ? "Copied" : "Copy"}
+      title={status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy"}
+      aria-label={status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy reply"}
     >
-      {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+      {status === "copied" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
     </button>
   );
 }

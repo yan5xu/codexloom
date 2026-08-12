@@ -176,10 +176,20 @@ Topic 是有界协调记录，不是共享 Agent Thread、Goal、任务树或 pr
 
 只有工作确实缺少 Owner 的事实、选择、审阅或授权时，创建 durable Human Request：
 
+- `question` 是简短的单行标题；多行内容只放在 `context`。
+- `context` 放长背景和解释，支持 Markdown，并传入真实换行。
+- `--blocks` 保存为 `blockedWork`，是简短的纯文本；不要把多行内容放进 `--blocks`。
+- 不要写字面量的两个字符 `\n`。
+
 ```sh
-loom ask-user --from SELF --question "需要决定什么？" \
-  --context "为什么需要以及最小背景" \
-  --blocks "因此无法继续的工作"
+loom ask-user --from SELF --question "应选择哪个发布窗口？" \
+  --context "有两个发布窗口可选。
+
+**明早（推荐）：** 风险较低，有完整的支持窗口。
+**今晚：** 更快，但支持窗口较短。" \
+  --blocks "安排并发布迁移通知" \
+  --option "明早（推荐）::风险较低，有完整的支持窗口。" \
+  --option "今晚::更快，但支持窗口较短。"
 ```
 
 若当前工作属于 Topic，再加 `--topic TOPIC_ID`。创建成功后正常结束 Turn，等待同一 Agent Thread 被回答恢复；不要轮询，也不要用普通进展汇报代替 Needs You。

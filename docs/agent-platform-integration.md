@@ -37,10 +37,16 @@ Agent 在某个 Connection 上的外部身份。
 
 ```text
 id, agentId, connectionId, externalIdentity, displayName,
-triggerPolicy, replyPolicy, trustDomain, allow/block lists, enabled
+triggerPolicy, replyPolicy, trustDomain, allow/block lists, enabled,
+archivedAt, deletedAt, version
 ```
 
 跨领域关联只使用稳定 `agentId`。外部平台 ID 和 Agent 名称都不能作为 Agent 主键。
+
+Address 的 Agent ownership 可以通过受管 transfer 原子改变，但 AddressID、Connection、Membership 和
+历史消息引用保持稳定。`archive` 可通过对应 receipt 显式恢复并继续保留 external identity；`delete` 是
+不可逆 tombstone，只保留审计投影并释放 identity。任何 lifecycle 写入都使用 address version 做乐观并发，
+并在提交前阻止非终态 Inbox、在途 Outbox 和 provider operation。
 
 ### ConversationCandidate
 

@@ -369,13 +369,17 @@ export function BlockView({ block }: { block: Block }) {
     case "command": {
       const finished = block.exitCode !== null || block.status === "completed" || block.status === "failed";
       const ok = block.exitCode === 0;
+      const hasDescription = Boolean(block.description?.trim());
+      const summaryText = hasDescription ? block.description : block.command;
       return (
-        <details className="my-2 overflow-hidden rounded-md border border-border bg-card shadow-card">
-          <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2.5">
-            <span className="flex-1 truncate font-mono text-[12.5px]">{block.command}</span>
+        <details className="my-2 min-w-0 overflow-hidden rounded-md border border-border bg-card shadow-card">
+          <summary className="flex cursor-pointer select-none items-start gap-2 px-3 py-2.5">
+            <span className={`min-w-0 flex-1 break-words whitespace-pre-wrap ${hasDescription ? "text-[12px] leading-5 text-foreground/90" : "font-mono text-[12.5px] text-foreground/85"}`}>
+              {summaryText}
+            </span>
             {finished ? (
               <span
-                className={`shrink-0 rounded-md px-2 py-0.5 text-[10.5px] font-medium ${
+                className={`mt-0.5 shrink-0 rounded-md px-2 py-0.5 text-[10.5px] font-medium ${
                   ok ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
                 }`}
               >
@@ -383,7 +387,7 @@ export function BlockView({ block }: { block: Block }) {
                 {block.durationMs != null ? ` · ${block.durationMs}ms` : ""}
               </span>
             ) : (
-              <span className="flex shrink-0 items-center gap-1.5 rounded-md bg-warning/10 px-2 py-0.5 text-[10.5px] font-medium text-warning">
+              <span className="mt-0.5 flex shrink-0 items-center gap-1.5 rounded-md bg-warning/10 px-2 py-0.5 text-[10.5px] font-medium text-warning">
                 <span className="spinner !h-2.5 !w-2.5" />
                 running
               </span>

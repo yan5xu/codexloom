@@ -67,7 +67,7 @@ Restart Loom 会同时重启已启用的 managed Feishu、Slack 和 Parall gatew
 
 ## 飞书 / Lark
 
-推荐从 WebUI 的 **Integrations → Add integration** 开始。飞书使用 CodexLoom 内置的原生 Go
+推荐从 WebUI 侧边栏的集成管理入口 **External → Add integration** 开始。飞书使用 CodexLoom 内置的原生 Go
 gateway 和飞书官方 SDK，不依赖 `lark-cli`。首次连接需要从飞书开发者后台复制 App ID 和 App
 Secret；CodexLoom 验证身份后将 Secret 写入操作系统 Keychain，并自动识别 Bot 身份及已加入的群。
 
@@ -127,7 +127,7 @@ Connection 的旧 launchd 服务，避免一条飞书事件被重复消费；确
 
 ## Slack
 
-推荐从 WebUI 的 **Integrations → Add integration → Slack** 开始。Slack 使用 Socket Mode，因此不需要公网域名或 webhook；CodexLoom 直接管理 Socket Mode gateway，也不依赖 Slack CLI 或 Slack MCP。
+推荐从 WebUI 侧边栏的集成管理入口 **External → Add integration → Slack** 开始。Slack 使用 Socket Mode，因此不需要公网域名或 webhook；CodexLoom 直接管理 Socket Mode gateway，也不依赖 Slack CLI 或 Slack MCP。
 
 首次连接需要先在 Slack App 管理页导入：
 
@@ -181,6 +181,27 @@ Slack 附件使用官方 `files.getUploadURLExternal` + `files.completeUploadExt
 已有直接运行 `gateway/slack.mjs` 的 launchd 部署可以在迁移期间继续工作。第一次通过新向导保存设置时，Loom 会先创建托管 gateway；启动成功后才停止同一 Connection 的旧 gateway，避免消息中断或重复消费。
 
 Slack CLI 适合创建、安装和部署 Slack App，但不是运行时消息通道。Slack MCP 以用户 OAuth 身份为 Agent 提供搜索、读取和发送等工具，也不负责 Events API 或 Socket Mode 的持续事件接收。两者以后都可以成为可选辅助能力，但不替代当前 Connection、Address、Membership 和 gateway 模型。
+
+## Address lifecycle 与跨 Agent 迁移
+
+Address 是稳定外部身份，不应通过手工改 `integrations.json`、替换 identity 或数据库占位来迁移。
+CodexLoom 提供四种受管操作，并为每次成功写入持久 `aop_*` receipt：
+
+- `archive`：关闭 Address 和其 active Membership，保留 canonical identity、历史引用及恢复快照。普通
+  `integration enable` 不能恢复；只能由显式 `restore` 在 version、identity、Membership 和在途检查通过后恢复。
+- `restore`：恢复同一次受管 archive 前的 Address/Membership enabled 状态。Candidate 不恢复旧的
+  available 快照，等待 Connector 重新发现，避免把冻结前目录冒充当前事实。
+- `delete`：不可逆 tombstone。记录保留 AddressID、外部身份和 Inbox/Outbox 审计引用，但释放 canonical
+  identity 供新 Address 使用；不存在普通 restore。
+- `transfer`：在 Hub 锁和单次 integrations 持久化事务中修改同一个 Address 的 `agentId`。Connection、
+  cursor、AddressID、Membership、Credential 和 gateway 配置保持不变，因此不会出现新旧 Address 双 dispatch。
+
+生命周期 preflight 将包含 `failed` 在内的未收口 Inbox、pending/sending Outbox、pending/running
+provider operation 视为 blocker。`failed` Inbox 必须先明确 retry 或 no-reply；历史 failed Outbox 保留，
+但迁移或删除后不能沿旧 Agent retry。Transfer rollback 只覆盖“切换后
+尚未产生任何目标侧活动”的失败窗口；目标侧一旦收到 Inbox、创建 Outbox/provider operation，或 Address/
+Membership version 变化，回滚会 fail closed。Connection cursor 始终保留；Address disabled 期间是否存在
+Provider catch-up 取决于具体 Connector，transfer 本身不会伪造或主动补拉历史。
 
 ## Parall
 
@@ -236,6 +257,53 @@ loom prll messages replies msg_root --address addr_xxx
 ```
 
 旧的环境变量模式仍可直接运行 `gateway/parall.mjs`，使用 `PRLL_API_URL`、`PRLL_API_KEY` 和 `PRLL_ORG_ID`。它只作为迁移和诊断入口；新配置应使用 Integrations 向导和托管 Gateway。
+
+## Connector 运行契约
+
+托管 Gateway 通过一个长期 SSE command stream 领取工作，而不是由 Hub 主动向平台
+发送 HTTP 回调：
+
+```text
+GET /api/integrations/connections/{id}/commands
+```
+
+- 请求必须携带 Connector token 或来自 loopback；同一 Connection 同时只允许一个
+  command stream，冲突返回 `409`。
+- 建立 stream 后，Hub 会先写入 `connected` heartbeat，并重排队该 Connection 的
+  Outbox 与 ProviderOperation。
+- 每个待处理项以 `connector/command` SSE event 下发，类型为 `send` 或
+  `provider_operation`。
+- stream 关闭时 Hub 把 Connection 标为 `disconnected`。
+
+Heartbeat 使用：
+
+```text
+POST /api/integrations/connections/{id}/heartbeat
+```
+
+支持 `status`（`disconnected` / `connecting` / `connected` / `degraded`）、
+`cursor`、`capabilities` 和 `error`。Heartbeat 会持久化并发出全局
+`loom/integration-connection` 事件。
+
+Outbox 与 ProviderOperation 使用同一个 claim 语义：
+
+- 领取时生成随机 `attemptToken`，lease 为 2 分钟。
+- 结果必须回传 `attemptToken`；过期 claim 会被重排，旧 token 的迟到结果会被拒绝。
+- ProviderOperation 结果上限为 768 KiB；`success=false` 时返回 `error`。
+- 重启会把遗留 `running` claim 恢复为 `pending`，不会把未确认的外部副作用当作成功。
+
+ProviderOperation 是 credential-mediated 的只读 provider 调用：
+
+- 当前白名单：Parall `chats/*` 与 `messages/*` 读操作；飞书 `messages` 的
+  `list` / `get` / `replies`。
+- 创建入口是各 Provider 的 `.../operations` 路由，状态持久化在
+  `provider-operations.ndjson`。
+- 状态机为 `pending` → `running` → `succeeded|failed`；失败后可重试领取。
+- 结果回传路由为
+  `POST /api/integrations/connections/{id}/provider-operations/{operationId}/result`。
+
+Hub 进入 graceful drain 后不会再向 Connector 领取新的 Outbox 或 ProviderOperation，
+避免重启期间旧进程和新进程同时处理同一外部副作用。
 
 ## 故障检查
 

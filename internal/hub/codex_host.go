@@ -28,6 +28,16 @@ type codexHostRuntime struct {
 	generation uint64
 	bin        string
 	catalogSHA string
+	// A mutating Thread RPC that timed out may still complete later. Do not
+	// reuse that Thread on the same app-server generation because a retry could
+	// duplicate context or work. Replacing the host terminates the old effect
+	// domain and starts with an empty fence map.
+	indeterminateThreads map[string]threadControlFailure
+}
+
+type threadControlFailure struct {
+	Method     string
+	ObservedAt string
 }
 
 type SkillInventorySkill struct {
@@ -50,7 +60,8 @@ type SkillInventoryEntry struct {
 }
 
 type SkillInventory struct {
-	Data []SkillInventoryEntry `json:"data"`
+	Data   []SkillInventoryEntry      `json:"data"`
+	Agents []AgentSkillInventoryEntry `json:"agents"`
 }
 
 func (h *Hub) ensureCodexHostLocked() (*codexHostRuntime, error) {
@@ -81,11 +92,12 @@ func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
 	}
 	h.codexHostGeneration++
 	host := &codexHostRuntime{
-		client:     client,
-		ready:      make(chan struct{}),
-		generation: h.codexHostGeneration,
-		bin:        codexHostBin(),
-		catalogSHA: catalog.SHA256,
+		client:               client,
+		ready:                make(chan struct{}),
+		generation:           h.codexHostGeneration,
+		bin:                  codexHostBin(),
+		catalogSHA:           catalog.SHA256,
+		indeterminateThreads: map[string]threadControlFailure{},
 	}
 	client.OnNotification = func(method string, params json.RawMessage) {
 		h.onHostNotification(host.generation, method, params)
@@ -103,9 +115,62 @@ func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
 	return host, nil
 }
 
+// threadControlFailureLocked returns a conservative fence for the current
+// CodexHost only. h.mu must be held. A cold host replacement terminates the
+// outstanding request and intentionally clears this transient fence.
+func (h *Hub) threadControlFailureLocked(threadID string) error {
+	host := h.codexHost
+	if host == nil || host.client.Closed() || strings.TrimSpace(threadID) == "" {
+		return nil
+	}
+	failure, ok := host.indeterminateThreads[threadID]
+	if !ok {
+		return nil
+	}
+	return errf(500, "Codex Thread control outcome is indeterminate after %s timed out at %s; replace the current CodexHost before retrying the same work", failure.Method, failure.ObservedAt)
+}
+
+func (h *Hub) markThreadControlIndeterminate(rt *runtime, threadID, method string) {
+	if rt == nil || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	host := h.codexHost
+	if host == nil || host.generation != rt.hostGeneration || host.client != rt.client {
+		return
+	}
+	if host.indeterminateThreads == nil {
+		host.indeterminateThreads = map[string]threadControlFailure{}
+	}
+	if _, exists := host.indeterminateThreads[threadID]; exists {
+		return
+	}
+	host.indeterminateThreads[threadID] = threadControlFailure{
+		Method: strings.TrimSpace(method), ObservedAt: now(),
+	}
+}
+
+func (h *Hub) verifyRuntimeThreadControl(agentID string, rt *runtime) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	meta := h.agents[agentID]
+	if meta == nil {
+		return errf(404, "agent vanished")
+	}
+	host := h.codexHost
+	if host == nil || rt == nil || host.generation != rt.hostGeneration || host.client != rt.client {
+		return errf(500, "CodexHost changed before Thread control started")
+	}
+	return h.threadControlFailureLocked(meta.ThreadID)
+}
+
 func (h *Hub) materializeModelCatalog() (modelcatalog.Snapshot, error) {
 	dataDir := filepath.Join(os.TempDir(), "codexloom-runtime")
 	if h.st != nil {
+		if err := h.st.ValidateWritableIdentity(); err != nil {
+			return modelcatalog.Snapshot{}, err
+		}
 		dataDir = h.st.Dir()
 	}
 	return modelcatalog.Materialize(dataDir, os.Getenv("CODEX_LOOM_MODEL_CATALOG"))
@@ -163,6 +228,11 @@ func (h *Hub) initCodexHost(host *codexHostRuntime) {
 		return
 	}
 	if h.st != nil {
+		if err := h.st.ValidateWritableIdentity(); err != nil {
+			host.initErr = fmt.Errorf("validate builtin Skill store: %w", err)
+			host.client.Close()
+			return
+		}
 		skillRoot := filepath.Join(h.st.Dir(), "builtin-skills")
 		missing := missingUserSkills()
 		if len(missing) == 0 {
@@ -235,6 +305,7 @@ func (h *Hub) requestSkillInventory(host *codexHostRuntime) (SkillInventory, err
 	if err := json.Unmarshal(raw, &inventory); err != nil {
 		return SkillInventory{}, fmt.Errorf("decode skills/list: %w", err)
 	}
+	h.projectAgentSkillInventory(&inventory)
 	return inventory, nil
 }
 

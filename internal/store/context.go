@@ -23,34 +23,58 @@ func (s *Store) contextCoverageFile(threadID string) string {
 }
 
 func (s *Store) LoadLoomAgentPrompt(v any) error {
-	return loadJSON(s.loomAgentPromptFile(), v)
+	return s.loadJSON(s.loomAgentPromptFile(), v)
 }
 
 func (s *Store) SaveLoomAgentPrompt(v any) error {
-	return saveJSON(s.loomAgentPromptFile(), v)
+	return s.saveJSON(s.loomAgentPromptFile(), v)
 }
 
 func (s *Store) DeleteLoomAgentPrompt() error {
-	err := os.Remove(s.loomAgentPromptFile())
+	done, err := s.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer done()
+	rel, err := s.relative(s.loomAgentPromptFile())
+	if err != nil {
+		return err
+	}
+	err = s.dirHandle.root.Remove(rel)
 	if os.IsNotExist(err) {
 		return nil
 	}
-	return err
+	return s.finishWrite(err)
 }
 
 func (s *Store) LoadContextCoverage(threadID string, v any) error {
-	return loadJSON(s.contextCoverageFile(threadID), v)
+	return s.loadJSON(s.contextCoverageFile(threadID), v)
 }
 
 func (s *Store) SaveContextCoverage(threadID string, v any) error {
-	if err := os.MkdirAll(s.contextCoverageDir(), 0o700); err != nil {
+	done, err := s.beginWrite()
+	if err != nil {
 		return err
 	}
-	return saveJSON(s.contextCoverageFile(threadID), v)
+	rel, err := s.relative(s.contextCoverageDir())
+	if err != nil {
+		done()
+		return err
+	}
+	if err := s.dirHandle.root.MkdirAll(rel, 0o700); err != nil {
+		done()
+		return err
+	}
+	done()
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return s.replaceFile(s.contextCoverageFile(threadID), data, 0o600)
 }
 
 func (s *Store) ReadContextCoverage(threadID string) (json.RawMessage, error) {
-	data, err := os.ReadFile(s.contextCoverageFile(threadID))
+	data, err := s.readFile(s.contextCoverageFile(threadID))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}

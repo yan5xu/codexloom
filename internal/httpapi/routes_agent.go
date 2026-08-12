@@ -86,6 +86,45 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, map[string]any{"agent": agent})
 	})
+	mux.HandleFunc("POST /api/agents/{key}/compact", func(w http.ResponseWriter, r *http.Request) {
+		result, err := s.hub.CompactAgentThread(r.PathValue("key"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"compaction": result})
+	})
+	mux.HandleFunc("GET /api/agents/{key}/skills", func(w http.ResponseWriter, r *http.Request) {
+		config, err := s.hub.GetAgentSkillConfig(r.PathValue("key"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		inventory, err := s.hub.AgentSkillInventory(r.PathValue("key"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"config": config, "inventory": inventory})
+	})
+	mux.HandleFunc("PATCH /api/agents/{key}/skills/config", func(w http.ResponseWriter, r *http.Request) {
+		var body hub.AgentSkillConfigParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		config, err := s.hub.UpdateAgentSkillConfig(r.PathValue("key"), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		inventory, err := s.hub.AgentSkillInventory(r.PathValue("key"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"config": config, "inventory": inventory})
+	})
 	mux.HandleFunc("GET /api/agents/{key}/profile", func(w http.ResponseWriter, r *http.Request) {
 		profile, err := s.hub.GetProfile(r.PathValue("key"))
 		if err != nil {
@@ -240,7 +279,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", artifact.MimeType)
 		w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": artifact.Name}))
 		w.Header().Set("Cache-Control", "private, max-age=300")
-		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", threadArtifactResourcePolicy(artifact.MimeType))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		http.ServeContent(w, r, artifact.Name, info.ModTime(), file)
 	})
@@ -439,4 +478,14 @@ func threadArtifactDisposition(mimeType string, preview, download bool) string {
 		return "inline"
 	}
 	return "attachment"
+}
+
+func threadArtifactResourcePolicy(mimeType string) string {
+	normalized := strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	switch normalized {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return "cross-origin"
+	default:
+		return "same-origin"
+	}
 }

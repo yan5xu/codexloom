@@ -145,6 +145,7 @@ export type Block =
       kind: "command";
       id: string;
       ts?: string;
+      description?: string;
       command: string;
       status: string;
       exitCode: number | null;
@@ -775,13 +776,15 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
           break;
         }
         case "command":
+        case "commandExecution":
           blocks.push({
             kind: "command", id, ts: timestamp,
+            ...(typeof it.description === "string" && it.description.trim() ? { description: it.description } : {}),
             command: it.command || "",
             status: it.status || "completed",
             exitCode: it.exitCode ?? null,
             durationMs: it.durationMs ?? null,
-            output: it.output || "",
+            output: it.aggregatedOutput || it.output || "",
           });
           break;
         case "file_change":
@@ -974,17 +977,31 @@ export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
       }
       case "commandExecution": {
         const key = `c:${itemId}`;
-        const patch = {
+        const patch: {
+          description?: string;
+          command: string;
+          status: string;
+          exitCode: number | null;
+          durationMs: number | null;
+          output: string;
+        } = {
           command: item.command || "",
           status: item.status || (t === "item/completed" ? "completed" : "running"),
           exitCode: item.exitCode ?? null,
           durationMs: item.durationMs ?? null,
           output: item.aggregatedOutput || item.output || "",
         };
+        if (typeof item.description === "string" && item.description.trim()) {
+          patch.description = item.description;
+        }
         if (state.index[key] === undefined) {
           return push(state, { kind: "command", id: itemId, ts: ev.ts, ...patch }, key);
         }
-        return update(state, key, (b) => (b.kind === "command" ? { ...b, ...patch } : b));
+        return update(state, key, (b) => {
+          if (b.kind !== "command") return b;
+          // Older lifecycle payloads may omit the optional description.
+          return { ...b, ...patch };
+        });
       }
       case "fileChange": {
         const key = `f:${itemId}`;

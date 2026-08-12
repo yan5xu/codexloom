@@ -326,7 +326,7 @@ func cmdOutbox(a args) {
 
 func cmdIntegration(a args) {
 	if len(a.positional) == 0 {
-		usage("integration list|send|connect|import|bind|update-address|enable|disable|status ...")
+		usage("integration list|send|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|status ...")
 	}
 	switch a.positional[0] {
 	case "list":
@@ -372,10 +372,12 @@ func cmdIntegration(a args) {
 			fmt.Printf("%s %s  %s  %s\n", bold(str(connection, "id")), cyan(str(connection, "provider")), state, dim(account))
 			for _, address := range addressesByConnection[str(connection, "id")] {
 				addressState := enabledState(address)
-				if str(address, "archivedAt") != "" {
+				if str(address, "deletedAt") != "" {
+					addressState = dim("deleted")
+				} else if str(address, "archivedAt") != "" {
 					addressState = dim("archived → " + str(address, "supersededBy"))
 				}
-				fmt.Printf("  %s %s → %s  %s trigger=%s reply=%s dm=%s trust=%s\n", dim(str(address, "id")), str(address, "externalIdentity"), str(address, "agentId"), addressState, str(address, "triggerPolicy"), str(address, "replyPolicy"), str(address, "dmPolicy"), str(address, "trustDomain"))
+				fmt.Printf("  %s %s → %s  %s v%.0f trigger=%s reply=%s dm=%s trust=%s\n", dim(str(address, "id")), str(address, "externalIdentity"), str(address, "agentId"), addressState, num(address, "version"), str(address, "triggerPolicy"), str(address, "replyPolicy"), str(address, "dmPolicy"), str(address, "trustDomain"))
 				for _, key := range []string{"allowActors", "allowConversations", "blockActors", "blockConversations"} {
 					if values := stringValues(address[key]); len(values) > 0 {
 						fmt.Printf("    %s %s\n", dim(key+":"), strings.Join(values, ", "))
@@ -522,6 +524,38 @@ func cmdIntegration(a args) {
 			result = "disabled"
 		}
 		fmt.Printf("%s %s %s\n", green(result), resource, id)
+	case "archive", "restore", "delete-address", "transfer":
+		cmdAddressLifecycle(a)
+	case "rollback-transfer":
+		cmdAddressTransferRollback(a)
+	case "operations":
+		path := "/api/integrations/address-operations"
+		if len(a.positional) > 1 {
+			path += "?address=" + url.QueryEscape(a.positional[1])
+		}
+		resp, err := api("GET", path, nil)
+		if err != nil {
+			fail(err)
+		}
+		operations := anySlice(resp["operations"])
+		if len(operations) == 0 {
+			fmt.Println("no address lifecycle operations")
+			return
+		}
+		for _, value := range operations {
+			operation, _ := value.(map[string]any)
+			fmt.Print(formatAddressLifecycleOperation(operation))
+		}
+	case "operation":
+		if len(a.positional) < 2 {
+			usage("integration operation <operation-id>")
+		}
+		resp, err := api("GET", "/api/integrations/address-operations/"+url.PathEscape(a.positional[1]), nil)
+		if err != nil {
+			fail(err)
+		}
+		operation, _ := resp["operation"].(map[string]any)
+		fmt.Print(formatAddressLifecycleOperation(operation))
 	case "status":
 		resp, err := api("GET", "/api/integrations/connections", nil)
 		if err != nil {
@@ -536,8 +570,147 @@ func cmdIntegration(a args) {
 			fmt.Println(string(out))
 		}
 	default:
-		usage("integration list|send|connect|import|bind|update-address|enable|disable|status ...")
+		usage("integration list|send|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|status ...")
 	}
+}
+
+func cmdAddressLifecycle(a args) {
+	if len(a.positional) < 2 {
+		usage("integration archive|restore|delete-address <address-id> [--dry-run] [--expected-version N] [--confirm ADDRESS_ID]; integration transfer <address-id> --to-agent AGENT [flags]")
+	}
+	command, addressID := a.positional[0], a.positional[1]
+	action := command
+	if command == "delete-address" {
+		action = "delete"
+	}
+	if action == "transfer" && strings.TrimSpace(a.flags["to-agent"]) == "" {
+		usage("integration transfer <address-id> --to-agent AGENT [--dry-run] [--expected-version N] [--confirm ADDRESS_ID]")
+	}
+	body := map[string]any{"action": action, "targetAgent": a.flags["to-agent"], "dryRun": true}
+	if err := addIntFlag(body, a.flags, "expected-version", "expectedVersion"); err != nil {
+		fail(err)
+	}
+	path := "/api/integrations/addresses/" + url.PathEscape(addressID) + "/lifecycle"
+	preflightResponse, err := api("POST", path, body)
+	if err != nil {
+		fail(err)
+	}
+	preflight, _ := preflightResponse["preflight"].(map[string]any)
+	fmt.Print(formatAddressLifecyclePreflight(preflight))
+	if lifecycleDryRun(a.flags) {
+		return
+	}
+	if allowed, _ := preflight["allowed"].(bool); !allowed {
+		fail(fmt.Errorf("address lifecycle preflight failed"))
+	}
+	if strings.TrimSpace(a.flags["confirm"]) != addressID {
+		fail(fmt.Errorf("--confirm must exactly match address id %s", addressID))
+	}
+	body["dryRun"] = false
+	body["confirm"] = addressID
+	if _, exists := body["expectedVersion"]; !exists {
+		body["expectedVersion"] = int(num(preflight, "currentVersion"))
+	}
+	result, err := api("POST", path, body)
+	if err != nil {
+		fail(err)
+	}
+	operation, _ := result["operation"].(map[string]any)
+	fmt.Print(formatAddressLifecycleOperation(operation))
+}
+
+func cmdAddressTransferRollback(a args) {
+	if len(a.positional) < 2 {
+		usage("integration rollback-transfer <operation-id> [--dry-run] [--expected-version N] [--confirm OPERATION_ID]")
+	}
+	operationID := a.positional[1]
+	body := map[string]any{"dryRun": true}
+	if err := addIntFlag(body, a.flags, "expected-version", "expectedVersion"); err != nil {
+		fail(err)
+	}
+	path := "/api/integrations/address-operations/" + url.PathEscape(operationID) + "/rollback"
+	preflightResponse, err := api("POST", path, body)
+	if err != nil {
+		fail(err)
+	}
+	preflight, _ := preflightResponse["preflight"].(map[string]any)
+	fmt.Print(formatAddressLifecyclePreflight(preflight))
+	if lifecycleDryRun(a.flags) {
+		return
+	}
+	if allowed, _ := preflight["allowed"].(bool); !allowed {
+		fail(fmt.Errorf("address transfer rollback preflight failed"))
+	}
+	if strings.TrimSpace(a.flags["confirm"]) != operationID {
+		fail(fmt.Errorf("--confirm must exactly match operation id %s", operationID))
+	}
+	body["dryRun"] = false
+	body["confirm"] = operationID
+	if _, exists := body["expectedVersion"]; !exists {
+		body["expectedVersion"] = int(num(preflight, "currentVersion"))
+	}
+	result, err := api("POST", path, body)
+	if err != nil {
+		fail(err)
+	}
+	operation, _ := result["operation"].(map[string]any)
+	fmt.Print(formatAddressLifecycleOperation(operation))
+}
+
+func lifecycleDryRun(flags map[string]string) bool {
+	value, exists := flags["dry-run"]
+	return exists && (value == "" || strings.EqualFold(value, "true") || value == "1")
+}
+
+func formatAddressLifecyclePreflight(preflight map[string]any) string {
+	var b strings.Builder
+	allowed, _ := preflight["allowed"].(bool)
+	state := red("blocked")
+	if allowed {
+		state = green("allowed")
+	}
+	fmt.Fprintf(&b, "%s %s  %s  v%.0f\n", bold(str(preflight, "action")), str(preflight, "addressId"), state, num(preflight, "currentVersion"))
+	if from, to := str(preflight, "fromAgentId"), str(preflight, "toAgentId"); from != "" || to != "" {
+		fmt.Fprintf(&b, "  owner: %s", from)
+		if to != "" {
+			fmt.Fprintf(&b, " -> %s", to)
+		}
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(&b, "  memberships: %.0f total, %.0f enabled\n", num(preflight, "membershipCount"), num(preflight, "enabledMembershipCount"))
+	for _, value := range anySlice(preflight["blockers"]) {
+		blocker, _ := value.(map[string]any)
+		fmt.Fprintf(&b, "  %s %s %s: %s\n", red("blocker"), str(blocker, "kind"), str(blocker, "id"), str(blocker, "message"))
+	}
+	for _, value := range anySlice(preflight["warnings"]) {
+		fmt.Fprintf(&b, "  %s %v\n", yellow("warning"), value)
+	}
+	if catchUp := str(preflight, "catchUp"); catchUp != "" {
+		fmt.Fprintf(&b, "  catch-up: %s\n", catchUp)
+	}
+	return b.String()
+}
+
+func formatAddressLifecycleOperation(operation map[string]any) string {
+	if len(operation) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s  %s  address=%s  v%.0f->v%.0f\n", green("completed"), bold(str(operation, "id")), str(operation, "action"), str(operation, "addressId"), num(operation, "addressVersionBefore"), num(operation, "addressVersionAfter"))
+	if from, to := str(operation, "fromAgentId"), str(operation, "toAgentId"); from != "" || to != "" {
+		fmt.Fprintf(&b, "  owner: %s", from)
+		if to != "" {
+			fmt.Fprintf(&b, " -> %s", to)
+		}
+		b.WriteByte('\n')
+	}
+	if source := str(operation, "sourceOperationId"); source != "" {
+		fmt.Fprintf(&b, "  source: %s\n", source)
+	}
+	if reversed := str(operation, "reversedBy"); reversed != "" {
+		fmt.Fprintf(&b, "  reversed by: %s\n", reversed)
+	}
+	return b.String()
 }
 
 func cmdIntegrationSend(a args) {

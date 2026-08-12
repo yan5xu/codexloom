@@ -61,7 +61,7 @@ table is the current status and should be updated when later work changes it.
 | F-12 | Partial | Expensive event rotation moved out of append paths and all finite goroutines are lifecycle-owned; the broad Hub mutex and synchronous projection I/O remain structural debt. |
 | F-13 | Remediated for current domains | Runtime, Agent lifecycle, internal Communication, Integration/Ingress, Inbox, Outbox, external-message policy, and shutdown have focused Hub files. HTTP routes and CLI commands are registered by domain instead of one cross-domain function. Future domains should preserve these boundaries. |
 | F-14 | Remediated | Global SSE has durable IDs/replay; compacted cursors emit `loom/reconcile`, and every open WebUI pane refetches its authoritative projection/history. |
-| F-15 | Open | Tagged frontend contracts and automated component/E2E coverage remain missing. |
+| F-15 | Partial | Vitest/Testing Library now run multiple frontend suites; tagged event unions, schema sharing, and Playwright E2E remain missing. |
 | F-16 | Open | The repository license is now explicit; required CI/release/restore gates and the other public policy files remain missing. |
 
 ## Severity Model
@@ -545,6 +545,13 @@ ignores malformed data, and high-risk integration workflows have no browser
 regression gate. Large mixed-responsibility components make mobile and live-data
 state changes harder to reason about.
 
+**Current status (2026-08-02):**
+
+`web/package.json` now has a `test` script backed by Vitest/Testing Library; the
+repository currently runs 19 test files with 74 passing tests across pure
+projections and component behavior. Playwright end-to-end coverage, tagged event
+unions, and shared API schemas remain open.
+
 **Required remediation**
 
 - Define tagged event unions and validate API payloads at the boundary.
@@ -601,7 +608,7 @@ Coverage identifies risk concentration rather than proving correctness:
 | `internal/store` | 17.2% |
 | `internal/codex` | 0% |
 | Go gateway commands | 0% |
-| React WebUI | no test runner |
+| React WebUI | Vitest/Testing Library: 19 suites, 74 tests |
 
 `staticcheck` and `govulncheck` were not installed in the audit environment, so
 they were not run. Passing race/build tests do not cover authorization,

@@ -172,7 +172,7 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 	}
 	var address hub.AgentAddress
 	for _, candidate := range addresses {
-		if candidate.ConnectionID != connection.ID {
+		if candidate.ConnectionID != connection.ID || candidate.ArchivedAt != "" || candidate.DeletedAt != "" {
 			continue
 		}
 		if candidate.AgentID != agentID {
@@ -185,7 +185,7 @@ func (s *Server) setupLark(ctx context.Context, p larkSetupParams, hubURL string
 		trustDomain := strings.TrimSpace(p.TrustDomain)
 		if trustDomain == "" {
 			for _, candidate := range addresses {
-				if candidate.AgentID == agentID && candidate.TrustDomain != "" {
+				if candidate.AgentID == agentID && candidate.DeletedAt == "" && candidate.TrustDomain != "" {
 					trustDomain = candidate.TrustDomain
 					break
 				}

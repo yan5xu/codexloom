@@ -2,8 +2,12 @@ package hub
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/yan5xu/codex-loom/internal/rollout"
 )
 
 // ProviderSwitchBinding is persisted before the shared CodexHost is restarted.
@@ -26,6 +30,11 @@ type ProviderBindingChange struct {
 type ProviderSwitchParams struct {
 	ProviderID string `json:"providerId"`
 	Model      string `json:"model"`
+}
+
+type providerSwitchRolloutBackup struct {
+	originalPath string
+	backupPath   string
 }
 
 func publicProviderID(providerID string) string {
@@ -185,7 +194,12 @@ func (h *Hub) finishProviderSwitchMaintenance() {
 	})
 }
 
-func (h *Hub) rollbackProviderSwitch(agentID string, previous Agent, cause error) error {
+func (h *Hub) rollbackProviderSwitch(agentID string, previous Agent, cause error, rolloutBackup *providerSwitchRolloutBackup) error {
+	if rolloutBackup != nil {
+		if err := rollout.RestoreRolloutBackup(rolloutBackup.backupPath, rolloutBackup.originalPath); err != nil {
+			cause = fmt.Errorf("%v; restore rollout backup: %w", cause, err)
+		}
+	}
 	h.mu.Lock()
 	if agent := h.agents[agentID]; agent != nil {
 		*agent = previous
@@ -282,6 +296,7 @@ func (h *Hub) SwitchAgentProvider(key string, params ProviderSwitchParams) (Agen
 	}
 	previous := *agent
 	previous.ProviderHistory = append([]ProviderBindingChange(nil), agent.ProviderHistory...)
+	var rolloutBackup *providerSwitchRolloutBackup
 	agent.Source = ""
 	agent.PendingProviderSwitch = &ProviderSwitchBinding{ProviderID: providerID, Model: model, StartedAt: now()}
 	agent.UpdatedAt = now()
@@ -295,21 +310,34 @@ func (h *Hub) SwitchAgentProvider(key string, params ProviderSwitchParams) (Agen
 	h.mu.Unlock()
 
 	if err := closeCodexHost(oldHost); err != nil {
-		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, err))
+		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, err, rolloutBackup))
+	}
+	if providerID == "" && previous.ProviderID != "" {
+		backupDir := filepath.Join(os.TempDir(), "codexloom-provider-switch-backups")
+		if h.st != nil {
+			backupDir = filepath.Join(h.st.Dir(), "backups", "provider-switch")
+		}
+		result, sanitizeErr := rollout.SanitizeReasoningContent(previous.ThreadID, backupDir)
+		if sanitizeErr != nil {
+			return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, sanitizeErr, rolloutBackup))
+		}
+		if result.Changed > 0 && result.BackupPath != "" {
+			rolloutBackup = &providerSwitchRolloutBackup{originalPath: result.OriginalPath, backupPath: result.BackupPath}
+		}
 	}
 	host, err := h.startProviderSwitchHost()
 	if err != nil {
-		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, err))
+		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, err, rolloutBackup))
 	}
 	if err := h.verifyProviderSwitchRuntime(agentID, host); err != nil {
-		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, err))
+		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, err, rolloutBackup))
 	}
 
 	h.mu.Lock()
 	agent = h.agents[agentID]
 	if agent == nil {
 		h.mu.Unlock()
-		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, fmt.Errorf("agent vanished before commit")))
+		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, fmt.Errorf("agent vanished before commit"), rolloutBackup))
 	}
 	agent.ProviderID = providerID
 	agent.Model = model
@@ -323,7 +351,7 @@ func (h *Hub) SwitchAgentProvider(key string, params ProviderSwitchParams) (Agen
 	if err := h.persistAgentsLocked(); err != nil {
 		*agent = previous
 		h.mu.Unlock()
-		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, fmt.Errorf("commit Agent binding: %w", err)))
+		return AgentView{}, errf(500, "switch Provider: %s", h.rollbackProviderSwitch(agentID, previous, fmt.Errorf("commit Agent binding: %w", err), rolloutBackup))
 	}
 	switchedAt := agent.ProviderHistory[len(agent.ProviderHistory)-1].SwitchedAt
 	h.emitLocked(agentID, "loom/agent-provider-switched", map[string]any{

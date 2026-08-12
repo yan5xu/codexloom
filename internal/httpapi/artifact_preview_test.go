@@ -27,3 +27,25 @@ func TestThreadArtifactDisposition(t *testing.T) {
 		})
 	}
 }
+
+func TestThreadArtifactResourcePolicy(t *testing.T) {
+	tests := []struct {
+		mimeType string
+		want     string
+	}{
+		{mimeType: "image/png", want: "cross-origin"},
+		{mimeType: "IMAGE/JPEG; charset=binary", want: "cross-origin"},
+		{mimeType: "image/gif", want: "cross-origin"},
+		{mimeType: "image/webp", want: "cross-origin"},
+		{mimeType: "image/svg+xml", want: "same-origin"},
+		{mimeType: "application/pdf", want: "same-origin"},
+		{mimeType: "text/html", want: "same-origin"},
+	}
+	for _, test := range tests {
+		t.Run(test.mimeType, func(t *testing.T) {
+			if got := threadArtifactResourcePolicy(test.mimeType); got != test.want {
+				t.Fatalf("threadArtifactResourcePolicy(%q) = %q, want %q", test.mimeType, got, test.want)
+			}
+		})
+	}
+}

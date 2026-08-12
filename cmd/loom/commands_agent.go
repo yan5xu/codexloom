@@ -11,15 +11,29 @@ import (
 	loomskills "github.com/yan5xu/codex-loom/skills"
 )
 
+const skillsUsage = "skills [status [name] [--root PATH]|list|install [name] [--force] [--root PATH]|reload|agent <agent> [disable|enable <absolute SKILL.md path>]]"
+
 func cmdSkills(a args) {
+	if a.flags["help"] == "true" {
+		printSkillsHelp()
+		return
+	}
 	action := "status"
 	if len(a.positional) > 0 {
 		action = a.positional[0]
+	}
+	if action == "help" || action == "-h" || action == "--help" {
+		printSkillsHelp()
+		return
 	}
 	if action == "list" {
 		for _, definition := range loomskills.Definitions() {
 			fmt.Printf("%s  %s\n", bold(definition.Name), dim(definition.Description))
 		}
+		return
+	}
+	if action == "agent" {
+		cmdAgentSkills(a)
 		return
 	}
 
@@ -35,7 +49,10 @@ func cmdSkills(a args) {
 	if err != nil {
 		fail(err)
 	}
-	names := a.positional[1:]
+	var names []string
+	if len(a.positional) > 1 {
+		names = a.positional[1:]
+	}
 
 	switch action {
 	case "status":
@@ -75,7 +92,71 @@ func cmdSkills(a args) {
 		}
 		fmt.Printf("%s %d Agent workspaces, %d available Skill entries\n", green("reloaded"), len(entries), total)
 	default:
-		usage("skills list|status [name]|install [name] [--force]|reload")
+		usage(skillsUsage)
+	}
+}
+
+func printSkillsHelp() {
+	fmt.Printf("usage: %s %s\n", commandName, skillsUsage)
+	fmt.Println()
+	fmt.Println("With no subcommand, status lists all shared Codex Skills.")
+	fmt.Println("Agent disables are exact-path exceptions and do not modify the shared Skill.")
+}
+
+func cmdAgentSkills(a args) {
+	if len(a.positional) < 2 {
+		usage("skills agent <agent> [disable|enable <absolute SKILL.md path>]")
+	}
+	agent := a.positional[1]
+	method := "GET"
+	path := "/api/agents/" + url.PathEscape(agent) + "/skills"
+	var body any
+	if len(a.positional) > 2 {
+		if len(a.positional) != 4 || (a.positional[2] != "disable" && a.positional[2] != "enable") {
+			usage("skills agent <agent> [disable|enable <absolute SKILL.md path>]")
+		}
+		method = "PATCH"
+		path += "/config"
+		body = map[string]any{
+			"path":    a.positional[3],
+			"enabled": a.positional[2] == "enable",
+		}
+	}
+	resp, err := api(method, path, body)
+	if err != nil {
+		fail(err)
+	}
+	config, _ := resp["config"].(map[string]any)
+	inventory, _ := resp["inventory"].(map[string]any)
+	fmt.Printf("%s %s (%s)\n", bold("Agent Skills"), str(inventory, "agentName"), str(inventory, "agentId"))
+	for _, value := range anySlice(inventory["skills"]) {
+		skill, _ := value.(map[string]any)
+		state := green("enabled")
+		if !boolean(skill, "enabled") {
+			state = yellow("disabled")
+		}
+		fmt.Printf("  %-10s  %-28s  %s\n", state, str(skill, "name"), dim(str(skill, "path")))
+	}
+	for _, value := range anySlice(config["disabledPaths"]) {
+		disabledPath, _ := value.(string)
+		found := false
+		for _, skillValue := range anySlice(inventory["skills"]) {
+			skill, _ := skillValue.(map[string]any)
+			if str(skill, "path") == disabledPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("  %-10s  %-28s  %s\n", yellow("disabled"), "(not discovered)", dim(disabledPath))
+		}
+	}
+	if boolean(config, "restartRequired") {
+		fmt.Println(yellow("Restart required: the loaded Codex Thread still has the previous Skill policy."))
+	} else if boolean(config, "applied") {
+		fmt.Println(green("Agent Skill policy is active for the next Turn."))
+	} else {
+		fmt.Println(dim("Agent Skill policy will apply when the Codex Thread is next loaded."))
 	}
 }
 

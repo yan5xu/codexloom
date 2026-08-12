@@ -175,7 +175,7 @@ func (s *Server) setupSlack(ctx context.Context, p slackSetupParams, hubURL stri
 	}
 	var address hub.AgentAddress
 	for _, candidate := range addresses {
-		if candidate.ConnectionID != connection.ID {
+		if candidate.ConnectionID != connection.ID || candidate.ArchivedAt != "" || candidate.DeletedAt != "" {
 			continue
 		}
 		if candidate.AgentID != agentID {

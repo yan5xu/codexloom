@@ -229,6 +229,21 @@ type cmdOutput struct {
 	exitCode *int
 }
 
+// commandExecutionItem is the display-only subset of the app-server
+// commandExecution item. The description is optional so old rollout records
+// remain valid and continue to produce the same command map.
+type commandExecutionItem struct {
+	Type             string  `json:"type"`
+	Command          string  `json:"command"`
+	Cwd              string  `json:"cwd"`
+	Description      *string `json:"description"`
+	Status           string  `json:"status"`
+	AggregatedOutput *string `json:"aggregatedOutput"`
+	Output           *string `json:"output"`
+	ExitCode         *int    `json:"exitCode"`
+	DurationMs       *int64  `json:"durationMs"`
+}
+
 func parseCmdOutput(out string) cmdOutput {
 	co := cmdOutput{text: out}
 	if m := exitCodeRe.FindStringSubmatch(out); m != nil {
@@ -327,12 +342,20 @@ func (tr *Transcript) handleEvent(timestamp string, payload json.RawMessage, out
 
 func (tr *Transcript) handleResponseItem(timestamp string, payload json.RawMessage, outputs map[string]cmdOutput) {
 	var p struct {
-		Type      string `json:"type"`
-		Name      string `json:"name"`
-		CallID    string `json:"call_id"`
-		Arguments string `json:"arguments"`
+		Type        string  `json:"type"`
+		Name        string  `json:"name"`
+		CallID      string  `json:"call_id"`
+		Arguments   string  `json:"arguments"`
+		Description *string `json:"description"`
 	}
 	if json.Unmarshal(payload, &p) != nil {
+		return
+	}
+	if p.Type == "commandExecution" {
+		var command commandExecutionItem
+		if json.Unmarshal(payload, &command) == nil {
+			tr.appendCommandItem(timestamp, command, outputs, "")
+		}
 		return
 	}
 	// Generated images: carry the base64 PNG as a data URI so the UI can render
@@ -370,25 +393,57 @@ func (tr *Transcript) handleResponseItem(timestamp string, payload json.RawMessa
 		return
 	}
 	var argv struct {
-		Cmd     string `json:"cmd"`
-		Workdir string `json:"workdir"`
+		Cmd         string  `json:"cmd"`
+		Workdir     string  `json:"workdir"`
+		Description *string `json:"description"`
+		Desc        *string `json:"desc"`
 	}
 	_ = json.Unmarshal([]byte(p.Arguments), &argv)
+	if argv.Description == nil {
+		argv.Description = argv.Desc
+	}
+	if argv.Description == nil {
+		argv.Description = p.Description
+	}
+	tr.appendCommandItem(timestamp, commandExecutionItem{
+		Type: "commandExecution", Command: argv.Cmd, Cwd: argv.Workdir,
+		Description: argv.Description, Status: "completed",
+	}, outputs, p.CallID)
+}
+
+func (tr *Transcript) appendCommandItem(timestamp string, command commandExecutionItem, outputs map[string]cmdOutput, callID string) {
+	status := command.Status
+	if status == "" {
+		status = "completed"
+	}
 	item := map[string]any{
 		"type":      "command",
-		"command":   argv.Cmd,
-		"cwd":       argv.Workdir,
-		"status":    "completed",
+		"command":   command.Command,
+		"cwd":       command.Cwd,
+		"status":    status,
 		"timestamp": timestamp,
 	}
-	if co, ok := outputs[p.CallID]; ok {
+	if command.Description != nil {
+		item["description"] = *command.Description
+	}
+	if command.AggregatedOutput != nil {
+		item["output"] = truncate(*command.AggregatedOutput, 4000)
+	} else if command.Output != nil {
+		item["output"] = truncate(*command.Output, 4000)
+	}
+	if command.ExitCode != nil {
+		item["exitCode"] = *command.ExitCode
+	}
+	if command.DurationMs != nil {
+		item["durationMs"] = *command.DurationMs
+	}
+	if co, ok := outputs[callID]; ok {
 		item["output"] = truncate(co.text, 4000)
 		if co.exitCode != nil {
 			item["exitCode"] = *co.exitCode
 		}
 	}
-	t := tr.cur()
-	t.Items = append(t.Items, item)
+	tr.cur().Items = append(tr.cur().Items, item)
 }
 
 func truncate(s string, limit int) string {

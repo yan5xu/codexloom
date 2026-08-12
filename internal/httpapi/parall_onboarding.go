@@ -616,7 +616,7 @@ func (s *Server) setupParall(ctx context.Context, p parallSetupParams, hubURL st
 		trustDomain := strings.TrimSpace(p.TrustDomain)
 		if trustDomain == "" {
 			for _, candidate := range addresses {
-				if candidate.AgentID == agentID {
+				if candidate.AgentID == agentID && candidate.DeletedAt == "" {
 					trustDomain = candidate.TrustDomain
 					break
 				}

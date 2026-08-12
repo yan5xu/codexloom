@@ -258,6 +258,9 @@ Context coverage ledger 不把 RPC 成功直接当作模型可见。只有完整
 epoch 的 replayable rollout，并观察到同一 Turn 的首个 model event，source 才标记为 covered。
 compact 创建新 epoch，下一 Turn 会重新注入；当前版本不处理中途 compact 的同 Turn 恢复。
 
+完整的 Developer/Input 分层、epoch 判定、coverage 状态机和生产验收见
+[Epoch Context Coverage](epoch-context-coverage.md)。
+
 ## 持久化
 
 ```text

@@ -177,9 +177,19 @@ Observe 命令分别放在 `commands_*.go`。新增命令必须归入所属领�
 
 核心文件按状态所有权划分：`hub.go` 是共享 runtime/event 基础，`agent.go` 管 Agent 与 Turn，
 `communication.go` 管内部 Agent Message，`topic.go` 管跨 Agent 协调记录与因果投影，`integration.go` 管 Connection/Address/Ingress，
+`address_lifecycle.go` 管 Address archive/restore/delete、跨 Agent transfer、preflight 与持久操作回执，
 `inbox.go` 管入站处理，`outbox.go` 管受治理的外部投递与 claim fencing，
 `external_message.go` 管 envelope、附件与 policy 规范化，`shutdown.go` 管关闭顺序。跨聚合动作
 必须通过明确的 reconciliation/commit helper，不应在一个巨型文件中直接修改多个 projection。
+
+后续新增领域文件同样按状态所有权拆分：`artifact.go` 管 Thread/Topic Artifact 的受管快照与
+下载；`goal.go` 适配 Codex 原生 Goal；`scheduler.go` 与 `trigger.go` 管时间和外部事实恢复；
+`human_request.go` 管 Needs You；`remote.go` 管远程控制；`collaboration_group.go` 管 Team
+Group；`context.go` 管 Loom Prompt 与 epoch coverage；`daily_activity.go`、`workload.go` 和
+`usage.go` 管观察/容量口径；`interrupted_turn.go` 管重启后的 Turn 恢复；`provider_operation.go`
+管异步 Connector 操作账本；`model_provider.go` 与 `provider_switch.go` 管 custom
+Provider 配置和 Agent primary Thread 切换。静态模型目录由 `internal/modelcatalog/`
+统一描述、校验和物化。
 
 ### `internal/httpapi`
 
@@ -225,6 +235,7 @@ events/<agent-id>.ndjson
 events/__global__.ndjson      WebUI 全局 SSE replay cache
 events/*.ndjson.gz            已轮转的诊断段，按策略淘汰
 gateway/*.json
+runtime/model-catalog/*.json   受管模型目录快照
 backups/
 ```
 
@@ -247,10 +258,15 @@ React/Vite/TypeScript/Tailwind 治理工作台。第一屏是实际工作台，�
 
 - Sidebar：全局 active/idle 状态、Agent 列表和管理入口。
 - AgentPane：Thread history/live、Turn 输入、配置、Profile、Address 和 Membership。
+- TopicsPane / SchedulesPane / NeedsYouPane：跨 Agent 协调、定时任务与人工请求队列。
 - Inbox/Messages：内部和外部消息统一观察，但保留 origin 区分和 raw XML。
-- Team：列表、Graph 和 Inspector；Graph 卡片可拖拽，位置稳定保存。
+- Team：列表、Graph、Organization、Collaboration Group 和 Inspector；Graph 卡片可拖拽，位置稳定保存。
+- Overview / Usage / Workload / DailyActivity：Token、负载与团队活动观察。
 - Remote：连接状态、配对码、二维码和设备列表。
 - automation：规范入口 `window.codexLoom`，`window.codexHub` 是兼容别名。
+
+每个 Pane 的数据源、写操作、SSE 订阅和关键状态见
+[webui-panes.md](webui-panes.md)。
 
 ### `cmd/loom-gateway` 与 `gateway/`
 
@@ -442,7 +458,9 @@ version/hash 与 Profile revision/hash；Profile 变化会重渲染组合 payloa
 Turn 重新注入。Relationship 与本次 Topic/Message 等 bounded context 仍走 Turn input，不与
 Developer 指令层混合。
 
-完整设计和写作方法见 [agent-profile.md](agent-profile.md)。
+完整机制、coverage 证明、诊断与验收方法见
+[Epoch Context Coverage](epoch-context-coverage.md)；Profile 的产品语义见
+[agent-profile.md](agent-profile.md)。
 
 ### Agent 与外部消息
 
@@ -552,7 +570,7 @@ make build
 铁律：构建绿不等于完成。
 
 ```sh
-cd web && npm run build
+pnpm --dir web run build
 make build
 ```
 
@@ -701,6 +719,8 @@ curl -fsS http://127.0.0.1:4870/api/health
 
 ## API 速查
 
+完整 REST/SSE 路由参考见 [http-api.md](http-api.md)。常用核心入口：
+
 ```text
 GET    /api/health
 GET    /api/agents
@@ -752,6 +772,10 @@ GET    /api/admin/restart/status
 ## 延伸文档
 
 - [codex-app-server-protocol.md](codex-app-server-protocol.md)
+- [epoch-context-coverage.md](epoch-context-coverage.md)
+- [http-api.md](http-api.md)
+- [documentation-coverage.md](documentation-coverage.md)
+- [model-provider.md](model-provider.md)
 - [agent-profile.md](agent-profile.md)
 - [topics.md](topics.md)
 - [agent-platform-integration.md](agent-platform-integration.md)

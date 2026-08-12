@@ -1,7 +1,10 @@
 # codex app-server 协议实测笔记
 
 基础枚举实测环境：`codex-cli 0.142.5`（darwin/arm64，2026-07-05）。
-`thread/inject_items` 另在 `codex-cli 0.144.1`（2026-07-10）完成实战验证。
+当前实战锚点：`codex-cli 0.144.1`（2026-07-10）完成 `thread/inject_items`、
+`thread/unarchive`、Goal 与共享 Host 恢复验证；上游源码核对锚点为
+`origin/main 775fb21d2af9b9936618fe22dd62e6f0cb3ba4a3`（2026-07-31）。
+升级 Codex 客户端时，应先按本机 `codex --version` 重新探测方法表和错误形状，再更新本文档。
 本文是 CodexLoom 的协议依据，来源：
 
 1. 本机对 `codex app-server` 的直接 JSON-RPC 探测(方法表、错误形状为实测)。
@@ -35,21 +38,9 @@
 
 ## 共享 CodexHost
 
-CodexLoom 只 spawn 一个共享 app-server。Agent runtime 保存 `agentId -> threadId`、
-`providerId + model` 绑定、active Turn 和审批 bookkeeping，不拥有独立进程。Remote 也通过同一个 app-server 的 `remoteControl/*` 能力
+CodexLoom 只 spawn 一个 app-server。Agent runtime 只保存 `agentId -> threadId`、active Turn 和
+审批 bookkeeping，不拥有独立进程。Remote 也通过同一个 app-server 的 `remoteControl/*` 能力
 接入，不再启动第二个 app-server。
-
-共享 app-server 只有一份 OpenAI 主认证，但 Codex TOML 可以同时声明多个 custom model
-provider。Loom 在 Agent 第一次 `thread/start` 和每次冷 `thread/resume` 时显式传入同一
-`modelProvider` 与 `model`。Provider 是 primary Thread 绑定，不是 Turn 级路由。已有 Agent
-可通过受管 Provider switch 在全局空闲门禁后重启共享 Host，并用新 binding cold-resume 同一个
-primary Thread；认证或请求失败不会自动回退到默认 OpenAI Provider。
-
-共享 Host 还通过进程参数 `-c model_catalog_json=<managed snapshot>` 加载一份完整静态目录。
-Codex 对该字段采用全量替换而不是增量合并，因此受管目录保留目标 Codex 版本的完整 OpenAI
-条目，并追加已验收的 DeepSeek Flash 条目。目录只在 app-server 启动时读取，不依赖 config
-热刷新，也不写用户 `~/.codex/models.json`。环境变量 `CODEX_LOOM_MODEL_CATALOG` 可为隔离验收
-提供显式完整目录覆盖；它仍必须是完整 catalog，并需要重启 Host 生效。
 
 app-server 为每个初始化 transport connection 维护独立 connection state。Thread 被 start/load
 后会把 listener 附着到当前 initialized connections；Remote client 的 Turn 因此也会出现在 Loom
@@ -66,8 +57,8 @@ CodexLoom 用到的核心子集：
 | 方法 | 用途 | 关键参数 / 返回 |
 |---|---|---|
 | `initialize` | 握手 | 见上 |
-| `thread/start` | 新建线程 | `{cwd, sandbox, modelProvider?, model?}` → `{thread:{id}}` |
-| `thread/resume` | 恢复线程(跨进程续上下文) | `{threadId, sandbox, cwd, modelProvider?, model?}`;线程 rollout 不存在时报错含 `no rollout` / `not found` → 回退 `thread/start` |
+| `thread/start` | 新建线程 | `{cwd, sandbox}` → `{thread:{id}}` |
+| `thread/resume` | 恢复线程(跨进程续上下文) | `{threadId, sandbox, cwd}`;线程 rollout 不存在时报错含 `no rollout` / `not found` → 回退 `thread/start` |
 | `thread/read` | 读元数据或历史(**运行中也安全**) | `{threadId, includeTurns:false}` 回填 adoption 元数据；`true` 返回 turns/items |
 | `thread/goal/get` | 读取 Thread 当前原生 Goal | `{threadId}` → `{goal: ThreadGoal|null}` |
 | `thread/goal/set` | 创建或更新 Goal | `{threadId, objective?, status?, tokenBudget?}` → `{goal}`；省略字段表示保持，`tokenBudget:null` 表示清除预算 |
@@ -86,26 +77,6 @@ CodexLoom 用到的核心子集：
 `command/exec*`、`review/start`、`skills/list`、`mcpServer/*`、`config/*` 等。
 
 错误形状:`{"code":-32600,"message":"Invalid request: missing field `threadId`"}`。
-
-## Model Provider 配置
-
-Provider 定义与 credential 的唯一事实源是当前 `CODEX_HOME` 的 active user TOML。Loom 通过
-`config/read {includeLayers:true}` 取得有效定义、user layer path 与 version，再用带
-`expectedVersion` 的 `config/batchWrite` 做受控更新；不另建 credential 表或 Keychain 副本。
-
-`config/read` 可能原样返回 TOML 中的 literal bearer token 或静态 Authorization header。
-因此 Hub 只向 UI/CLI 返回白名单投影（配置状态、credential 来源、模型和绑定数量），不会把
-原始 config response 写入 Loom store、事件或 API。Provider 写入和在线验证只允许 localhost，
-除非显式配置 `CODEX_LOOM_ADMIN_TOKEN`。
-
-在线验证会启动一个临时 Codex app-server 和 read-only Thread，执行一次最小文本 Turn 后归档
-该 Thread。验证成功只证明配置可解析、credential 被 Provider 接受且该最小请求完成，不证明
-模型能力、工具行为或业务结果正确。`reloadUserConfig` 不会改变已加载 Thread 的 Provider，
-所以 Provider 变更只供新 Thread 或之后的 cold resume 使用。
-
-模型能力与 Provider credential 是两层事实：Provider TOML 回答请求发往哪里、怎样认证；受管
-catalog 回答 model slug、context window、reasoning effort、输入模态与工具相关 metadata。
-Settings 和 Agent 配置只读取 catalog 的白名单投影，不提供 raw JSON 编辑或 secret 入口。
 
 ## 原生 Thread Goal
 
@@ -182,6 +153,9 @@ CodexLoom 用它注入 Agent Profile：
 - hub 以 context epoch ledger 记录 source revision、完整 delivery SHA、replayable rollout 与同 Turn
   model event。只有双证据成立才标记 covered；compact 后的新 epoch 会在下一 Turn 重新注入。
 - 同一 runtime 的 ready、注入和 turn reservation 必须串行，防止并发派任务重复注入。
+
+CodexLoom 对 source revision、Developer/Input 分层、coverage ledger、compaction 恢复与
+生产验收的完整定义见 [Epoch Context Coverage](epoch-context-coverage.md)。
 
 ## 通知流(turn 生命周期,item/* 是 source of truth)
 

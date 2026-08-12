@@ -26,6 +26,15 @@ const collaborationEdges: TeamGraphLayoutEdge[] = [
   { id: "parall-pinix", source: "parall-dev-lead", target: "pinix-lead" },
 ];
 
+const activityEdges: TeamGraphLayoutEdge[] = [
+  { id: "coach-product", source: "loom-coach", target: "loom-product" },
+  { id: "product-web", source: "loom-product", target: "cici-web" },
+  { id: "product-visual", source: "loom-product", target: "cici-visual" },
+  { id: "web-visual", source: "cici-web", target: "cici-visual" },
+  { id: "web-seo", source: "cici-web", target: "cici-seo" },
+  { id: "web-community", source: "cici-web", target: "cici-community" },
+];
+
 describe("team graph clustered layout", () => {
   it("builds separate organization islands with parents left of their children", async () => {
     const nodeIds = [...new Set(organizationEdges.flatMap((edge) => [edge.source, edge.target]))];
@@ -55,6 +64,16 @@ describe("team graph clustered layout", () => {
     const first = await layoutTeamGraph(nodeIds, collaborationEdges, "collaboration");
     const second = await layoutTeamGraph(nodeIds, collaborationEdges, "collaboration");
     expect(second).toEqual(first);
+  });
+
+  it("automatically arranges the observed activity network without treating it as a hierarchy", async () => {
+    const nodeIds = [...new Set(activityEdges.flatMap((edge) => [edge.source, edge.target]))];
+    const layout = await layoutTeamGraph(nodeIds, activityEdges, "activity");
+
+    expect(layout.components).toHaveLength(1);
+    expectNoNodeOverlap(layout.positions);
+    expect(layout.width).toBeGreaterThan(TEAM_GRAPH_NODE_WIDTH);
+    expect(layout.height).toBeGreaterThan(TEAM_GRAPH_NODE_HEIGHT);
   });
 });
 

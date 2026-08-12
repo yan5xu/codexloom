@@ -114,57 +114,9 @@ Agent 是稳定治理实体，Codex Thread 是它的主要上下文绑定。新�
 常用参数：
 
 - `--model`：使用的模型。
-- `--effort`：thinking effort。可选值由模型目录声明；当前总集为 `minimal` / `low` /
-  `medium` / `high` / `xhigh` / `max` / `ultra`，具体模型只接受其支持的子集。
+- `--effort`：thinking effort，可用 `minimal` / `low` / `medium` / `high` / `xhigh`。
 - `--sandbox`：沙箱策略，例如 `danger-full-access`。
 - `--approval`：审批策略，例如 `never` 或 `on-request`。
-
-## Model Provider
-
-Provider 定义和 credential 保存在当前 `CODEX_HOME` 的 Codex TOML；Loom 不维护第二份 Secret。
-先查看当前可用 Provider：
-
-```sh
-loom provider list
-loom provider get deepseek
-```
-
-DeepSeek Responses 预设可通过只在本机读取的 0600 临时文件写入 API key，或引用环境变量名：
-
-```sh
-loom provider set deepseek --api-key-file /path/to/key-file
-# 或
-loom provider set deepseek --env-key DEEPSEEK_API_KEY
-loom provider verify deepseek --model deepseek-v4-flash
-```
-
-CLI 不接受明文 `--api-key` 参数，也不回显 credential。Provider 写入和验证只允许 localhost，
-除非 Hub 显式配置了 Admin Token。验证只执行 read-only 最小文本请求，不证明工具或业务结果。
-
-创建绑定 DeepSeek 的新 Agent：
-
-```sh
-loom agent create deepseek-worker \
-  --cwd /path/to/project \
-  --provider deepseek \
-  --model deepseek-v4-flash
-```
-
-Provider 会绑定到新 Agent 的 primary Thread，并在 cold resume 时继续显式传入。已有 Agent 可在
-所有 Agent 空闲且没有 pending approval 或 active Goal 时显式切换：
-
-```sh
-loom agent provider deepseek-worker --provider openai --model gpt-5.6-sol
-```
-
-切换会短暂重启共享 CodexHost，并 cold-resume 同一个 primary Thread；失败时按持久 pending binding
-回滚，不会因请求失败自动切换 Provider。DeepSeek Responses 当前为 public beta 且只接受文本输入，
-Loom 会在 `turn/start` 前拒绝图片或文件 Artifact。
-
-共享 CodexHost 启动时加载 CodexLoom 受管的 OpenAI + DeepSeek 完整模型目录。它不会写入用户的
-`~/.codex/models.json`，也不会修改 TOML 中的全局默认模型或认证。目录是进程级、启动时加载；
-`loom doctor` 和 Settings → Model Providers 会显示目录版本、Codex 基线与兼容状态。当前目录以
-Codex `0.144.1` 为验证基线；升级 Codex 后必须重新生成和验收，不能把静态目录视为自动更新。
 
 创建出来的 agent 立刻可以收普通任务：
 
@@ -330,6 +282,53 @@ Message / Inbox / Trigger / Schedule / Needs You 来源，以及 rollout 中记�
 它是只读查询，不会恢复、重试或中断 Turn。电脑或 Loom 重启后，可先用该命令核对
 原 Turn 是否为 `interrupted`，再决定是否从对应 Agent 或 Inbox 显式继续。
 
+## Compaction：主动压缩长 Thread
+
+长期 Agent 的 Thread 可能积累很多历史，尤其是 DeepSeek 等长上下文模型会继续写入
+reasoning 和工具轨迹。CodexLoom 支持显式请求 Codex 压缩一个 Agent 的 primary Thread：
+
+```sh
+./bin/loom compact cici-research
+./bin/loom thread compact cici-research
+```
+
+- 仅允许 Agent 空闲、无 active Turn、无 pending approval、无 active Goal 时执行。
+- 命令调用 Codex `thread/compact/start`，Codex 异步完成压缩；请求成功只表示已开始。
+- compaction 会开启新的 context epoch；下一 Turn 启动时，Loom 会重新注入当前
+  Agent Prompt、Profile 和 Relationships，避免压缩摘要吞掉 durable context。
+- 长历史压缩可能耗时，不应与运行中的 Turn 并行触发。
+
+## Model Provider 与模型目录
+
+`provider` 管理共享 CodexHost 可用的 custom model provider，`agent provider` 切换
+某个 Agent 的 primary Thread 绑定：
+
+```sh
+./bin/loom provider list
+./bin/loom provider get deepseek
+./bin/loom provider set deepseek \
+  --base-url https://api.deepseek.com \
+  --wire-api responses \
+  --api-key-file /absolute/path/to/deepseek.key
+./bin/loom provider set deepseek --env-key DEEPSEEK_API_KEY
+./bin/loom provider verify deepseek --model deepseek-v4-flash
+./bin/loom provider disable deepseek
+
+./bin/loom agent provider cici-research \
+  --provider deepseek \
+  --model deepseek-v4-flash
+```
+
+- API key 不写入配置明文，使用 Keychain 或 `env:` 引用；`--api-key-file` 只允许
+  loopback/HTTPS。
+- `openai` 是内置 Provider，不能 disable 或通过 upsert 修改。
+- Agent Provider 切换会冷恢复同一个 primary Thread，并在所有 Agent 空闲、无
+  approval、无 active Goal 时重启共享 Host；失败会回滚旧 binding，不回退到
+  OpenAI。
+- 模型目录是完整静态替换，只在 app-server 启动时加载；运行中改 JSON 不生效。
+
+完整语义见 [model-provider.md](model-provider.md)。
+
 ## Goal：跨多个 Turn 的当前成果
 
 Goal 是 Codex Thread 的原生长期工作状态。它与 Agent、Profile、Turn 的关系是：
@@ -398,6 +397,72 @@ Human Request 阻塞的是 `--blocks` 指明的工作流，不是整个长期 Ag
 `backups` 会显示当前压缩快照、总占用和保留策略；`backups prune` 立即按安装策略删除过期快照，
 但始终保留配置的恢复底线。默认至少保留最新 2 份，并同时限制为最多 5 份、总计 2 GiB、最长
 30 天；SSE event cache 是可重建数据，不进入快照。
+
+## Profile、Context 与诊断命令
+
+Profile 是 Agent 的长期 Identity / Domain / Scope。CLI 直接读写规范
+`/api/agents/{key}/profile`：
+
+```sh
+./bin/loom profile get cici-research
+./bin/loom profile set cici-research \
+  --identity "长期负责 CodexLoom 产品实现" \
+  --domain "CodexLoom 产品工程" \
+  --scope "产品模型、实现、迁移与验收"
+./bin/loom profile set cici-research --file profile.json
+./bin/loom profile clear cici-research
+```
+
+`set` 未显式提供的字段沿用当前 Profile；`clear` 将三个字段清空。完整语义见
+[agent-profile.md](agent-profile.md)。
+
+Context 命令用于检查 Loom 注入到 Agent 的 developer/input 分层与 epoch coverage：
+
+```sh
+./bin/loom context prompt get
+./bin/loom context prompt set "新的 Loom Agent Prompt" --expected-version 3
+./bin/loom context prompt set --file /absolute/path/prompt.md --expected-version 3
+./bin/loom context prompt clear --expected-version 3
+./bin/loom context explain cici-research
+./bin/loom context explain cici-research --json
+./bin/loom context coverage cici-research
+```
+
+`context prompt` 是全局 Loom 注入文本，不是某个 Agent Profile；`expectedVersion` 用于并发
+保护。`context explain` / `coverage` 是只读诊断，不修改任何持久化状态。权威分层与 coverage
+状态机见 [epoch-context-coverage.md](epoch-context-coverage.md)。
+
+版本与健康检查：
+
+```sh
+./bin/loom version
+./bin/loom version --running
+./bin/loom doctor
+```
+
+`version` 默认显示本地 CLI build；`--running` 读取运行中服务的 `/api/version`。
+`doctor` 同时读取 `/api/version` 与 `/api/health`，并在 CLI 与服务 commit 不一致时提示
+`restart required`。
+
+隔离验证使用 canary：
+
+```sh
+./bin/loom dev canary start [--agent NAME ...] [--port auto|N] [--from DATA_DIR]
+./bin/loom dev canary status
+./bin/loom dev canary stop
+```
+
+`dev canary start` 会把源数据目录快照到独立 data dir，启动一个隔离服务实例，并返回
+`http://127.0.0.1:<port>`。它不会改写生产数据目录；`--agent` 只筛选快照中的 Agent。
+
+审批命令直接投递到 Codex 当前 Turn：
+
+```sh
+./bin/loom approve cici-research approval_id
+./bin/loom reject cici-research approval_id
+```
+
+审批路径应优先通过 WebUI / Agent 工作流触发；CLI 形式适合脚本化验收或人工确认流程。
 
 ## Agent 通信总原则
 
@@ -610,6 +675,40 @@ ID 可以写成裸 ID 或 `prll://` reference；输出为 Parall 原生 JSON。�
 ./bin/loom integration disable <connection-id-or-address-id>
 ./bin/loom integration enable <connection-id-or-address-id>
 ```
+
+单个 Address 的生命周期和跨 Agent 迁移必须使用受管命令。所有写操作都会先执行同一份
+preflight；`--dry-run` 只显示结果，实际执行必须提供刚读取到的 version 和精确确认值。CLI 在未显式
+提供 `--expected-version` 时，会使用本次 preflight 返回的 version：
+
+```sh
+# 可逆归档；Address 继续保留 canonical identity。
+loom integration archive addr_xxx --dry-run
+loom integration archive addr_xxx --confirm addr_xxx
+loom integration restore addr_xxx --dry-run
+loom integration restore addr_xxx --confirm addr_xxx
+
+# 不可逆 tombstone delete；保留历史 AddressID，但释放 canonical identity。
+loom integration delete-address addr_xxx --dry-run
+loom integration delete-address addr_xxx --confirm addr_xxx
+
+# 原子变更同一个 Address 的 Agent 所有者；Connection、cursor、AddressID 和 Membership ID 不变。
+loom integration transfer addr_xxx --to-agent target-agent --dry-run
+loom integration transfer addr_xxx --to-agent target-agent --confirm addr_xxx
+
+# 只有目标侧尚未产生新 Inbox/Outbox/provider activity 且 Address/Membership 未变化时才允许回滚。
+loom integration rollback-transfer aop_xxx --dry-run
+loom integration rollback-transfer aop_xxx --confirm aop_xxx
+
+loom integration operations [addr_xxx]
+loom integration operation aop_xxx
+```
+
+preflight 会阻止 queued/handling/deferred/pending-access/awaiting-delivery/failed Inbox、pending/sending
+Outbox 和 pending/running provider operation。`failed` Inbox 必须先明确 retry 或 no-reply；历史 failed
+Outbox 保留可读，但 Address 删除或迁移到其他 Agent 后不能重新 retry。Transfer 的切换点是
+integrations.json 的单次原子提交：提交前 ingress
+属于旧 Agent，提交后属于新 Agent，不存在两个 Address 同时 dispatch。Transfer 保留 Connection cursor，
+但 disabled 期间 Provider 是否重放消息仍取决于 Connector，本操作不声称主动补拉。
 
 `integration import parall` 会先验证 Agent key 与 `--external-agent-id` 是否匹配，并确认 WebSocket ticket
 可用；随后把 key 写入系统 Keychain、创建或复用 Connection/Address，并安装 managed Gateway。它不要求

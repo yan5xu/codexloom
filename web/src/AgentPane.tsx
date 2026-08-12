@@ -1,5 +1,6 @@
-import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight, CircleHelp, FileText, GitBranch, Inbox, Loader2, MessageSquare, Network, Paperclip, Pause, Pencil, Play, Plus, RadioTower, RefreshCw, RotateCcw, Send, SkipForward, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight, CircleHelp, Copy, FileText, GitBranch, Inbox, Loader2, MessageSquare, Network, Paperclip, Pause, Pencil, Play, Plus, RadioTower, RefreshCw, RotateCcw, Send, SkipForward, Square, Target, Trash2, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type ModelProvider, type PlatformConnection, type Schedule, type TeamView, type ThreadGoal, type Trigger } from "./types";
@@ -108,7 +109,7 @@ export function AgentPane({
   const [heldActionID, setHeldActionID] = useState("");
   const [interruptedAction, setInterruptedAction] = useState<"continue" | "dismiss" | "">("");
   const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
-  const [sendKind, setSendKind] = useState<"task" | "answer">("task");
+  const [sendKind, setSendKind] = useState<"task" | "answer" | "compact">("task");
   const [configOpen, setConfigOpen] = useState(false);
   const [configSection, setConfigSection] = useState<"profile" | "team" | "external" | "triggers" | "runtime" | "usage">("profile");
   const [nameDraft, setNameDraft] = useState(agent.name);
@@ -120,6 +121,7 @@ export function AgentPane({
   const [sandboxDraft, setSandboxDraft] = useState(agent.sandbox || "danger-full-access");
   const [approvalDraft, setApprovalDraft] = useState(agent.approvalPolicy || "never");
   const [savingConfig, setSavingConfig] = useState(false);
+  const [cwdCopyStatus, setCwdCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [identityDraft, setIdentityDraft] = useState("");
   const [domainDraft, setDomainDraft] = useState("");
@@ -155,7 +157,10 @@ export function AgentPane({
   const threadStateRef = useRef<Record<string, unknown>>({});
   const sendingRef = useRef(false);
   const sendStatusTimerRef = useRef<number | null>(null);
+  const cwdCopyTimerRef = useRef<number | null>(null);
+  const cwdCopyTargetRef = useRef("");
   const attachmentsRef = useRef<PendingArtifact[]>([]);
+  cwdCopyTargetRef.current = `${agent.id}\u0000${agent.cwd}`;
   const feedRows = useMemo<FeedRow[]>(() => [
     ...Object.entries(feed.approvals).map(([id, approval]) => ({
       key: `approval:${id}`,
@@ -171,6 +176,9 @@ export function AgentPane({
   ], [feed.approvals, feed.blocks]);
   const feedVirtualizer = useVirtualizer({
     enabled: active,
+    // Disabled hidden tabs lose virtual-core's internal offset. Seed the
+    // re-enabled range from this pane before the browser is scrolled again.
+    initialOffset: () => savedScrollTopRef.current,
     count: feedRows.length,
     getScrollElement: () => feedRef.current,
     getItemKey: (index) => feedRows[index]?.key || index,
@@ -210,11 +218,12 @@ export function AgentPane({
   });
   useEffect(() => {
     if (!active) return;
+    // Virtualizer.measure() clears every cached row size. Existing tall rows
+    // may not emit a new ResizeObserver entry, so clearing here makes later
+    // rows overlap them at the estimate. Remounted refs perform real sizing.
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
-      feedVirtualizer.measure();
       secondFrame = window.requestAnimationFrame(() => {
-        feedVirtualizer.measure();
         const el = feedRef.current;
         if (!el) return;
         el.dispatchEvent(new Event("scroll"));
@@ -227,7 +236,7 @@ export function AgentPane({
       window.cancelAnimationFrame(firstFrame);
       if (secondFrame) window.cancelAnimationFrame(secondFrame);
     };
-  }, [active, agent.id, feedRows.length]);
+  }, [active, agent.id]);
   const measureFeedRow = useCallback((node: HTMLDivElement | null) => {
     feedVirtualizer.measureElement(node);
     if (!node) return;
@@ -246,6 +255,7 @@ export function AgentPane({
 
   useEffect(() => () => {
     if (sendStatusTimerRef.current !== null) window.clearTimeout(sendStatusTimerRef.current);
+    if (cwdCopyTimerRef.current !== null) window.clearTimeout(cwdCopyTimerRef.current);
     if (scrollAnchorTimerRef.current !== null) window.clearTimeout(scrollAnchorTimerRef.current);
     if (virtualPinTimerRef.current !== null) window.clearTimeout(virtualPinTimerRef.current);
     if (initialBottomSettleTimerRef.current !== null) window.clearTimeout(initialBottomSettleTimerRef.current);
@@ -274,6 +284,14 @@ export function AgentPane({
     setSandboxDraft(agent.sandbox || "danger-full-access");
     setApprovalDraft(agent.approvalPolicy || "never");
   }, [agent.id, agent.name, agent.displayName, agent.providerId, agent.model, agent.effort, agent.sandbox, agent.approvalPolicy]);
+
+  useEffect(() => {
+    if (cwdCopyTimerRef.current !== null) {
+      window.clearTimeout(cwdCopyTimerRef.current);
+      cwdCopyTimerRef.current = null;
+    }
+    setCwdCopyStatus("idle");
+  }, [agent.id, agent.cwd]);
 
   useEffect(() => {
     if (!active || !configRequestNonce) return;
@@ -620,15 +638,22 @@ export function AgentPane({
       onError("Attachments cannot be added while answering a Needs You request");
       return;
     }
+    const isCompact = !request && text === "/compact";
+    if (isCompact && draftAttachments.length > 0) {
+      onError("/compact does not accept attachments");
+      return;
+    }
     sendingRef.current = true;
     setSending(true);
     setSendingAttachmentCount(draftAttachments.length);
-    setSendKind(request ? "answer" : "task");
+    setSendKind(request ? "answer" : isCompact ? "compact" : "task");
     setSendStatus("sending");
     setInput("");
     setAttachments([]);
     try {
-      if (request) {
+      if (isCompact) {
+        await api("POST", `/api/agents/${agent.id}/compact`, {});
+      } else if (request) {
         await api("POST", `/api/human-requests/${encodeURIComponent(request.id)}/answer`, { answer: text });
         setAnsweringRequest(null);
         await onHumanRequestChanged();
@@ -737,6 +762,18 @@ export function AgentPane({
     } catch (err: any) {
       onError(err.message);
     }
+  };
+
+  const copyWorkingDirectory = async () => {
+    const target = cwdCopyTargetRef.current;
+    const copied = await copyText(agent.cwd);
+    if (cwdCopyTargetRef.current !== target) return;
+    if (cwdCopyTimerRef.current !== null) window.clearTimeout(cwdCopyTimerRef.current);
+    setCwdCopyStatus(copied ? "copied" : "failed");
+    cwdCopyTimerRef.current = window.setTimeout(() => {
+      cwdCopyTimerRef.current = null;
+      setCwdCopyStatus("idle");
+    }, 1500);
   };
 
   const saveConfig = async () => {
@@ -906,6 +943,12 @@ export function AgentPane({
   const reasoningEfforts = selectedModelDetail?.reasoningEfforts?.length ? selectedModelDetail.reasoningEfforts : FALLBACK_REASONING_EFFORTS;
   const modelPresetValue = modelCustomOpen || isCustomModel(modelDraft, providerDraft, selectableProviders) ? CUSTOM_MODEL_VALUE : modelDraft;
   const providerChanged = providerDraft !== (agent.providerId || "openai");
+  const cwdCopyLabel = cwdCopyStatus === "copied" ? "Copied" : cwdCopyStatus === "failed" ? "Copy failed" : "Copy";
+  const cwdCopyAriaLabel = cwdCopyStatus === "copied"
+    ? "Copied working directory"
+    : cwdCopyStatus === "failed"
+      ? "Copy working directory failed"
+      : "Copy working directory";
   const profileDirty = Boolean(
     profile &&
       (identityDraft.trim() !== (profile.identity || "") ||
@@ -1024,6 +1067,36 @@ export function AgentPane({
                       className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
                     />
                   </label>
+                  <div className="mb-2">
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Working directory</span>
+                    <div className="flex min-w-0 items-start gap-2 rounded-md bg-background px-2.5 py-2 ring-1 ring-border">
+                      <code
+                        data-testid="agent-working-directory"
+                        className="min-w-0 flex-1 select-text whitespace-pre-wrap break-all font-mono text-[12px] leading-5 text-foreground"
+                        title={agent.cwd}
+                      >
+                        {agent.cwd}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={copyWorkingDirectory}
+                        aria-label={cwdCopyAriaLabel}
+                        title={cwdCopyAriaLabel}
+                        className={cn(
+                          "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[10px] font-medium transition-colors",
+                          cwdCopyStatus === "copied"
+                            ? "bg-success/10 text-success"
+                            : cwdCopyStatus === "failed"
+                              ? "bg-destructive/10 text-destructive"
+                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                        )}
+                      >
+                        {cwdCopyStatus === "copied" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                        <span aria-live="polite">{cwdCopyLabel}</span>
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[10px] leading-4 text-muted-foreground">Codex reads project context such as AGENTS.md from this long-lived directory. Read only.</div>
+                  </div>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Provider</span>
                     <select
@@ -1387,8 +1460,8 @@ export function AgentPane({
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={sending || !!answeringRequest || attachments.length >= MAX_TURN_ARTIFACTS} className="flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35" aria-label="Attach files" title={answeringRequest ? "Attachments are unavailable while answering a request" : "Attach files or images"}><Paperclip className="size-4" /></button>
                 {!answeringRequest ? <button type="button" onClick={onTrackTopic} disabled={sending} className="flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label="Track this work as a Topic" title="Track this work as a Topic"><GitBranch className="size-4" /></button> : null}
                 <div className="min-w-0 truncate font-mono text-[10px] text-muted-foreground" aria-live="polite">
-                {sendStatus === "sending" && <span className="inline-flex items-center gap-1.5"><Loader2 className="size-3 animate-spin" />{sendKind === "answer" ? "Submitting answer" : sendingAttachmentCount > 0 ? `Uploading ${sendingAttachmentCount} attachment${sendingAttachmentCount === 1 ? "" : "s"}` : "Sending to thread"}</span>}
-                {sendStatus === "sent" && <span className="inline-flex items-center gap-1.5 text-success"><Check className="size-3" />{sendKind === "answer" ? "Answer queued" : "Sent to thread"}</span>}
+                {sendStatus === "sending" && <span className="inline-flex items-center gap-1.5"><Loader2 className="size-3 animate-spin" />{sendKind === "answer" ? "Submitting answer" : sendKind === "compact" ? "Compacting context" : sendingAttachmentCount > 0 ? `Uploading ${sendingAttachmentCount} attachment${sendingAttachmentCount === 1 ? "" : "s"}` : "Sending to thread"}</span>}
+                {sendStatus === "sent" && <span className="inline-flex items-center gap-1.5 text-success"><Check className="size-3" />{sendKind === "answer" ? "Answer queued" : sendKind === "compact" ? "Compaction started" : "Sent to thread"}</span>}
                 {sendStatus === "failed" && <span className="text-destructive">Send failed · draft restored</span>}
                 {sendStatus === "idle" && <span className="hidden sm:inline">Enter to send · Shift+Enter for new line</span>}
                 </div>

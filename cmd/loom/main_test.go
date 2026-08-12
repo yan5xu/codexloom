@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -157,6 +158,43 @@ func TestTypedIntegrationFlags(t *testing.T) {
 	}
 	if err := addIntFlag(map[string]any{}, map[string]string{"expected-version": "-1"}, "expected-version", "expectedVersion"); err == nil {
 		t.Fatal("negative version was accepted")
+	}
+}
+
+func TestFormatAddressLifecyclePreflightShowsOwnershipAndBlockers(t *testing.T) {
+	useColor = false
+	preflight := map[string]any{
+		"action": "transfer", "addressId": "addr_1", "currentVersion": 4.0,
+		"fromAgentId": "agent-a", "toAgentId": "agent-b", "allowed": false,
+		"membershipCount": 2.0, "enabledMembershipCount": 1.0,
+		"blockers": []any{map[string]any{"kind": "outbox", "id": "out_1", "message": "Outbox delivery is still active"}},
+		"warnings": []any{"address is disabled"}, "catchUp": "cursor is preserved",
+	}
+	got := formatAddressLifecyclePreflight(preflight)
+	for _, fragment := range []string{"transfer addr_1", "blocked", "v4", "agent-a -> agent-b", "2 total, 1 enabled", "outbox out_1", "address is disabled", "cursor is preserved"} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("preflight output missing %q: %s", fragment, got)
+		}
+	}
+}
+
+func TestFormatAddressLifecycleOperationShowsDurableReceipt(t *testing.T) {
+	useColor = false
+	got := formatAddressLifecycleOperation(map[string]any{
+		"id": "aop_1", "action": "rollback_transfer", "addressId": "addr_1",
+		"fromAgentId": "agent-b", "toAgentId": "agent-a", "sourceOperationId": "aop_transfer",
+		"addressVersionBefore": 2.0, "addressVersionAfter": 3.0,
+	})
+	for _, fragment := range []string{"completed aop_1", "rollback_transfer", "address=addr_1", "v2->v3", "agent-b -> agent-a", "source: aop_transfer"} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("operation output missing %q: %s", fragment, got)
+		}
+	}
+}
+
+func TestLifecycleDryRunFlagIsExplicit(t *testing.T) {
+	if !lifecycleDryRun(map[string]string{"dry-run": "true"}) || lifecycleDryRun(map[string]string{}) || lifecycleDryRun(map[string]string{"dry-run": "false"}) {
+		t.Fatal("dry-run flag parsing is not explicit")
 	}
 }
 
@@ -416,4 +454,55 @@ func TestParseArgsPreservesRepeatedFiles(t *testing.T) {
 	if got := a.flagValues["file"]; len(got) != 2 || got[0] != "one.png" || got[1] != "two.pdf" {
 		t.Fatalf("file flags = %#v", got)
 	}
+}
+
+func TestCmdSkillsWithoutPositionalDefaultsToStatus(t *testing.T) {
+	output := captureStdout(t, func() {
+		cmdSkills(args{
+			flags:      map[string]string{"root": t.TempDir()},
+			flagValues: map[string][]string{},
+		})
+	})
+	if strings.TrimSpace(output) == "" {
+		t.Fatal("loom skills produced no status output")
+	}
+}
+
+func TestCmdSkillsHelpReturnsWithoutInspecting(t *testing.T) {
+	for _, input := range []args{
+		{flags: map[string]string{"help": "true"}, flagValues: map[string][]string{}},
+		{positional: []string{"help"}, flags: map[string]string{}, flagValues: map[string][]string{}},
+		{positional: []string{"-h"}, flags: map[string]string{}, flagValues: map[string][]string{}},
+	} {
+		output := captureStdout(t, func() { cmdSkills(input) })
+		if !strings.Contains(output, "usage: loom skills") || !strings.Contains(output, "With no subcommand") {
+			t.Fatalf("skills help output = %q", output)
+		}
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdout
+	os.Stdout = write
+	defer func() {
+		os.Stdout = previous
+		_ = read.Close()
+		_ = write.Close()
+	}()
+
+	fn()
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = previous
+	output, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(output)
 }

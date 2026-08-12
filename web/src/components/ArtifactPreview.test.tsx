@@ -66,6 +66,25 @@ describe("PublishedArtifactCard", () => {
     expect(screen.getByText(/# Preview title/)).toBeInTheDocument();
   });
 
+  it("keeps file-based preview classification when a context label is displayed", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("# Labeled Markdown", {
+      status: 200,
+      headers: { "content-type": "text/plain", "content-length": "18" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <PublishedArtifactCard
+        artifact={{ id: "art_labeled", name: "guide.md", mimeType: "text/plain", size: 18, url: "/api/agents/a/artifacts/art_labeled" }}
+        displayName="Product guide"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview Product guide" }));
+    expect(await screen.findByText("Labeled Markdown")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Markdown preview mode" })).toBeInTheDocument();
+  });
+
   it("keeps unsupported artifacts as downloads", () => {
     render(
       <PublishedArtifactCard

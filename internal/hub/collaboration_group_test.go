@@ -78,6 +78,7 @@ func TestCollaborationGroupLifecyclePreservesPairwiseRelationships(t *testing.T)
 		t.Fatal(err)
 	}
 
+	h.Shutdown()
 	reloaded := New(st)
 	defer reloaded.Shutdown()
 	persisted, err := reloaded.GetCollaborationGroup(archived.ID)
@@ -221,7 +222,12 @@ func TestCollaborationGroupLoadResolvesOrganizationOnlyMember(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+	ro, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	h, err := OpenWithOptions(ro, OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatalf("open with organization-backed collaboration group: %v", err)
 	}

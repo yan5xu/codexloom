@@ -40,12 +40,13 @@ func main() {
 	canary := flag.Bool("canary", false, "run a passive, read-only development canary")
 	flag.Parse()
 
-	st, err := store.Open(*dataDir)
+	st, err := store.OpenWithOptions(*dataDir, store.OpenOptions{ReadOnly: *canary})
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
 	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: *canary})
 	if err != nil {
+		_ = st.Close()
 		log.Fatalf("open Hub state: %v", err)
 	}
 	var startup sync.WaitGroup
@@ -94,6 +95,9 @@ func main() {
 		_ = httpServer.Close() // Close long-lived SSE streams after the request grace window.
 		startup.Wait()
 		h.Shutdown()
+		if err := st.Close(); err != nil {
+			log.Printf("[codex-loom] close Store: %v", err)
+		}
 	}()
 
 	log.Printf("[codex-loom] listening on http://localhost:%d (mode: %s, data: %s)", *port, mode, *dataDir)

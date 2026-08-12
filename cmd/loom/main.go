@@ -259,10 +259,10 @@ func main() {
 			}
 		} else if cmd == "thread" {
 			switch subcommand {
-			case "send", "watch", "history", "interrupt":
+			case "send", "watch", "history", "interrupt", "compact":
 				cmd = subcommand
 			default:
-				usage("thread send|watch|history|interrupt ...")
+				usage("thread send|watch|history|interrupt|compact ...")
 			}
 		} else {
 			switch subcommand {
@@ -296,6 +296,8 @@ func main() {
 		cmdMsg(a)
 	case "ask-user":
 		cmdAskUser(a)
+	case "lark-migrate":
+		cmdLarkMigrate(a)
 	case "inbox":
 		cmdInbox(a)
 	case "outbox":
@@ -332,6 +334,8 @@ func main() {
 		cmdWatch(a)
 	case "interrupt":
 		cmdInterrupt(a)
+	case "compact":
+		cmdCompact(a)
 	case "history":
 		cmdHistory(a)
 	case "turn-get":
@@ -367,7 +371,7 @@ func printHelp() {
 	help := fmt.Sprintf(`chub — CodexLoom CLI (service: %s)
 
   chub agent create|list|get|rename|provider|archive ...
-  chub thread send|watch|history|interrupt ...
+  chub thread send|watch|history|interrupt|compact ...
   chub turn get <turn-id> [--json]
 
 Compatibility shortcuts:
@@ -407,6 +411,11 @@ Compatibility shortcuts:
   chub integration bind <agent> <connection-id> --identity EXTERNAL_ID [--display-name NAME] [--trigger mention] [--reply-policy final_answer] [--dm-policy managed] [--trust-domain NAME] [--enabled true|false] [allow/block flags]
   chub integration update-address <address-id> [--identity ID] [--display-name NAME] [--trigger mention] [--reply-policy final_answer] [--dm-policy managed] [--trust-domain NAME] [--enabled true|false] [allow/block flags]
   chub integration enable|disable <connection-id|address-id>
+  loom integration archive|restore|delete-address <address-id> [--dry-run] [--expected-version N] [--confirm ADDRESS_ID]
+  loom integration transfer <address-id> --to-agent AGENT [--dry-run] [--expected-version N] [--confirm ADDRESS_ID]
+  loom integration rollback-transfer <operation-id> [--dry-run] [--expected-version N] [--confirm OPERATION_ID]
+  loom integration operations [address-id]
+  loom integration operation <operation-id>
   chub integration status [connection-id]
   loom prll chats list --address ADDRESS_ID [--limit N] [--cursor CURSOR]
   loom prll chats get CHAT_ID --address ADDRESS_ID
@@ -440,10 +449,12 @@ Compatibility shortcuts:
   chub goal <agent> [show]
   chub goal <agent> set <objective> [--token-budget N|--clear-token-budget]
   chub goal <agent> pause|resume|clear
+  chub compact <agent>
   chub skills list
   chub skills status [name]
   chub skills install [name] [--force]
   chub skills reload
+  chub skills agent <agent> [disable|enable <absolute SKILL.md path>]
   chub remote [status]
   chub remote enable
   chub remote disable

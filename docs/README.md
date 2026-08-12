@@ -22,7 +22,20 @@ The Owner Guide is the primary user journey. It explains when to use a Loom
 concept and how the concepts work together. The references below provide exact
 object, command, integration, and implementation detail.
 
+“Complete bilingual user documentation” on docs.codexloom.ai currently means
+40 Owner-facing logical pages paired one-to-one in `zh-CN` and `en` (80
+locale files). It does not mean that every technical document under this
+repository's `docs/` directory has been translated. The site covers the Owner
+task journey from installation, long-lived Agents, Teams, continuous work, and
+External through Operations, Troubleshooting, and Reference. This map continues
+to describe the higher-resolution implementation and operator references in
+the repository and their actual languages.
+
 ## Owner and Agent Reference
+
+Use each file's actual language. Most references are English-only, while a few,
+including the current `loom-cli.md`, are primarily Chinese. An English file
+name or link label does not establish the body language.
 
 | Document | Use it for | Notes |
 |---|---|---|
@@ -52,10 +65,16 @@ should be verified against the current build before publication.
 | Document | Role |
 |---|---|
 | [Development handbook](handbook.md) | Architecture, storage, APIs, migration, build, and operations |
+| [HTTP/SSE API reference](http-api.md) | Current REST and SSE route contract, grouped by domain |
+| [Documentation coverage matrix](documentation-coverage.md) | Code-area to owning-document audit and remaining gaps |
+| [Model Provider and catalog](model-provider.md) | Per-Agent Provider switching and static model catalog operations |
 | [Codex app-server protocol](codex-app-server-protocol.md) | Adapter and protocol observations |
+| [Epoch Context Coverage (Chinese)](epoch-context-coverage.md) | Developer/input layering, epoch ledger, compaction recovery, and production validation |
 | [Agent platform integration design](agent-platform-integration.md) | Connector architecture and design rationale |
 | [WebUI validation](webui-validation.md) | Browser and mobile verification practice |
+| [WebUI pane reference](webui-panes.md) | Page-level data sources, writes, SSE subscriptions, and key state |
 | [Technical debt audit](technical-debt-audit.md) | Engineering audit and remediation record |
+| [Operations checklist](operations.md) | Release, restart, rollback, backup, and restore drill |
 | [Markdown rendering fixture](markdown-rendering-fixture.md) | Renderer test content |
 | [chub compatibility](chub-communication.md) | Legacy compatibility notes |
 

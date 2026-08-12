@@ -183,12 +183,13 @@ func (h *Hub) applyGoalLocked(agentID string, goal *ThreadGoal, emit bool) {
 
 func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 	type target struct {
-		agentID  string
-		threadID string
-		sandbox  string
-		cwd      string
-		provider string
-		model    string
+		agentID            string
+		threadID           string
+		sandbox            string
+		cwd                string
+		provider           string
+		model              string
+		disabledSkillPaths []string
 	}
 	h.mu.Lock()
 	targets := make([]target, 0, len(h.agents))
@@ -197,7 +198,11 @@ func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 			continue
 		}
 		providerID, model := effectiveProviderBinding(agent)
-		targets = append(targets, target{agentID: agent.ID, threadID: agent.ThreadID, sandbox: agent.Sandbox, cwd: agent.Cwd, provider: providerID, model: model})
+		targets = append(targets, target{
+			agentID: agent.ID, threadID: agent.ThreadID, sandbox: agent.Sandbox, cwd: agent.Cwd,
+			provider: providerID, model: model,
+			disabledSkillPaths: h.disabledSkillPathsLocked(agent.ID),
+		})
 	}
 	h.mu.Unlock()
 
@@ -229,7 +234,7 @@ func (h *Hub) hydrateGoals(host *codexHostRuntime) {
 	// Resuming an active Goal hands continuation back to Codex. Paused,
 	// blocked, limited, and complete Goals remain visible without starting work.
 	for _, target := range active {
-		if err := resumeThread(host.client, target.threadID, target.sandbox, target.cwd, target.provider, target.model); err != nil {
+		if err := resumeThread(host.client, target.threadID, target.sandbox, target.cwd, target.provider, target.model, target.disabledSkillPaths); err != nil {
 			log.Printf("[codex-loom] resume active Goal for %s: %v", target.threadID, err)
 		}
 	}
@@ -395,8 +400,9 @@ func (h *Hub) resumeGoalThread(agentID string, generation uint64) {
 	}
 	threadID, sandbox, cwd := agent.ThreadID, agent.Sandbox, agent.Cwd
 	providerID, model := effectiveProviderBinding(agent)
+	disabledSkillPaths := h.disabledSkillPathsLocked(agent.ID)
 	h.mu.Unlock()
-	if err := resumeThread(host.client, threadID, sandbox, cwd, providerID, model); err != nil {
+	if err := resumeThread(host.client, threadID, sandbox, cwd, providerID, model, disabledSkillPaths); err != nil {
 		log.Printf("[codex-loom] resume Goal for %s: %v", threadID, err)
 	}
 }

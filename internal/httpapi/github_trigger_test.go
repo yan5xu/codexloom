@@ -50,7 +50,7 @@ func TestGitHubDeviceFlowRetriesConnectionWithGrantedToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestGitHubCredentialAndTriggerHTTPFlow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestGitHubTokenConnectionsMigrateLegacyAndSeparateResourceOwners(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}

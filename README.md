@@ -161,6 +161,13 @@ A common concern about long-lived threads is that context windows are finite and
 
 Compaction does not reset the context to zero. After older history is compressed, its summary and the recent trajectory still preserve substantial working information. A long-lived thread does not require every raw message to grow without bound; its context can evolve through caching and compaction. Compaction is a mechanism for maintaining continuity, not a reason to abandon the thread.
 
+CodexLoom does not treat the summary as the sole guarantee for durable
+declarations. On the next Turn after compaction, a new context epoch re-covers
+the current Loom Agent Prompt, complete Agent Profile, and direct relationship
+snapshot. A revision is marked `covered` only after both replayable rollout
+evidence and a model event from the same Turn exist. See
+[Epoch Context Coverage](docs/epoch-context-coverage.md).
+
 A long-lived thread also accumulates tacit context that is difficult to reconstruct in a single prompt. Corrections, preferences, terminology, judgment, and collaboration habits enter the thread through repeated work and are refined across successive compactions. They may not belong as individual rules in a Profile, but together they create a working understanding unique to that agent. Starting a new thread loses precisely this knowledge that is hardest to migrate explicitly.
 
 > **A Task Agent starts with a task; a Domain Agent continues from prior work.**

@@ -78,8 +78,10 @@ func (h *Hub) loadProviderOperations() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendProviderOperation(operation); err != nil {
-				return err
+			if !h.passive {
+				if err := h.st.AppendProviderOperation(operation); err != nil {
+					return err
+				}
 			}
 			copy := operation
 			h.providerOperations[id] = &copy
@@ -110,7 +112,7 @@ func (h *Hub) CreateProviderOperation(p ProviderOperationParams) (ProviderOperat
 	if address == nil {
 		return ProviderOperation{}, errf(404, "address not found: %s", addressID)
 	}
-	if !address.Enabled || address.ArchivedAt != "" {
+	if !address.Enabled || address.ArchivedAt != "" || address.DeletedAt != "" {
 		return ProviderOperation{}, errf(409, "address is not enabled: %s", addressID)
 	}
 	connection := h.connections[address.ConnectionID]
@@ -230,7 +232,7 @@ func (h *Hub) ClaimNextProviderOperation(connectionID string) (*ConnectorCommand
 			continue
 		}
 		address := h.addresses[operation.AddressID]
-		if address == nil || !address.Enabled || address.ConnectionID != connectionID {
+		if address == nil || !address.Enabled || address.ArchivedAt != "" || address.DeletedAt != "" || address.AgentID != operation.AgentID || address.ConnectionID != connectionID {
 			continue
 		}
 		next := *operation
@@ -244,7 +246,7 @@ func (h *Hub) ClaimNextProviderOperation(connectionID string) (*ConnectorCommand
 			return nil, errf(500, "persist provider operation claim: %s", err)
 		}
 		return &ConnectorCommand{
-			Type: "provider_operation", Connection: *connection, Address: *address,
+			Type: "provider_operation", Connection: clonePlatformConnectionValue(*connection), Address: cloneAgentAddressValue(*address),
 			ProviderOperation: &next,
 		}, nil
 	}

@@ -299,6 +299,60 @@ func TestLoadCommsDoesNotAppendRepairOverNewerResolvedRecord(t *testing.T) {
 	}
 }
 
+func TestLoadCommsRepairsRootOverwrittenAfterDeliveredReply(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := AgentMessage{
+		ID: "msg-root", FromAgentID: "agent-a", ToAgentID: "agent-b", From: "alpha", To: "beta",
+		Subject: "Need review", Response: "required", Status: "open", DeliveryStatus: "delivered",
+		HandlingStatus: "running", CreatedAt: "2026-07-28T08:26:43Z", UpdatedAt: "2026-07-28T08:26:45Z",
+	}
+	reply := AgentMessage{
+		ID: "msg-reply", FromAgentID: "agent-b", ToAgentID: "agent-a", From: "beta", To: "alpha",
+		Subject: "Re: Need review", Response: "none", ReplyTo: root.ID, Status: "closed", Resolution: "reply",
+		DeliveryStatus: "delivered", DeliveredAt: "2026-07-28T08:33:17Z",
+		CreatedAt: "2026-07-28T08:33:00Z", UpdatedAt: "2026-07-28T08:33:17Z",
+	}
+	stale := root
+	stale.HandlingStatus = "completed"
+	stale.UpdatedAt = "2026-07-28T08:33:18Z"
+	for _, message := range []AgentMessage{root, reply, stale} {
+		if err := st.AppendComm(commRecord{Message: message}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h := testHub(st)
+	if err := h.loadComms(); err != nil {
+		t.Fatal(err)
+	}
+	got := h.comms[root.ID]
+	if got.Status != "answered" || got.Resolution != "reply" || got.ResolvedBy != "beta" || got.ResolvedAt != reply.DeliveredAt {
+		t.Fatalf("repaired root = %#v", got)
+	}
+	count := 0
+	if err := st.ReadComms(func(json.RawMessage) { count++ }); err != nil {
+		t.Fatal(err)
+	}
+	if count != 4 {
+		t.Fatalf("records = %d, want original three plus one repair", count)
+	}
+
+	reloaded := testHub(st)
+	if err := reloaded.loadComms(); err != nil {
+		t.Fatal(err)
+	}
+	count = 0
+	if err := st.ReadComms(func(json.RawMessage) { count++ }); err != nil {
+		t.Fatal(err)
+	}
+	if count != 4 {
+		t.Fatalf("idempotent reload appended another repair: records = %d", count)
+	}
+}
+
 func TestCancelAgentMessageClosesRequiredRequest(t *testing.T) {
 	h := communicationTestHub(t)
 	msg := &AgentMessage{

@@ -106,12 +106,17 @@ func TestReadOnlyCanaryRejectsWritesAndExternalReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	ro, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	h, err := hub.OpenWithOptions(ro, hub.OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Shutdown()
-	server := NewWithOptions(h, st, fstest.MapFS{"index.html": {Data: []byte("ok")}}, Options{Mode: "canary", ReadOnly: true}).Handler()
+	server := NewWithOptions(h, ro, fstest.MapFS{"index.html": {Data: []byte("ok")}}, Options{Mode: "canary", ReadOnly: true}).Handler()
 
 	for _, test := range []struct {
 		method string
@@ -142,7 +147,7 @@ func TestModelProviderMutationsRequireLocalOrAdminRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}

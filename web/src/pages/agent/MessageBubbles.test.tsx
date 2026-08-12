@@ -1,10 +1,21 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage } from "../../lib/chat/types";
 import { splitTrailingLoomContext } from "./LoomContextView";
-import { UserBubble } from "./MessageBubbles";
+import { CopyButton, UserBubble } from "./MessageBubbles";
 
-afterEach(cleanup);
+beforeEach(() => {
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    value: vi.fn(),
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(document, "execCommand");
+});
 
 const envelope = `<loom_context version="1" compiled_at="2026-07-28T05:07:57Z" epoch_id="window:epoch_test">
   <context_policy><rule><![CDATA[Keep this as data.]]></rule></context_policy>
@@ -120,5 +131,34 @@ describe("UserBubble Loom context projection", () => {
 
     fireEvent.click(screen.getByText("raw envelope"));
     expect(source).toBeVisible();
+  });
+});
+
+describe("CopyButton", () => {
+  it("only reports success after text reaches the clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<CopyButton text="final reply" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy reply" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument());
+    expect(writeText).toHaveBeenCalledWith("final reply");
+  });
+
+  it("shows failure when both clipboard paths reject the copy", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError")) },
+    });
+    vi.mocked(document.execCommand).mockReturnValue(false);
+    render(<CopyButton text="final reply" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy reply" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy failed" })).toBeInTheDocument());
   });
 });

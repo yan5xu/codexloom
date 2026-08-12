@@ -73,7 +73,7 @@ func (h *Hub) SendExternal(p ExternalSendParams) (OutboxItem, error) {
 		return OutboxItem{}, errf(403, "conversation membership %s does not allow proactive sends", membershipID)
 	}
 	address := h.addresses[membership.AddressID]
-	if address == nil || !address.Enabled || address.AgentID != agent.ID {
+	if address == nil || !address.Enabled || address.ArchivedAt != "" || address.DeletedAt != "" || address.AgentID != agent.ID {
 		return OutboxItem{}, errf(403, "agent does not own the enabled address for membership %s", membershipID)
 	}
 	connection := h.connections[address.ConnectionID]
@@ -169,7 +169,7 @@ func (h *Hub) CreateOutbox(p OutboxParams) (OutboxItem, error) {
 		return OutboxItem{}, errf(404, "agent not found: %s", p.Agent)
 	}
 	address := h.addresses[strings.TrimSpace(p.AddressID)]
-	if address == nil || !address.Enabled || address.AgentID != agent.ID {
+	if address == nil || !address.Enabled || address.ArchivedAt != "" || address.DeletedAt != "" || address.AgentID != agent.ID {
 		return OutboxItem{}, errf(404, "enabled agent address not found: %s", p.AddressID)
 	}
 	connection := h.connections[address.ConnectionID]
@@ -280,7 +280,7 @@ func (h *Hub) ClaimNextOutbox(connectionID string) (*ConnectorCommand, error) {
 			continue
 		}
 		address := h.addresses[item.AddressID]
-		if address == nil || !address.Enabled || address.ConnectionID != connectionID {
+		if address == nil || !address.Enabled || address.ArchivedAt != "" || address.DeletedAt != "" || address.AgentID != item.AgentID || address.ConnectionID != connectionID {
 			continue
 		}
 		next := *item
@@ -293,12 +293,14 @@ func (h *Hub) ClaimNextOutbox(connectionID string) (*ConnectorCommand, error) {
 		if err := h.commitOutboxLocked(next); err != nil {
 			return nil, errf(500, "persist outbox claim: %s", err)
 		}
-		return &ConnectorCommand{Type: "send", Connection: *connection, Address: *address, OutboxItem: next}, nil
+		return &ConnectorCommand{Type: "send", Connection: clonePlatformConnectionValue(*connection), Address: cloneAgentAddressValue(*address), OutboxItem: next}, nil
 	}
 	return nil, nil
 }
 
 func (h *Hub) CompleteOutbox(connectionID, id string, p OutboxResultParams) (OutboxItem, error) {
+	unlock := h.gatewayCoordinatorForUse().lock(connectionID)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	item := h.outbox[id]
@@ -365,6 +367,7 @@ func (h *Hub) CompleteOutbox(connectionID, id string, p OutboxResultParams) (Out
 	}
 	if connection := h.connections[connectionID]; connection != nil {
 		previous := *connection
+		rawStatus, rawError := h.rawGatewayObservationLocked(connection.ID, previous.Status, previous.LastError)
 		if p.Cursor != "" {
 			connection.Cursor = p.Cursor
 		}
@@ -373,6 +376,15 @@ func (h *Hub) CompleteOutbox(connectionID, id string, p OutboxResultParams) (Out
 		if !p.Success {
 			connection.Status = "degraded"
 			connection.LastError = next.LastError
+			rawStatus = "degraded"
+			rawError = next.LastError
+		}
+		if handled, observationErr := h.recordGatewayObservationLocked(connection.ID, rawStatus, rawError, ts, "", connection.Cursor, ts, nil); handled {
+			if observationErr != nil {
+				*connection = previous
+				log.Printf("[codex-loom] persist Gateway observation for outbox %s: %v", next.ID, observationErr)
+			}
+			return next, nil
 		}
 		if err := h.persistIntegrationsLocked(); err != nil {
 			*connection = previous
@@ -418,6 +430,10 @@ func (h *Hub) RetryOutboxItem(id string) (OutboxItem, error) {
 	}
 	if item.State != "failed" {
 		return OutboxItem{}, errf(409, "only failed outbox items can be retried")
+	}
+	address := h.addresses[item.AddressID]
+	if address == nil || !address.Enabled || address.ArchivedAt != "" || address.DeletedAt != "" || address.AgentID != item.AgentID {
+		return OutboxItem{}, errf(409, "outbox item address is no longer active for its original Agent")
 	}
 	next := *item
 	next.State = "pending"

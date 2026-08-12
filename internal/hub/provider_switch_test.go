@@ -2,6 +2,8 @@ package hub
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -94,6 +96,94 @@ func TestSwitchAgentProviderRollsBackWhenColdResumeFails(t *testing.T) {
 	}
 }
 
+func TestSwitchAgentProviderToOpenAIRepairsReasoningContent(t *testing.T) {
+	const threadID = "thr-openai"
+	installFakeSharedCodexHost(t)
+	rolloutPath := writeReasoningRollout(t, threadID)
+
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	defer h.Shutdown()
+	h.agents["agent-1"] = &Agent{
+		ID: "agent-1", Name: "worker", Cwd: "/tmp/stale", ThreadID: threadID,
+		Sandbox: "danger-full-access", ApprovalPolicy: "never", Status: "idle",
+		ProviderID: "deepseek", Model: deepSeekModel, CreatedAt: now(), UpdatedAt: now(),
+	}
+	if err := h.persistAgentsLocked(); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := h.SwitchAgentProvider("agent-1", ProviderSwitchParams{ProviderID: "openai", Model: "gpt-5.6-sol"})
+	if err != nil {
+		t.Fatalf("SwitchAgentProvider: %v", err)
+	}
+	if view.ProviderID != "" || view.Model != "gpt-5.6-sol" || view.PendingProviderSwitch != nil {
+		t.Fatalf("switched Agent = %#v", view.Agent)
+	}
+	data, err := os.ReadFile(rolloutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"content":[]`) || strings.Contains(string(data), "plaintext reasoning") {
+		t.Fatalf("reasoning content was not sanitized: %s", data)
+	}
+	backupDir := filepath.Join(st.Dir(), "backups", "provider-switch")
+	matches, err := filepath.Glob(filepath.Join(backupDir, "*"+threadID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("provider switch backups = %v, want 1", matches)
+	}
+	if _, err := os.Stat(matches[0]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSwitchAgentProviderToOpenAIRestoresRolloutOnFailure(t *testing.T) {
+	const threadID = "thr-openai"
+	installFakeSharedCodexHost(t)
+	rolloutPath := writeReasoningRollout(t, threadID)
+
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	defer h.Shutdown()
+	h.agents["agent-1"] = &Agent{
+		ID: "agent-1", Name: "worker", Cwd: "/tmp/stale", ThreadID: threadID,
+		Sandbox: "danger-full-access", ApprovalPolicy: "never", Status: "idle",
+		ProviderID: "deepseek", Model: deepSeekModel, CreatedAt: now(), UpdatedAt: now(),
+	}
+	if err := h.persistAgentsLocked(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = h.SwitchAgentProvider("agent-1", ProviderSwitchParams{ProviderID: "openai", Model: "fail-model"})
+	if err == nil || !strings.Contains(err.Error(), "provider resume rejected") {
+		t.Fatalf("switch error = %v", err)
+	}
+	data, readErr := os.ReadFile(rolloutPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(data), "plaintext reasoning") || strings.Contains(string(data), `"content":[]`) {
+		t.Fatalf("rollout was not restored after failed switch: %s", data)
+	}
+	backupDir := filepath.Join(st.Dir(), "backups", "provider-switch")
+	matches, err := filepath.Glob(filepath.Join(backupDir, "*"+threadID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("provider switch backups = %v, want 1", matches)
+	}
+}
+
 func TestSwitchAgentProviderRejectsActiveGoal(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -106,4 +196,22 @@ func TestSwitchAgentProviderRejectsActiveGoal(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "active Goal") {
 		t.Fatalf("active Goal switch error = %v", err)
 	}
+}
+
+func writeReasoningRollout(t *testing.T, threadID string) string {
+	t.Helper()
+	sessionsDir := t.TempDir()
+	day := filepath.Join(sessionsDir, "2026", "08", "06")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rolloutPath := filepath.Join(day, "rollout-2026-08-06T00-00-00-"+threadID+".jsonl")
+	sample := `{"timestamp":"2026-08-06T00:00:00Z","type":"session_meta","payload":{"cwd":"/tmp/stale"}}
+{"timestamp":"2026-08-06T00:00:01Z","type":"response_item","payload":{"type":"reasoning","id":"reason-1","summary":[],"content":[{"type":"reasoning_text","text":"plaintext reasoning"}],"encrypted_content":null}}
+`
+	if err := os.WriteFile(rolloutPath, []byte(sample), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_SESSIONS_DIR", sessionsDir)
+	return rolloutPath
 }

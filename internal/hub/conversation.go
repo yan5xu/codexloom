@@ -99,7 +99,7 @@ func (h *Hub) ReplaceConversationCandidates(addressID string, p ConversationCand
 	if address == nil {
 		return nil, errf(404, "agent address not found: %s", addressID)
 	}
-	if address.ArchivedAt != "" {
+	if address.ArchivedAt != "" || address.DeletedAt != "" {
 		return nil, errf(409, "address is archived and superseded by %s", address.SupersededBy)
 	}
 	previous := h.conversationCandidates
@@ -186,7 +186,9 @@ func (h *Hub) migrateAllowedConversationsLocked() bool {
 		}
 	}
 	for _, address := range h.addresses {
-		changed = len(h.ensureAllowedConversationMembershipsLocked(address)) > 0 || changed
+		if address != nil && address.ArchivedAt == "" && address.DeletedAt == "" {
+			changed = len(h.ensureAllowedConversationMembershipsLocked(address)) > 0 || changed
+		}
 	}
 	return changed
 }
@@ -282,7 +284,7 @@ func (h *Hub) UpsertConversationMembership(p ConversationMembershipParams) (Conv
 	if address == nil {
 		return ConversationMembership{}, false, errf(404, "agent address not found: %s", addressID)
 	}
-	if address.ArchivedAt != "" {
+	if address.ArchivedAt != "" || address.DeletedAt != "" {
 		return ConversationMembership{}, false, errf(409, "address is archived and superseded by %s", address.SupersededBy)
 	}
 	current := h.membershipForConversationLocked(addressID, conversationID)

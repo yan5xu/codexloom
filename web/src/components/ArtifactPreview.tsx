@@ -79,14 +79,16 @@ export function artifactURL(url: string, disposition: "preview" | "download") {
 export function PublishedArtifactCard({
   artifact,
   publishedAt,
+  displayName,
 }: {
   artifact: ExternalAttachment;
   publishedAt?: string;
+  displayName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const kind = artifactPreviewKind(artifact);
   const previewable = kind !== "unsupported" && !artifactPreviewTooLarge(artifact);
-  const label = artifact.name || artifact.id || "Published artifact";
+  const label = displayName || artifact.name || artifact.id || "Published artifact";
 
   return (
     <>
@@ -99,7 +101,7 @@ export function PublishedArtifactCard({
             aria-label={`Preview ${label}`}
           >
             <ArtifactIcon kind={kind} />
-            <ArtifactSummary artifact={artifact} publishedAt={publishedAt} />
+            <ArtifactSummary artifact={artifact} publishedAt={publishedAt} displayName={displayName} />
             <span className="shrink-0 text-[11px] font-medium text-primary">Preview</span>
           </button>
         ) : artifact.url ? (
@@ -108,13 +110,13 @@ export function PublishedArtifactCard({
             className="flex min-w-0 flex-1 items-center gap-3 outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           >
             <ArtifactIcon kind={kind} />
-            <ArtifactSummary artifact={artifact} publishedAt={publishedAt} />
+            <ArtifactSummary artifact={artifact} publishedAt={publishedAt} displayName={displayName} />
             <span className="shrink-0 text-[11px] font-medium text-primary">Download</span>
           </a>
         ) : (
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <ArtifactIcon kind={kind} />
-            <ArtifactSummary artifact={artifact} publishedAt={publishedAt} />
+            <ArtifactSummary artifact={artifact} publishedAt={publishedAt} displayName={displayName} />
           </div>
         )}
         {artifact.url && previewable && (
@@ -129,7 +131,7 @@ export function PublishedArtifactCard({
         )}
       </article>
       {artifact.url && previewable && (
-        <ArtifactPreviewDialog artifact={artifact} kind={kind} open={open} onOpenChange={setOpen} />
+        <ArtifactPreviewDialog artifact={artifact} kind={kind} open={open} onOpenChange={setOpen} displayName={displayName} />
       )}
     </>
   );
@@ -138,11 +140,13 @@ export function PublishedArtifactCard({
 function ArtifactSummary({
   artifact,
   publishedAt,
+  displayName,
 }: {
   artifact: ExternalAttachment;
   publishedAt?: string;
+  displayName?: string;
 }) {
-  const label = artifact.name || artifact.id || "Published artifact";
+  const label = displayName || artifact.name || artifact.id || "Published artifact";
   return (
     <>
       <div className="min-w-0 flex-1">
@@ -182,18 +186,20 @@ function ArtifactPreviewDialog({
   kind,
   open,
   onOpenChange,
+  displayName,
 }: {
   artifact: ExternalAttachment;
   kind: ArtifactPreviewKind;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  displayName?: string;
 }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [markdownMode, setMarkdownMode] = useState<"rendered" | "source">("rendered");
   const url = artifact.url || "";
-  const label = artifact.name || artifact.id || "Published artifact";
+  const label = displayName || artifact.name || artifact.id || "Published artifact";
 
   useEffect(() => {
     if (!open || (kind !== "markdown" && kind !== "text") || !url) return;

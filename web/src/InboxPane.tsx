@@ -377,7 +377,7 @@ function InboxInspector({ entry, reply, reason, deferUntil, working, onReply, on
   onBack: () => void;
 }) {
   const pendingAccess = entry.item.state === "pending_access";
-  const actionable = !pendingAccess && entry.item.state !== "handled" && entry.item.state !== "cancelled";
+  const actionable = !pendingAccess && entry.item.state !== "pending_delegation" && entry.item.state !== "handled" && entry.item.state !== "cancelled";
   const internal = entry.message.origin === "loom" || entry.message.origin === "chub";
   const replyPolicy = entry.attempt?.effectiveReplyPolicy || entry.membership?.replyPolicy || entry.address.replyPolicy;
   const replyAllowed = entry.message.responseExpectation !== "none" && replyPolicy !== "none";
@@ -403,6 +403,8 @@ function InboxInspector({ entry, reply, reason, deferUntil, working, onReply, on
         <Meta label="Message" value={entry.message.externalMessageId || entry.message.id} />
         <Meta label="Attempts" value={String(entry.item.attemptCount || 0)} />
         <Meta label="Reply policy" value={replyPolicy} />
+        {entry.item.delegatedFromInboxItemId && <Meta label="Delegated from" value={entry.item.delegatedFromInboxItemId} />}
+        {entry.item.delegatedToInboxItemId && <Meta label="Delegated to" value={entry.item.delegatedToInboxItemId} />}
         {entry.membership && <Meta label="Membership" value={`${entry.membership.id} · current v${entry.membership.version}`} />}
         {entry.attempt?.membershipVersion && <Meta label="Context used" value={`v${entry.attempt.membershipVersion}`} />}
       </dl>
@@ -547,7 +549,7 @@ function formatBytes(value: number) {
 }
 
 function StateDot({ state }: { state: string }) {
-  const color = state === "sent" || state === "handled" || state === "connected" ? "bg-success" : state === "failed" || state === "degraded" ? "bg-destructive" : state === "pending_access" || state === "queued" || state === "handling" || state === "interrupted" || state === "awaiting_delivery" || state === "sending" || state === "pending" ? "bg-warning" : "bg-muted-foreground/45";
+  const color = state === "sent" || state === "handled" || state === "connected" ? "bg-success" : state === "failed" || state === "degraded" ? "bg-destructive" : state === "pending_access" || state === "pending_delegation" || state === "queued" || state === "handling" || state === "interrupted" || state === "awaiting_delivery" || state === "sending" || state === "pending" ? "bg-warning" : "bg-muted-foreground/45";
   return <span className={`size-2 shrink-0 rounded-full ${color}`} />;
 }
 

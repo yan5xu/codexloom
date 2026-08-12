@@ -593,6 +593,11 @@ func TestInboxEnvelopeReplyInstructionsMatchPolicy(t *testing.T) {
 	if !strings.Contains(explicitEnvelope, "--file &#34;/absolute/path/to/file&#34;") {
 		t.Fatalf("explicit envelope does not describe attachment replies: %s", explicitEnvelope)
 	}
+	delegatingEnvelope := formatInboxEnvelopeWithDelegationTargetsAt(message, item, address, "explicit", nil, now(), []string{"beta"})
+	if !strings.Contains(delegatingEnvelope, `<delegate_command target_agent="beta">`) ||
+		!strings.Contains(delegatingEnvelope, "integration delegate --reply-to &#39;inb-1&#39; --from &#39;agent-a&#39; --to &#39;beta&#39;") {
+		t.Fatalf("explicit envelope omitted the governed delegation command: %s", delegatingEnvelope)
+	}
 }
 
 func TestInboxEnvelopeCarriesProviderAndDeliveryTimeline(t *testing.T) {
@@ -710,6 +715,238 @@ func TestInboxReplyAndNoReplyAreIdempotentAndExclusive(t *testing.T) {
 	}
 	if _, err := h.NoReplyInboxItem("inb-1", InboxActionParams{Agent: "alpha"}); err == nil {
 		t.Fatal("no-reply was allowed after a reply existed")
+	}
+}
+
+func TestInboxDelegationTransfersUniqueReplyRouteAndIsIdempotent(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	seedInboxAgent(t, h, "agent-b", "beta")
+	crmConnection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inwishConnection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crmAddress, err := h.CreateAddress(AddressParams{
+		Agent: "alpha", ConnectionID: crmConnection.ID, ExternalIdentity: "crm-bot",
+		TriggerPolicy: "all", ReplyPolicy: "explicit", TrustDomain: "external",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inwishAddress, err := h.CreateAddress(AddressParams{
+		Agent: "beta", ConnectionID: inwishConnection.ID, ExternalIdentity: "inwish-bot",
+		TriggerPolicy: "explicit_dispatch", ReplyPolicy: "explicit", TrustDomain: "external",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, explicit, reply := "group", "explicit_dispatch", "explicit"
+	crmMembership, _, err := h.UpsertConversationMembership(ConversationMembershipParams{
+		AddressID: crmAddress.ID, ConversationID: "oc-bug", ConversationType: &group,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inwishMembership, _, err := h.UpsertConversationMembership(ConversationMembershipParams{
+		AddressID: inwishAddress.ID, ConversationID: "oc-bug", ConversationType: &group,
+		TriggerPolicy: &explicit, ReplyPolicy: &reply,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CreateRelationship(RelationshipParams{From: "alpha", To: "beta", Description: "Delegate admin issues"}); err != nil {
+		t.Fatal(err)
+	}
+	ingress, err := h.IngestMessage(IngressParams{
+		ConnectionID: crmConnection.ID, AddressID: crmAddress.ID,
+		ExternalEventID: "evt-admin", ExternalMessageID: "om-admin",
+		Sender:       ActorRef{ExternalID: "ou-customer", DisplayName: "Customer"},
+		Conversation: ConversationRef{ConversationID: "oc-bug", ConversationType: "group", MessageID: "om-admin", ThreadID: "omt-admin"},
+		Content:      MessageContent{Text: "The admin save action fails."},
+	})
+	if err != nil || ingress.InboxItem == nil {
+		t.Fatalf("ingress = %#v, err=%v", ingress, err)
+	}
+	h.mu.Lock()
+	targets := h.availableDelegationTargetsLocked(ingress.InboxItem, ingress.Message)
+	h.mu.Unlock()
+	if len(targets) != 1 || targets[0] != "beta" {
+		t.Fatalf("available delegation targets = %#v", targets)
+	}
+	source, target, err := h.DelegateInboxItem(ingress.InboxItem.ID, InboxDelegationParams{
+		Agent: "alpha", To: "beta", Reason: "qdomain admin issue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.State != "handled" || source.Outcome != "delegated" || source.DelegatedToInboxItemID != target.ID ||
+		target.State != "queued" || target.AgentID != "agent-b" || target.MessageID != ingress.Message.ID ||
+		target.AddressID != inwishAddress.ID || target.MembershipID != inwishMembership.ID || target.DelegatedFromInboxItemID != source.ID {
+		t.Fatalf("delegation = source %#v target %#v", source, target)
+	}
+	if crmMembership.ID == target.MembershipID {
+		t.Fatalf("target retained CRM membership: %#v", target)
+	}
+	againSource, againTarget, err := h.DelegateInboxItem(ingress.InboxItem.ID, InboxDelegationParams{
+		Agent: "alpha", To: "beta", Reason: "repeated command",
+	})
+	if err != nil || againSource.ID != source.ID || againTarget.ID != target.ID || len(h.inbox) != 2 {
+		t.Fatalf("idempotent delegation = source %#v target %#v err=%v inbox=%d", againSource, againTarget, err, len(h.inbox))
+	}
+	if _, _, err := h.ReplyInboxItem(source.ID, InboxActionParams{Agent: "alpha", Content: MessageContent{Text: "wrong owner"}}); err == nil {
+		t.Fatal("source Agent retained reply authority after delegation")
+	}
+	if _, err := h.NoReplyInboxItem(source.ID, InboxActionParams{Agent: "alpha"}); err == nil {
+		t.Fatal("source Agent retained no-reply authority after delegation")
+	}
+	if _, _, err := h.DelegateInboxItem(target.ID, InboxDelegationParams{Agent: "beta", To: "alpha"}); err == nil {
+		t.Fatal("delegated target was allowed to delegate again")
+	}
+	_, outbox, err := h.ReplyInboxItem(target.ID, InboxActionParams{Agent: "beta", Content: MessageContent{Text: "fixed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outbox.AgentID != "agent-b" || outbox.AddressID != inwishAddress.ID || outbox.MembershipID != inwishMembership.ID ||
+		outbox.Conversation.Provider != "lark" || outbox.Conversation.ConnectionID != inwishConnection.ID ||
+		outbox.Conversation.ConversationID != "oc-bug" || outbox.Conversation.MessageID != "om-admin" || outbox.Conversation.ThreadID != "omt-admin" {
+		t.Fatalf("delegated reply route = %#v", outbox)
+	}
+}
+
+func TestInboxDelegationRequiresRelationshipAndUniqueExplicitTarget(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	seedInboxAgent(t, h, "agent-b", "beta")
+	connection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceAddress, err := h.CreateAddress(AddressParams{Agent: "alpha", ConnectionID: connection.ID, ExternalIdentity: "source", TriggerPolicy: "all", ReplyPolicy: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetAddress, err := h.CreateAddress(AddressParams{Agent: "beta", ConnectionID: connection.ID, ExternalIdentity: "target", TriggerPolicy: "explicit_dispatch", ReplyPolicy: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, explicit := "group", "explicit_dispatch"
+	if _, _, err := h.UpsertConversationMembership(ConversationMembershipParams{AddressID: sourceAddress.ID, ConversationID: "chat", ConversationType: &group}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.UpsertConversationMembership(ConversationMembershipParams{AddressID: targetAddress.ID, ConversationID: "chat", ConversationType: &group, TriggerPolicy: &explicit}); err != nil {
+		t.Fatal(err)
+	}
+	ingress, err := h.IngestMessage(IngressParams{
+		ConnectionID: connection.ID, AddressID: sourceAddress.ID, ExternalEventID: "evt", ExternalMessageID: "msg",
+		Sender: ActorRef{ExternalID: "user"}, Conversation: ConversationRef{ConversationID: "chat", ConversationType: "group"},
+		Content: MessageContent{Text: "admin issue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.DelegateInboxItem(ingress.InboxItem.ID, InboxDelegationParams{Agent: "alpha", To: "beta"}); err == nil {
+		t.Fatal("delegation without a directed Relationship was accepted")
+	}
+	if _, err := h.CreateRelationship(RelationshipParams{From: "alpha", To: "beta", Description: "admin handoff"}); err != nil {
+		t.Fatal(err)
+	}
+	triggerAll := "all"
+	if _, err := h.UpdateConversationMembership(stableMembershipID(targetAddress.ID, "chat"), ConversationMembershipParams{TriggerPolicy: &triggerAll}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.DelegateInboxItem(ingress.InboxItem.ID, InboxDelegationParams{Agent: "alpha", To: "beta"}); err == nil {
+		t.Fatal("delegation to a non-explicit target Membership was accepted")
+	}
+	if _, err := h.UpdateConversationMembership(stableMembershipID(targetAddress.ID, "chat"), ConversationMembershipParams{TriggerPolicy: &explicit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UpdateAddress(targetAddress.ID, AddressParams{BlockActors: []string{"user"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.DelegateInboxItem(ingress.InboxItem.ID, InboxDelegationParams{Agent: "alpha", To: "beta"}); err == nil {
+		t.Fatal("delegation bypassed the target address block policy")
+	}
+	if _, err := h.UpdateAddress(targetAddress.ID, AddressParams{BlockActors: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	secondConnection, err := h.CreateConnection(ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondTarget, err := h.CreateAddress(AddressParams{Agent: "beta", ConnectionID: secondConnection.ID, ExternalIdentity: "target-2", TriggerPolicy: "explicit_dispatch", ReplyPolicy: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.UpsertConversationMembership(ConversationMembershipParams{AddressID: secondTarget.ID, ConversationID: "chat", ConversationType: &group, TriggerPolicy: &explicit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.DelegateInboxItem(ingress.InboxItem.ID, InboxDelegationParams{Agent: "alpha", To: "beta"}); err == nil {
+		t.Fatal("delegation with two eligible target routes was accepted")
+	}
+}
+
+func TestInboxDelegationRecoversPendingTargetAfterRestart(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		sourceState string
+		outcome     string
+		wantTarget  string
+	}{
+		{name: "committed source queues target", sourceState: "handled", outcome: "delegated", wantTarget: "queued"},
+		{name: "uncommitted source cancels target", sourceState: "handling", wantTarget: "cancelled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := InboxMessage{ID: "imsg", Origin: "lark", ExternalKey: "crm:om", ReceivedAt: now()}
+			source := InboxItem{
+				ID: "source", AgentID: "crm", MessageID: message.ID, AddressID: "crm-address",
+				State: tt.sourceState, Outcome: tt.outcome, DelegatedToInboxItemID: "target", CreatedAt: now(), UpdatedAt: now(),
+			}
+			if tt.outcome == "" {
+				source.DelegatedToInboxItemID = ""
+			}
+			target := InboxItem{
+				ID: "target", AgentID: "inwish", MessageID: message.ID, AddressID: "inwish-address",
+				State: "pending_delegation", DelegatedFromInboxItemID: source.ID, CreatedAt: now(), UpdatedAt: now(),
+			}
+			if err := st.AppendMessage(message); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendInbox(source); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendInbox(target); err != nil {
+				t.Fatal(err)
+			}
+			h := New(st)
+			defer h.Shutdown()
+			if got := h.inbox[target.ID]; got == nil || got.State != tt.wantTarget {
+				t.Fatalf("recovered target = %#v, want %s", got, tt.wantTarget)
+			}
+		})
+	}
+}
+
+func TestInboxQueuePeriodicallyRecoversPendingDelegation(t *testing.T) {
+	h := stoppedInboxTestHub(t)
+	source := &InboxItem{
+		ID: "source", AgentID: "agent-a", State: "handled", Outcome: "delegated",
+		DelegatedToInboxItemID: "target", CreatedAt: now(), UpdatedAt: now(),
+	}
+	target := &InboxItem{
+		ID: "target", AgentID: "agent-b", State: "pending_delegation",
+		DelegatedFromInboxItemID: source.ID, CreatedAt: now(), UpdatedAt: now(),
+	}
+	h.inbox[source.ID], h.inbox[target.ID] = source, target
+	h.inboxOrder = []string{source.ID, target.ID}
+	agents := h.queuedInboxAgents()
+	if len(agents) != 1 || agents[0] != "agent-b" || h.inbox[target.ID].State != "queued" {
+		t.Fatalf("periodic delegation recovery = agents %#v target %#v", agents, h.inbox[target.ID])
 	}
 }
 

@@ -629,6 +629,19 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, map[string]any{"item": item})
 	})
+	mux.HandleFunc("POST /api/inbox/{id}/delegate", func(w http.ResponseWriter, r *http.Request) {
+		var body hub.InboxDelegationParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		item, delegated, err := s.hub.DelegateInboxItem(r.PathValue("id"), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 202, map[string]any{"item": item, "delegatedInboxItem": delegated})
+	})
 	mux.HandleFunc("POST /api/inbox/{id}/defer", func(w http.ResponseWriter, r *http.Request) {
 		var body hub.InboxActionParams
 		if err := readJSON(r, &body); err != nil {

@@ -481,8 +481,10 @@ export interface InboxItem {
   messageId: string;
   addressId: string;
   membershipId?: string;
-  state: "pending_access" | "queued" | "handling" | "interrupted" | "awaiting_delivery" | "deferred" | "handled" | "failed" | "cancelled";
-  outcome?: "reply" | "no_reply";
+  delegatedFromInboxItemId?: string;
+  delegatedToInboxItemId?: string;
+  state: "pending_access" | "pending_delegation" | "queued" | "handling" | "interrupted" | "awaiting_delivery" | "deferred" | "handled" | "failed" | "cancelled";
+  outcome?: "reply" | "no_reply" | "delegated";
   priority?: number;
   availableAt?: string;
   attemptCount: number;

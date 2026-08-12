@@ -404,6 +404,7 @@ Compatibility shortcuts:
   chub outbox retry <outbox-item-id>
   chub integration list
   chub integration send --from AGENT (--reply-to INBOX_ID|--to MEMBERSHIP_ID) [--message-id PROVIDER_MESSAGE_ID] [--thread-id PROVIDER_THREAD_ID] [--body TEXT|--body-file PATH] [--file PATH ...] [--expect-reply none|optional|required] [--idempotency-key KEY] [--async]
+  loom integration delegate --reply-to INBOX_ID --from SOURCE_AGENT --to TARGET_AGENT [--reason TEXT]
   loom integration connect github [--public-only]
   loom integration connect github (--token-file PATH|--credential-ref env:NAME) --resource-owner OWNER
   chub integration connect <provider> [--account REF] [--credential-ref env:NAME]

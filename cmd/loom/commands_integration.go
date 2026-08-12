@@ -326,7 +326,7 @@ func cmdOutbox(a args) {
 
 func cmdIntegration(a args) {
 	if len(a.positional) == 0 {
-		usage("integration list|send|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|status ...")
+		usage("integration list|send|delegate|connect|import|bind|update-address|enable|disable|archive|restore|delete-address|transfer|rollback-transfer|operations|operation|status ...")
 	}
 	switch a.positional[0] {
 	case "list":
@@ -390,6 +390,22 @@ func cmdIntegration(a args) {
 		}
 	case "send":
 		cmdIntegrationSend(a)
+	case "delegate":
+		replyTo := strings.TrimSpace(a.flags["reply-to"])
+		from := strings.TrimSpace(a.flags["from"])
+		to := strings.TrimSpace(a.flags["to"])
+		if replyTo == "" || from == "" || to == "" {
+			usage("integration delegate --reply-to INBOX_ID --from SOURCE_AGENT --to TARGET_AGENT [--reason TEXT]")
+		}
+		resp, err := api("POST", "/api/inbox/"+url.PathEscape(replyTo)+"/delegate", map[string]any{
+			"agent": from, "to": to, "reason": a.flags["reason"],
+		})
+		if err != nil {
+			fail(err)
+		}
+		source, _ := resp["item"].(map[string]any)
+		target, _ := resp["delegatedInboxItem"].(map[string]any)
+		fmt.Printf("%s %s → %s (%s)\n", green("delegated"), str(source, "id"), to, str(target, "id"))
 	case "connect":
 		if len(a.positional) < 2 {
 			usage("integration connect <provider> [--account REF] [--credential-ref env:NAME]; GitHub PAT: integration connect github --token-file PATH --resource-owner OWNER")

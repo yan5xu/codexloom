@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -227,6 +228,14 @@ func (h *Hub) queuedInboxAgents() []string {
 	out := []string{}
 	for _, id := range h.inboxOrder {
 		item := h.inbox[id]
+		if item != nil && item.State == "pending_delegation" {
+			next := h.reconcilePendingDelegationSnapshotLocked(*item)
+			if err := h.commitInboxLocked(next); err != nil {
+				log.Printf("[codex-loom] reconcile pending delegation %s: %v", next.ID, err)
+				continue
+			}
+			item = h.inbox[id]
+		}
 		if item != nil && item.State == "deferred" && inboxAvailable(item.AvailableAt) {
 			next := *item
 			next.State = "queued"
@@ -245,6 +254,20 @@ func (h *Hub) queuedInboxAgents() []string {
 		out = append(out, item.AgentID)
 	}
 	return out
+}
+
+func (h *Hub) reconcilePendingDelegationSnapshotLocked(item InboxItem) InboxItem {
+	source := h.inbox[item.DelegatedFromInboxItemID]
+	if source != nil && source.State == "handled" && source.Outcome == "delegated" && source.DelegatedToInboxItemID == item.ID {
+		item.State = "queued"
+		item.LastError = ""
+	} else {
+		item.State = "cancelled"
+		item.Note = "incomplete delegation was cancelled during recovery"
+	}
+	item.ActiveAttemptID = ""
+	item.UpdatedAt = now()
+	return item
 }
 
 func (h *Hub) deliverNextInboxForAgent(agentID string) {
@@ -317,6 +340,10 @@ func (h *Hub) deliverNextInboxForAgent(agentID string) {
 		return
 	}
 	policy := effectiveReplyPolicy(message, address, membership)
+	delegationTargets := []string(nil)
+	if policy == "explicit" {
+		delegationTargets = h.availableDelegationTargetsLocked(item, message)
+	}
 	ts := now()
 	attempt := &HandlingAttempt{
 		ID: newIntegrationID("att"), InboxItemID: item.ID, AgentID: agentID, SessionID: agentID,
@@ -362,8 +389,8 @@ func (h *Hub) deliverNextInboxForAgent(agentID string) {
 		return
 	}
 	currentTime := now()
-	envelope := formatInboxEnvelopeContextAt(*message, nextItem, *address, policy, membership, currentTime)
-	displayEnvelope := formatInboxEnvelopeAt(*message, nextItem, *address, policy, membership, currentTime)
+	envelope := formatInboxEnvelopeContextWithDelegationTargetsAt(*message, nextItem, *address, policy, membership, currentTime, delegationTargets)
+	displayEnvelope := formatInboxEnvelopeWithDelegationTargetsAt(*message, nextItem, *address, policy, membership, currentTime, delegationTargets)
 	originalInput := message.Content.Text
 	if strings.TrimSpace(originalInput) == "" && len(message.Content.Attachments) > 0 {
 		originalInput = "Review the attached external message files."
@@ -622,6 +649,186 @@ func (h *Hub) NoReplyInboxItem(id string, p InboxActionParams) (InboxItem, error
 	return next, nil
 }
 
+func (h *Hub) DelegateInboxItem(id string, p InboxDelegationParams) (InboxItem, InboxItem, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	source, err := h.inboxActionTargetLocked(id, p.Agent)
+	if err != nil {
+		return InboxItem{}, InboxItem{}, err
+	}
+	targetAgent := h.resolveLocked(strings.TrimSpace(p.To))
+	if targetAgent == nil {
+		return InboxItem{}, InboxItem{}, errf(404, "delegation target agent not found: %s", p.To)
+	}
+	if source.AgentID == targetAgent.ID {
+		return InboxItem{}, InboxItem{}, errf(400, "delegation target must be a different agent")
+	}
+	if source.DelegatedFromInboxItemID != "" {
+		return InboxItem{}, InboxItem{}, errf(409, "delegated inbox items cannot be delegated again")
+	}
+	if source.State == "handled" && source.Outcome == "delegated" && source.DelegatedToInboxItemID != "" {
+		target := h.inbox[source.DelegatedToInboxItemID]
+		if target == nil {
+			return InboxItem{}, InboxItem{}, errf(500, "delegated inbox target is missing: %s", source.DelegatedToInboxItemID)
+		}
+		if target.AgentID != targetAgent.ID {
+			return InboxItem{}, InboxItem{}, errf(409, "inbox item was already delegated to another agent")
+		}
+		if target.State == "pending_delegation" {
+			nextTarget := *target
+			nextTarget.State = "queued"
+			nextTarget.LastError = ""
+			nextTarget.UpdatedAt = now()
+			if err := h.commitInboxLocked(nextTarget); err != nil {
+				return InboxItem{}, InboxItem{}, errf(500, "finish pending inbox delegation: %s", err)
+			}
+			target = h.inbox[target.ID]
+		}
+		return *source, *target, nil
+	}
+	if source.State == "handled" || source.State == "cancelled" || source.State == "awaiting_delivery" {
+		return InboxItem{}, InboxItem{}, errf(409, "inbox item is already %s", source.State)
+	}
+	if source.State == "pending_access" || source.State == "pending_delegation" {
+		return InboxItem{}, InboxItem{}, errf(409, "inbox item is not available for delegation")
+	}
+	if h.replyOutboxLocked(source.ID) != nil {
+		return InboxItem{}, InboxItem{}, errf(409, "reply already exists for inbox item")
+	}
+	if !h.hasDelegationRelationshipLocked(source.AgentID, targetAgent.ID) {
+		return InboxItem{}, InboxItem{}, errf(403, "no directed relationship authorizes delegation to %s", targetAgent.Name)
+	}
+	message := h.messages[source.MessageID]
+	if message == nil {
+		return InboxItem{}, InboxItem{}, errf(500, "inbox message not found: %s", source.MessageID)
+	}
+	targetAddress, targetMembership, routeErr := h.delegationRouteLocked(message, targetAgent.ID)
+	if routeErr != nil {
+		return InboxItem{}, InboxItem{}, routeErr
+	}
+	for _, candidate := range h.inbox {
+		if candidate == nil || candidate.DelegatedFromInboxItemID != source.ID || candidate.State == "cancelled" {
+			continue
+		}
+		return InboxItem{}, InboxItem{}, errf(409, "inbox item already has an incomplete delegation target: %s", candidate.ID)
+	}
+	ts := now()
+	target := InboxItem{
+		ID: newIntegrationID("inb"), AgentID: targetAgent.ID, MessageID: source.MessageID,
+		AddressID: targetAddress.ID, MembershipID: targetMembership.ID,
+		DelegatedFromInboxItemID: source.ID, State: "pending_delegation",
+		Note: strings.TrimSpace(p.Reason), CreatedAt: ts, UpdatedAt: ts,
+	}
+	if err := h.appendNewInboxLocked(target); err != nil {
+		return InboxItem{}, InboxItem{}, errf(500, "persist pending inbox delegation: %s", err)
+	}
+	nextSource := *source
+	nextSource.State = "handled"
+	nextSource.Outcome = "delegated"
+	nextSource.DelegatedToInboxItemID = target.ID
+	nextSource.ActiveAttemptID = ""
+	nextSource.LastError = ""
+	nextSource.Note = strings.TrimSpace(p.Reason)
+	nextSource.UpdatedAt = now()
+	if err := h.commitInboxLocked(nextSource); err != nil {
+		cancelled := target
+		cancelled.State = "cancelled"
+		cancelled.Note = "source delegation decision was not persisted"
+		cancelled.UpdatedAt = now()
+		if cancelErr := h.commitInboxLocked(cancelled); cancelErr != nil {
+			log.Printf("[codex-loom] cancel incomplete delegation target %s: %v", cancelled.ID, cancelErr)
+		}
+		return InboxItem{}, InboxItem{}, errf(500, "persist source inbox delegation: %s", err)
+	}
+	queued := target
+	queued.State = "queued"
+	queued.UpdatedAt = now()
+	if err := h.commitInboxLocked(queued); err != nil {
+		return nextSource, target, errf(500, "queue delegated inbox target: %s", err)
+	}
+	return nextSource, queued, nil
+}
+
+func (h *Hub) hasDelegationRelationshipLocked(fromAgentID, toAgentID string) bool {
+	for _, relationship := range h.teamLinks {
+		if relationship != nil && relationship.FromAgentID == fromAgentID && relationship.ToAgentID == toAgentID {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) delegationRouteLocked(message *InboxMessage, targetAgentID string) (*AgentAddress, *ConversationMembership, error) {
+	type route struct {
+		address    *AgentAddress
+		membership *ConversationMembership
+	}
+	routes := []route{}
+	for _, address := range h.addresses {
+		if address == nil || address.AgentID != targetAgentID || !address.Enabled || address.ArchivedAt != "" || address.DeletedAt != "" {
+			continue
+		}
+		connection := h.connections[address.ConnectionID]
+		if connection == nil || !connection.Enabled || connection.ArchivedAt != "" || connection.Provider != message.Origin {
+			continue
+		}
+		membership := h.membershipForConversationLocked(address.ID, message.Conversation.ConversationID)
+		if membership == nil || !membership.Enabled || membership.ArchivedAt != "" {
+			continue
+		}
+		routes = append(routes, route{address: address, membership: membership})
+	}
+	if len(routes) == 0 {
+		return nil, nil, errf(409, "delegation target has no enabled explicit-dispatch route for this provider and conversation")
+	}
+	if len(routes) != 1 {
+		return nil, nil, errf(409, "delegation target has %d enabled routes for this provider and conversation; exactly one is required", len(routes))
+	}
+	selected := routes[0]
+	direct := conversationIsDirect(message.Conversation, TriggerEvidence{})
+	if direct && (normalizeDMPolicy(selected.address.DMPolicy) == "closed" || selected.membership.ConversationType != "dm") {
+		return nil, nil, errf(409, "delegation target route does not allow this direct conversation")
+	}
+	if direct && selected.membership.ActorID != "" && selected.membership.ActorID != strings.TrimSpace(message.Sender.ExternalID) {
+		return nil, nil, errf(409, "delegation target direct-message contact does not match the sender")
+	}
+	if conversationNeedsMembership(message.Conversation) && selected.membership.ConversationType == "dm" {
+		return nil, nil, errf(409, "delegation target route is not configured as a group")
+	}
+	if allowed, reason := addressAllowsIngress(*selected.address, selected.membership, IngressParams{
+		Sender: message.Sender, Conversation: message.Conversation, Trigger: TriggerEvidence{ExplicitDispatch: true},
+	}); !allowed {
+		return nil, nil, errf(409, "delegation target route rejected the message: %s", reason)
+	}
+	if resolvedTriggerPolicy(*selected.address, selected.membership) != "explicit_dispatch" {
+		return nil, nil, errf(409, "delegation target route does not require explicit dispatch")
+	}
+	if resolvedReplyPolicy(*selected.address, selected.membership) == "none" || normalizeOutboundPolicy(selected.membership.OutboundPolicy) == "none" {
+		return nil, nil, errf(409, "delegation target route does not allow a reply")
+	}
+	return selected.address, selected.membership, nil
+}
+
+func (h *Hub) availableDelegationTargetsLocked(item *InboxItem, message *InboxMessage) []string {
+	if item == nil || message == nil || item.DelegatedFromInboxItemID != "" {
+		return nil
+	}
+	targets := []string{}
+	seen := map[string]bool{}
+	for _, relationship := range h.teamLinks {
+		if relationship == nil || relationship.FromAgentID != item.AgentID || seen[relationship.ToAgentID] {
+			continue
+		}
+		if _, _, err := h.delegationRouteLocked(message, relationship.ToAgentID); err != nil {
+			continue
+		}
+		seen[relationship.ToAgentID] = true
+		targets = append(targets, h.agentNameLocked(relationship.ToAgentID, relationship.To))
+	}
+	sort.Strings(targets)
+	return targets
+}
+
 func (h *Hub) DeferInboxItem(id string, p InboxActionParams) (InboxItem, error) {
 	until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(p.Until))
 	if err != nil || !until.After(time.Now()) {
@@ -735,10 +942,15 @@ func (h *Hub) createReplyOutboxLocked(item *InboxItem, content MessageContent, r
 		return OutboxItem{}, errf(400, "invalid responseExpectation %q", expectation)
 	}
 	ts := now()
+	conversation := message.Conversation
+	if connection := h.connections[address.ConnectionID]; connection != nil {
+		conversation.Provider = connection.Provider
+		conversation.ConnectionID = connection.ID
+	}
 	outbox := OutboxItem{
 		ID: newIntegrationID("out"), AgentID: item.AgentID, AddressID: item.AddressID,
 		InboxItemID: item.ID, MembershipID: item.MembershipID,
-		InReplyTo: message.ID, Conversation: message.Conversation, Content: content, ResponseExpectation: expectation,
+		InReplyTo: message.ID, Conversation: conversation, Content: content, ResponseExpectation: expectation,
 		IdempotencyKey: "reply:" + item.ID, State: "pending", CreatedAt: ts, UpdatedAt: ts,
 	}
 	if err := h.st.AppendOutbox(outbox); err != nil {
@@ -767,6 +979,20 @@ func (h *Hub) commitInboxLocked(item InboxItem) error {
 	}
 	cp := item
 	h.inbox[item.ID] = &cp
+	h.emitGlobalLocked("loom/inbox-item", map[string]any{"item": cp})
+	return nil
+}
+
+func (h *Hub) appendNewInboxLocked(item InboxItem) error {
+	if h.inbox[item.ID] != nil {
+		return fmt.Errorf("inbox item already exists: %s", item.ID)
+	}
+	if err := h.st.AppendInbox(item); err != nil {
+		return err
+	}
+	cp := item
+	h.inbox[item.ID] = &cp
+	h.inboxOrder = append(h.inboxOrder, item.ID)
 	h.emitGlobalLocked("loom/inbox-item", map[string]any{"item": cp})
 	return nil
 }

@@ -186,21 +186,23 @@ type InboxMessage struct {
 }
 
 type InboxItem struct {
-	ID              string `json:"id"`
-	AgentID         string `json:"agentId"`
-	MessageID       string `json:"messageId"`
-	AddressID       string `json:"addressId"`
-	MembershipID    string `json:"membershipId,omitempty"`
-	State           string `json:"state"`
-	Outcome         string `json:"outcome,omitempty"`
-	Priority        int    `json:"priority,omitempty"`
-	AvailableAt     string `json:"availableAt,omitempty"`
-	AttemptCount    int    `json:"attemptCount"`
-	ActiveAttemptID string `json:"activeAttemptId,omitempty"`
-	LastError       string `json:"lastError,omitempty"`
-	Note            string `json:"note,omitempty"`
-	CreatedAt       string `json:"createdAt"`
-	UpdatedAt       string `json:"updatedAt"`
+	ID                       string `json:"id"`
+	AgentID                  string `json:"agentId"`
+	MessageID                string `json:"messageId"`
+	AddressID                string `json:"addressId"`
+	MembershipID             string `json:"membershipId,omitempty"`
+	DelegatedFromInboxItemID string `json:"delegatedFromInboxItemId,omitempty"`
+	DelegatedToInboxItemID   string `json:"delegatedToInboxItemId,omitempty"`
+	State                    string `json:"state"`
+	Outcome                  string `json:"outcome,omitempty"`
+	Priority                 int    `json:"priority,omitempty"`
+	AvailableAt              string `json:"availableAt,omitempty"`
+	AttemptCount             int    `json:"attemptCount"`
+	ActiveAttemptID          string `json:"activeAttemptId,omitempty"`
+	LastError                string `json:"lastError,omitempty"`
+	Note                     string `json:"note,omitempty"`
+	CreatedAt                string `json:"createdAt"`
+	UpdatedAt                string `json:"updatedAt"`
 }
 
 type HandlingAttempt struct {
@@ -373,6 +375,12 @@ type InboxActionParams struct {
 	Until               string         `json:"until"`
 }
 
+type InboxDelegationParams struct {
+	Agent  string `json:"agent"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
 type ConnectionHeartbeatParams struct {
 	Status         string                         `json:"status"`
 	Cursor         string                         `json:"cursor"`
@@ -524,6 +532,10 @@ func (h *Hub) loadInboxState() error {
 			item.ActiveAttemptID = ""
 			item.LastError = "CodexLoom restarted during handling"
 			item.UpdatedAt = now()
+			repaired = true
+		}
+		if item.State == "pending_delegation" {
+			item = h.reconcilePendingDelegationSnapshotLocked(item)
 			repaired = true
 		}
 		if item.Note == "" && item.LastError != "" && (item.State == "deferred" || item.State == "handled" && item.Outcome == "no_reply") {

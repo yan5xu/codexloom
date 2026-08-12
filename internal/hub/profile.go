@@ -33,8 +33,10 @@ type ProfileParams struct {
 	ExpectedVersion *int   `json:"expectedVersion,omitempty"`
 }
 
-// TeamRelationship is a durable, directed collaboration edge. Description is
-// intentionally free-form; the first version does not impose an org taxonomy.
+// TeamRelationship is a durable, directed collaboration edge. The edge is the
+// narrow authorization prerequisite for explicit Inbox delegation from one
+// Agent to the other; it grants no credentials, tools, deployment authority,
+// proactive-send permission, or access outside the target Membership.
 type TeamRelationship struct {
 	ID          string `json:"id"`
 	FromAgentID string `json:"fromAgentId"`

@@ -44,6 +44,18 @@ func formatInboxEnvelopeContextAt(message InboxMessage, item InboxItem, address 
 }
 
 func formatInboxEnvelopeModeAt(message InboxMessage, item InboxItem, address AgentAddress, policy string, membership *ConversationMembership, currentTime string, originalInputReference bool) string {
+	return formatInboxEnvelopeModeWithDelegationTargetsAt(message, item, address, policy, membership, currentTime, originalInputReference, nil)
+}
+
+func formatInboxEnvelopeWithDelegationTargetsAt(message InboxMessage, item InboxItem, address AgentAddress, policy string, membership *ConversationMembership, currentTime string, targets []string) string {
+	return formatInboxEnvelopeModeWithDelegationTargetsAt(message, item, address, policy, membership, currentTime, false, targets)
+}
+
+func formatInboxEnvelopeContextWithDelegationTargetsAt(message InboxMessage, item InboxItem, address AgentAddress, policy string, membership *ConversationMembership, currentTime string, targets []string) string {
+	return formatInboxEnvelopeModeWithDelegationTargetsAt(message, item, address, policy, membership, currentTime, true, targets)
+}
+
+func formatInboxEnvelopeModeWithDelegationTargetsAt(message InboxMessage, item InboxItem, address AgentAddress, policy string, membership *ConversationMembership, currentTime string, originalInputReference bool, targets []string) string {
 	var b strings.Builder
 	b.WriteString(`<inbox_message version="1" id="` + xmlEscape(message.ID) + `" inbox_item_id="` + xmlEscape(item.ID) + `" expectation="` + xmlEscape(message.ResponseExpectation) + `">` + "\n")
 	b.WriteString("  <timing")
@@ -103,6 +115,10 @@ func formatInboxEnvelopeModeAt(message InboxMessage, item InboxItem, address Age
 		writeXMLText(&b, "reply_command", command+" integration send --from "+shellCommandArg(item.AgentID)+" --reply-to "+shellCommandArg(item.ID)+" --body \"...\"")
 		writeXMLText(&b, "reply_with_attachment_command", command+" integration send --from "+shellCommandArg(item.AgentID)+" --reply-to "+shellCommandArg(item.ID)+" --body \"...\" --file \"/absolute/path/to/file\"")
 		writeXMLText(&b, "no_reply_command", command+" inbox no-reply "+shellCommandArg(item.ID)+" --agent "+shellCommandArg(item.AgentID))
+		for _, target := range targets {
+			delegateCommand := command + " integration delegate --reply-to " + shellCommandArg(item.ID) + " --from " + shellCommandArg(item.AgentID) + " --to " + shellCommandArg(target) + " --reason \"...\""
+			b.WriteString(`  <delegate_command target_agent="` + xmlEscape(target) + `">` + xmlEscape(delegateCommand) + `</delegate_command>` + "\n")
+		}
 	}
 	if originalInputReference {
 		b.WriteString("  <body source=\"original_input\" />\n")

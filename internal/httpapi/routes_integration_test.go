@@ -35,6 +35,69 @@ func TestInboxItemMatchesAddressAndActiveFilters(t *testing.T) {
 	}
 }
 
+func TestInboxDelegationAPIReturnsSourceAndTargetReceipts(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents := map[string]*hub.Agent{
+		"agent-a": {ID: "agent-a", Name: "alpha", Status: "idle", CreatedAt: "2026-08-12T00:00:00Z", UpdatedAt: "2026-08-12T00:00:00Z"},
+		"agent-b": {ID: "agent-b", Name: "beta", Status: "idle", CreatedAt: "2026-08-12T00:00:00Z", UpdatedAt: "2026-08-12T00:00:00Z"},
+	}
+	if err := st.SaveAgents(agents); err != nil {
+		t.Fatal(err)
+	}
+	h, err := hub.Open(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Shutdown()
+	crmConnection, err := h.CreateConnection(hub.ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inwishConnection, err := h.CreateConnection(hub.ConnectionParams{Provider: "lark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crmAddress, err := h.CreateAddress(hub.AddressParams{Agent: "alpha", ConnectionID: crmConnection.ID, ExternalIdentity: "crm", TriggerPolicy: "all", ReplyPolicy: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inwishAddress, err := h.CreateAddress(hub.AddressParams{Agent: "beta", ConnectionID: inwishConnection.ID, ExternalIdentity: "inwish", TriggerPolicy: "explicit_dispatch", ReplyPolicy: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, explicit := "group", "explicit_dispatch"
+	if _, _, err := h.UpsertConversationMembership(hub.ConversationMembershipParams{AddressID: crmAddress.ID, ConversationID: "oc-bug", ConversationType: &group}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.UpsertConversationMembership(hub.ConversationMembershipParams{AddressID: inwishAddress.ID, ConversationID: "oc-bug", ConversationType: &group, TriggerPolicy: &explicit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CreateRelationship(hub.RelationshipParams{From: "alpha", To: "beta", Description: "admin handoff"}); err != nil {
+		t.Fatal(err)
+	}
+	ingress, err := h.IngestMessage(hub.IngressParams{
+		ConnectionID: crmConnection.ID, AddressID: crmAddress.ID, ExternalEventID: "evt", ExternalMessageID: "om",
+		Sender: hub.ActorRef{ExternalID: "customer"}, Conversation: hub.ConversationRef{ConversationID: "oc-bug", ConversationType: "group"},
+		Content: hub.MessageContent{Text: "admin save fails"},
+	})
+	if err != nil || ingress.InboxItem == nil {
+		t.Fatalf("ingress = %#v err=%v", ingress, err)
+	}
+	server := New(h, st, fstest.MapFS{"index.html": {Data: []byte("app")}}).Handler()
+	response := integrationAPIRequest(t, server, http.MethodPost, "/api/inbox/"+ingress.InboxItem.ID+"/delegate", map[string]any{
+		"agent": "alpha", "to": "beta", "reason": "admin ownership",
+	}, http.StatusAccepted)
+	source, _ := response["item"].(map[string]any)
+	target, _ := response["delegatedInboxItem"].(map[string]any)
+	if source["outcome"] != "delegated" || source["delegatedToInboxItemId"] != target["id"] ||
+		target["state"] != "queued" || target["agentId"] != "agent-b" || target["delegatedFromInboxItemId"] != source["id"] {
+		t.Fatalf("delegation API response = %#v", response)
+	}
+}
+
 func TestAddressLifecycleAndTransferAPIReturnManagedReceipts(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {

@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BlockView } from "./Blocks";
 import type { Block } from "./feed";
 
@@ -54,5 +54,56 @@ describe("command block presentation", () => {
 
     expect(summaryText.textContent).toBe(description);
     expect(summaryText).toHaveClass("break-words", "whitespace-pre-wrap");
+  });
+});
+
+describe("explicit Host file conversation links", () => {
+  it("activates only marked absolute paths in user text", () => {
+    const onOpenHostFile = vi.fn();
+    render(
+      <BlockView
+        block={{
+          kind: "user",
+          ts: "2026-08-14T09:00:00Z",
+          text: "Bare /tmp/plain.txt and ./relative.txt stay text; open `/tmp/marked.txt` or [a log](/tmp/log.txt) or file:///tmp/data.json.",
+          attachments: [],
+        }}
+        onOpenHostFile={onOpenHostFile}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Open host file /tmp/marked.txt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open host file /tmp/log.txt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open host file /tmp/data.json" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open host file ./relative.txt" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Bare \/tmp\/plain\.txt and \.\/relative\.txt stay text/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open host file /tmp/marked.txt" }));
+    expect(onOpenHostFile).toHaveBeenCalledWith("/tmp/marked.txt");
+  });
+
+  it("makes Markdown local links addressable without changing ordinary web links", () => {
+    const onOpenHostFile = vi.fn();
+    render(
+      <BlockView
+        block={{
+          kind: "agentMessage",
+          id: "msg-1",
+          ts: "2026-08-14T09:00:00Z",
+          variant: "res",
+          from: "agent-a",
+          to: "owner",
+          subject: "Files",
+          body: "[open this](/tmp/report.md) and [external](https://example.com).",
+          raw: "",
+          response: "",
+        }}
+        onOpenHostFile={onOpenHostFile}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open host file /tmp/report.md" }));
+    expect(onOpenHostFile).toHaveBeenCalledWith("/tmp/report.md");
+    expect(screen.getByRole("link", { name: "external" })).toHaveAttribute("href", "https://example.com/");
   });
 });

@@ -619,7 +619,7 @@ export function AssistantBubble({ group, streaming = false }: { group: Assistant
    UserBubble — renders user message
    ================================================================ */
 
-export function UserBubble({ message, children }: { message: ChatMessage; children?: ReactNode }) {
+export function UserBubble({ message, children, contentRenderer }: { message: ChatMessage; children?: ReactNode; contentRenderer?: (content: string) => ReactNode }) {
   const { t } = useTranslation();
   const displayed = useMemo(() => splitTrailingLoomContext(message.content), [message.content]);
   return (
@@ -629,7 +629,7 @@ export function UserBubble({ message, children }: { message: ChatMessage; childr
         <span className="text-[10px] font-mono text-muted-foreground/40">{shortTime(message.created_at)}</span>
       </div>
       <div className="max-w-[88%] break-words rounded-md border border-border bg-secondary px-3 py-2 text-sm leading-6 sm:max-w-[78%]">
-        {displayed.content ? <div className="whitespace-pre-wrap">{displayed.content}</div> : null}
+        {displayed.content ? <div className="whitespace-pre-wrap">{contentRenderer ? contentRenderer(displayed.content) : displayed.content}</div> : null}
         {children}
         {displayed.context ? <LoomContextView context={displayed.context} /> : null}
       </div>

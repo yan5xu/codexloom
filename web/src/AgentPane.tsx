@@ -79,6 +79,7 @@ export function AgentPane({
   onHumanRequestChanged,
   onPendingWorkChanged,
   onOpenUsage,
+  onOpenHostFile,
   onTrackTopic,
   onError,
   onAgentUpdated,
@@ -94,6 +95,7 @@ export function AgentPane({
   onHumanRequestChanged: () => Promise<unknown> | void;
   onPendingWorkChanged: () => Promise<unknown> | void;
   onOpenUsage: (agentID: string) => void;
+  onOpenHostFile?: (path: string) => void;
   onTrackTopic: () => void;
   onError: (msg: string) => void;
   onAgentUpdated: (agent: Agent) => void;
@@ -1307,7 +1309,7 @@ export function AgentPane({
                         </button>
                       </div>
                     ) : (
-                      <BlockView block={row.block} />
+                      <BlockView block={row.block} onOpenHostFile={onOpenHostFile} />
                     )}
                   </div>
                 );

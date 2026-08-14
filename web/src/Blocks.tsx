@@ -3,6 +3,7 @@ import { PublishedArtifactCard } from "./components/ArtifactPreview";
 import { RawEnvelope, StructuredContextRow } from "./components/StructuredContext";
 import { UserBubble, AssistantBubble } from "./pages/agent/MessageBubbles";
 import { MarkdownContent } from "./pages/agent/markdown";
+import { tokenizeExplicitHostPaths } from "./host-files";
 import type { Block, ExternalAttachment, ExternalThreadContext } from "./feed";
 import { localTimeWithSeconds } from "./lib/format";
 
@@ -18,13 +19,37 @@ function tsShort(ts: string) {
   return localTimeWithSeconds(ts);
 }
 
-export function BlockView({ block }: { block: Block }) {
+function ExplicitHostPathContent({ text, onOpenHostFile }: { text: string; onOpenHostFile: (path: string) => void }) {
+  return (
+    <>
+      {tokenizeExplicitHostPaths(text).map((token, index) =>
+        token.type === "text" ? (
+          <span key={index}>{token.value}</span>
+        ) : (
+          <button
+            key={`${token.value.source}:${token.value.start}:${token.value.path}`}
+            type="button"
+            className="cursor-pointer break-all text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            title={token.value.path}
+            aria-label={`Open host file ${token.value.path}`}
+            onClick={() => onOpenHostFile(token.value.path)}
+          >
+            {token.value.label}
+          </button>
+        ),
+      )}
+    </>
+  );
+}
+
+export function BlockView({ block, onOpenHostFile }: { block: Block; onOpenHostFile?: (path: string) => void }) {
   switch (block.kind) {
     // User turn — rendered by the ported UserBubble (verbatim topic component).
     case "user":
       return (
         <UserBubble
           message={{ id: "u", topic_id: "", role: "user", content: block.text, created_at: block.ts }}
+          contentRenderer={onOpenHostFile ? (text) => <ExplicitHostPathContent text={text} onOpenHostFile={onOpenHostFile} /> : undefined}
         >
           <UserAttachmentRows attachments={block.attachments} />
         </UserBubble>
@@ -81,7 +106,7 @@ export function BlockView({ block }: { block: Block }) {
               </div>
             )}
             <div className="mt-3 min-w-0 border-t border-border/70 pt-3 text-[13px] leading-6 text-foreground/90">
-              <MarkdownContent content={block.body} />
+              <MarkdownContent content={block.body} onOpenHostFile={onOpenHostFile} />
             </div>
             {block.replyCommand && (
               <pre className="mt-2 overflow-auto border-l-2 border-border bg-muted/25 px-3 py-2 font-mono text-[11.5px] text-muted-foreground">
@@ -141,10 +166,10 @@ export function BlockView({ block }: { block: Block }) {
               </div>
             </div>
 
-            {block.threadContext && <ExternalThreadContextView context={block.threadContext} />}
+            {block.threadContext && <ExternalThreadContextView context={block.threadContext} onOpenHostFile={onOpenHostFile} />}
 
             <div className="mt-3 min-w-0 border-t border-border/70 pt-3 text-[13px] leading-6 text-foreground/90">
-              {block.body ? <MarkdownContent content={block.body} /> : <span className="text-muted-foreground">Attachment message</span>}
+              {block.body ? <MarkdownContent content={block.body} onOpenHostFile={onOpenHostFile} /> : <span className="text-muted-foreground">Attachment message</span>}
             </div>
 
             <ExternalAttachmentRows attachments={block.attachments} />
@@ -196,10 +221,10 @@ export function BlockView({ block }: { block: Block }) {
                 {block.observedAt && <div className="mt-0.5" title="Time CodexLoom observed the event">observed {tsShort(block.observedAt)}</div>}
               </div>
             </div>
-            {block.summary && <div className="mt-3 border-t border-border/70 pt-3 text-[13px] leading-6 text-foreground/90"><MarkdownContent content={block.summary} /></div>}
+            {block.summary && <div className="mt-3 border-t border-border/70 pt-3 text-[13px] leading-6 text-foreground/90"><MarkdownContent content={block.summary} onOpenHostFile={onOpenHostFile} /></div>}
             <div className="mt-3 border-l-2 border-[var(--loom-teal)]/55 bg-[var(--loom-teal)]/5 px-3 py-2.5">
               <div className="font-mono text-[9.5px] font-semibold uppercase text-[var(--loom-teal)]">Resume from here</div>
-              <div className="mt-1 text-[12.5px] leading-5 text-foreground/85"><MarkdownContent content={block.resumeInstruction} /></div>
+              <div className="mt-1 text-[12.5px] leading-5 text-foreground/85"><MarkdownContent content={block.resumeInstruction} onOpenHostFile={onOpenHostFile} /></div>
             </div>
             {block.instruction && <div className="mt-2 text-[10.5px] leading-4 text-muted-foreground">{block.instruction}</div>}
             {block.observation && (
@@ -260,7 +285,7 @@ export function BlockView({ block }: { block: Block }) {
                   {block.payload.turnId && <span className="min-w-0 truncate font-mono text-[9.5px] text-muted-foreground">Turn {block.payload.turnId}</span>}
                 </div>
                 {block.payload.subject && <div className="mt-1.5 text-[13px] font-semibold text-foreground">{block.payload.subject}</div>}
-                {block.payload.body && <div className="mt-2 min-w-0 text-[13px] leading-6 text-foreground/90"><MarkdownContent content={block.payload.body} /></div>}
+                {block.payload.body && <div className="mt-2 min-w-0 text-[13px] leading-6 text-foreground/90"><MarkdownContent content={block.payload.body} onOpenHostFile={onOpenHostFile} /></div>}
                 {block.payload.reason && <div className="mt-2 border-l-2 border-warning/40 pl-3 text-[11.5px] leading-5 text-muted-foreground">Reason: {block.payload.reason}</div>}
               </section>
             )}
@@ -268,7 +293,7 @@ export function BlockView({ block }: { block: Block }) {
             {(block.briefSummary || block.currentState || block.yourResponsibility) && (
               <section className="mt-3 border-y border-border/70 py-3">
                 {block.briefSummary && <div className="text-[12.5px] font-medium leading-5 text-foreground">{block.briefSummary}</div>}
-                {block.currentState && <div className="mt-1.5 text-[12px] leading-5 text-muted-foreground"><MarkdownContent content={block.currentState} /></div>}
+                {block.currentState && <div className="mt-1.5 text-[12px] leading-5 text-muted-foreground"><MarkdownContent content={block.currentState} onOpenHostFile={onOpenHostFile} /></div>}
                 {block.yourResponsibility && (
                   <div className="mt-2 grid min-w-0 gap-1 sm:grid-cols-[112px_1fr] sm:gap-3">
                     <span className="font-mono text-[9.5px] font-semibold uppercase text-primary">Your responsibility</span>
@@ -285,10 +310,10 @@ export function BlockView({ block }: { block: Block }) {
                 <span className="ml-auto truncate text-[9px]">{block.topicId}</span>
               </summary>
               <div className="mt-2 divide-y divide-border/60 border-y border-border/60">
-                <TopicContextRow label="Purpose" value={block.purpose} markdown />
-                <TopicContextRow label="Completion" value={block.completionBoundary} markdown />
-                <TopicContextRow label="Next step" value={block.nextStep} markdown />
-                <TopicContextRow label="Limitations" value={block.limitations} markdown />
+                <TopicContextRow label="Purpose" value={block.purpose} markdown onOpenHostFile={onOpenHostFile} />
+                <TopicContextRow label="Completion" value={block.completionBoundary} markdown onOpenHostFile={onOpenHostFile} />
+                <TopicContextRow label="Next step" value={block.nextStep} markdown onOpenHostFile={onOpenHostFile} />
+                <TopicContextRow label="Limitations" value={block.limitations} markdown onOpenHostFile={onOpenHostFile} />
                 {block.links.length > 0 && (
                   <div className="grid min-w-0 gap-2 py-2.5 sm:grid-cols-[112px_1fr] sm:gap-3">
                     <span className="font-mono text-[9px] font-semibold uppercase">Key links</span>
@@ -509,16 +534,16 @@ function RouteMeta({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TopicContextRow({ label, value, markdown = false }: { label: string; value: string; markdown?: boolean }) {
+function TopicContextRow({ label, value, markdown = false, onOpenHostFile }: { label: string; value: string; markdown?: boolean; onOpenHostFile?: (path: string) => void }) {
   if (!value) return null;
   return (
     <StructuredContextRow label={label}>
-      {markdown ? <MarkdownContent content={value} /> : value}
+      {markdown ? <MarkdownContent content={value} onOpenHostFile={onOpenHostFile} /> : value}
     </StructuredContextRow>
   );
 }
 
-function ExternalThreadContextView({ context }: { context: ExternalThreadContext }) {
+function ExternalThreadContextView({ context, onOpenHostFile }: { context: ExternalThreadContext; onOpenHostFile?: (path: string) => void }) {
   const count = context.messages.length;
   return (
     <details className="group/context mt-3 border-y border-border/70 bg-muted/15" open>
@@ -554,7 +579,7 @@ function ExternalThreadContextView({ context }: { context: ExternalThreadContext
             </div>
             {message.body && (
               <div className="mt-1.5 min-w-0 text-[12.5px] leading-5 text-foreground/80">
-                <MarkdownContent content={message.body} />
+                <MarkdownContent content={message.body} onOpenHostFile={onOpenHostFile} />
               </div>
             )}
             {message.textTruncated && <div className="mt-1 font-mono text-[9.5px] text-warning">message truncated</div>}

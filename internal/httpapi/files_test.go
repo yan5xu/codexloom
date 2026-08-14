@@ -152,6 +152,18 @@ func TestHostFileErrorsAreClassifiableAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestHostFileMediaPreviewUsesInlineDisposition(t *testing.T) {
+	if got := fileDisposition("video/mp4", true, false); got != "inline" {
+		t.Fatalf("video preview disposition = %q", got)
+	}
+	if got := fileDisposition("audio/mpeg", true, false); got != "inline" {
+		t.Fatalf("audio preview disposition = %q", got)
+	}
+	if got := fileDisposition("image/svg+xml", true, false); got != "attachment" {
+		t.Fatalf("SVG preview disposition = %q", got)
+	}
+}
+
 func fileFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

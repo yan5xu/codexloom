@@ -164,7 +164,7 @@ func (s *Server) fileContent(w http.ResponseWriter, r *http.Request) {
 		writeFileError(w, &fileHTTPError{status: http.StatusInternalServerError, code: "read_failed", message: "failed to seek file"})
 		return
 	}
-	setFileHeaders(w, contentType, filepath.Base(path), info.ModTime(), false, r.URL.Query().Get("download") == "1")
+	setFileHeaders(w, contentType, filepath.Base(path), info.ModTime(), r.URL.Query().Get("preview") == "1", r.URL.Query().Get("download") == "1")
 	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
 }
 
@@ -251,7 +251,7 @@ func detectFileContentType(f *os.File, path string) (string, error) {
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
-	if byExtension := mime.TypeByExtension(filepath.Ext(path)); byExtension != "" && n == 0 {
+	if byExtension := mime.TypeByExtension(filepath.Ext(path)); byExtension != "" {
 		return byExtension, nil
 	}
 	if n > 0 {
@@ -321,6 +321,9 @@ func fileDisposition(contentType string, preview, download bool) string {
 		case "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain", "text/markdown", "application/json":
 			return "inline"
 		default:
+			if strings.HasPrefix(normalized, "audio/") || strings.HasPrefix(normalized, "video/") {
+				return "inline"
+			}
 			return "attachment"
 		}
 	}

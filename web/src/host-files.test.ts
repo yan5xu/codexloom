@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   absoluteHostPathFromHref,
+  fetchHostHome,
   fetchHostTextPreview,
   findExplicitHostPaths,
   hostFileContentURL,
@@ -8,6 +9,13 @@ import {
   tokenizeExplicitHostPaths,
 } from "./host-files";
 import { afterEach, vi } from "vitest";
+
+function jsonResponse(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -71,6 +79,18 @@ describe("tokenizeExplicitHostPaths", () => {
 });
 
 describe("Host file API helpers", () => {
+  it("requests the Host home endpoint without path, query, or body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ path: "/Users/cp", name: "cp", kind: "directory", readable: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchHostHome()).resolves.toEqual({ path: "/Users/cp", name: "cp", kind: "directory", readable: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/files/home",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("body");
+  });
+
   it("requests a bounded preview and preserves the truncation headers", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("0123", {
       status: 200,

@@ -21,6 +21,13 @@ export interface HostDirectory extends HostFileEntry {
   entries: HostFileEntry[];
 }
 
+export interface HostHomeDirectory {
+  path: string;
+  name: string;
+  kind: "directory";
+  readable: boolean;
+}
+
 export type HostFileNode = HostDirectory | HostFileEntry;
 
 export interface HostFileErrorPayload {
@@ -92,6 +99,15 @@ async function hostFileFetch(path: string, init?: RequestInit) {
 export async function fetchHostFileNode(path: string, signal?: AbortSignal): Promise<HostFileNode> {
   const response = await hostFileFetch(path, { signal });
   return (await response.json()) as HostFileNode;
+}
+
+export async function fetchHostHome(signal?: AbortSignal): Promise<HostHomeDirectory> {
+  const response = await fetch("/api/files/home", {
+    credentials: "same-origin",
+    signal,
+  });
+  if (!response.ok) await hostFileResponseError(response);
+  return (await response.json()) as HostHomeDirectory;
 }
 
 export async function fetchHostTextPreview(path: string, maxBytes = MAX_HOST_PREVIEW_BYTES, signal?: AbortSignal): Promise<HostTextPreview> {

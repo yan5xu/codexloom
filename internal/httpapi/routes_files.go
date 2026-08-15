@@ -50,10 +50,57 @@ type fileListing struct {
 	Entries    []fileEntry `json:"entries,omitempty"`
 }
 
+type fileHomeResponse struct {
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Readable bool   `json:"readable"`
+}
+
 func (s *Server) registerFileRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/files", s.fileMetadata)
+	mux.HandleFunc("GET /api/files/home", s.fileHome)
 	mux.HandleFunc("GET /api/files/preview", s.filePreview)
 	mux.HandleFunc("GET /api/files/content", s.fileContent)
+}
+
+func (s *Server) fileHome(w http.ResponseWriter, r *http.Request) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeFileError(w, &fileHTTPError{status: http.StatusInternalServerError, code: "home_unavailable", message: "host home is unavailable"})
+		return
+	}
+	home = filepath.Clean(home)
+	info, err := os.Stat(home)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeFileError(w, &fileHTTPError{status: http.StatusNotFound, code: "home_not_found", message: "host home was not found"})
+			return
+		}
+		if errors.Is(err, os.ErrPermission) {
+			writeFileError(w, &fileHTTPError{status: http.StatusForbidden, code: "not_readable", message: "host home is not readable"})
+			return
+		}
+		writeFileError(w, &fileHTTPError{status: http.StatusInternalServerError, code: "home_unavailable", message: "host home is unavailable"})
+		return
+	}
+	if !info.IsDir() {
+		writeFileError(w, &fileHTTPError{status: http.StatusConflict, code: "home_not_directory", message: "host home is not a directory"})
+		return
+	}
+	f, err := os.Open(home)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			writeFileError(w, &fileHTTPError{status: http.StatusForbidden, code: "not_readable", message: "host home is not readable"})
+			return
+		}
+		writeFileError(w, &fileHTTPError{status: http.StatusInternalServerError, code: "home_unavailable", message: "host home is unavailable"})
+		return
+	}
+	_ = f.Close()
+	writeJSON(w, http.StatusOK, fileHomeResponse{
+		Path: home, Name: filepath.Base(home), Kind: "directory", Readable: true,
+	})
 }
 
 func (s *Server) fileMetadata(w http.ResponseWriter, r *http.Request) {

@@ -149,6 +149,34 @@ describe("HostFilesPane", () => {
     expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(fetchCallsBeforeBlur);
   });
 
+  it("restores the breadcrumb when a Tab-like focus transfer leaves the path input", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(rootDirectory));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <>
+        <HostFilesPane initialPath="/tmp/issue69-file-fixture" />
+        <button type="button" aria-label="External focus target">External focus target</button>
+      </>,
+    );
+    await screen.findByText(".hidden");
+
+    const pathInput = editPath();
+    fireEvent.change(pathInput, { target: { value: "/tmp/tab-blurred" } });
+    const fetchCallsBeforeBlur = fetchMock.mock.calls.length;
+    const externalTarget = screen.getByRole("button", { name: "External focus target" });
+
+    fireEvent.keyDown(pathInput, { key: "Tab", code: "Tab" });
+    externalTarget.focus();
+    expect(document.activeElement).toBe(externalTarget);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("textbox", { name: "Absolute Host path" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("issue69-file-fixture");
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(fetchCallsBeforeBlur);
+  });
+
   it("keeps the workspace fixed and confines directory rows to the list scroll region", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(rootDirectory)));
 

@@ -62,6 +62,28 @@ describe("HostFilesPane", () => {
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
   });
 
+  it("does not duplicate the root path and shows breadcrumbs only for nested navigation", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("path=%2Ftmp%2Fissue69-file-fixture%2Fnested")) {
+        return Promise.resolve(jsonResponse({ ...rootDirectory, path: "/tmp/issue69-file-fixture/nested", name: "nested", entries: [] }));
+      }
+      return Promise.resolve(jsonResponse({ ...rootDirectory, path: "/", name: "/", entries: [] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<HostFilesPane initialPath="/" />);
+    expect(await screen.findByText("0 items · hidden files included")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Absolute Host path" })).toHaveValue("/");
+    expect(screen.queryByRole("navigation", { name: "Host file path" })).not.toBeInTheDocument();
+
+    const pathInput = screen.getByRole("textbox", { name: "Absolute Host path" });
+    fireEvent.change(pathInput, { target: { value: "/tmp/issue69-file-fixture/nested" } });
+    fireEvent.submit(screen.getByRole("form", { name: "Go to absolute Host path" }));
+    expect(await screen.findByText("0 items · hidden files included")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Host file path" })).toBeInTheDocument();
+  });
+
   it("filters the current directory and sorts locally without another directory request", async () => {
     const searchableDirectory = {
       ...rootDirectory,
@@ -87,7 +109,7 @@ describe("HostFilesPane", () => {
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Search current directory" }), { target: { value: "probe" } });
     expect(screen.getByText("1 of 4 items · hidden files included")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Preview file: probe.txt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview file: probe.txt" })).toHaveAttribute("title", "/tmp/issue69-file-fixture/probe.txt");
     expect(screen.queryByRole("button", { name: "Preview file: zeta.txt" })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
@@ -195,12 +217,7 @@ describe("HostFilesPane", () => {
     expect(writeText).toHaveBeenCalledWith("/tmp/issue69-file-fixture/nested");
   });
 
-  it("shows the Pinix-style persistent preview on desktop instead of opening a modal", async () => {
-    vi.stubGlobal("matchMedia", vi.fn().mockImplementation(() => ({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })));
+  it("shows the same modal preview on desktop and keeps the list as the underlying view", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       if (String(input).startsWith("/api/files/preview?")) return Promise.resolve(new Response("desktop preview", { status: 200 }));
       return Promise.resolve(jsonResponse(rootDirectory));
@@ -210,9 +227,11 @@ describe("HostFilesPane", () => {
     render(<HostFilesPane initialPath="/tmp/issue69-file-fixture" />);
     await screen.findByText("probe.txt");
     fireEvent.click(screen.getByRole("button", { name: "Preview file: probe.txt" }));
-    expect(await screen.findByRole("complementary", { name: "File preview" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(await screen.findByText("desktop preview")).toBeInTheDocument();
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "File preview" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(await screen.findByRole("list", { name: "Host file entries" })).toBeInTheDocument();
   });
 
   it("shows a clear empty-directory state", async () => {

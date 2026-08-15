@@ -8,7 +8,6 @@ import {
   FileAudio,
   FileCode2,
   FileImage,
-  FileText,
   FileVideo,
   Folder,
   FolderOpen,
@@ -243,41 +242,6 @@ type PreviewState = {
   truncated: boolean;
 };
 
-function HostFilePreviewPanel({
-  file,
-  preview,
-  onRetry,
-  onClose,
-  onOpenHostFile,
-}: {
-  file: HostFileEntry | null;
-  preview: PreviewState;
-  onRetry: () => void;
-  onClose?: () => void;
-  onOpenHostFile?: (path: string) => void;
-}) {
-  if (!file) {
-    return (
-      <div className="flex min-h-[18rem] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/60 px-5 py-10 text-center">
-        <FileText className="size-7 text-muted-foreground/60" aria-hidden="true" />
-        <div className="mt-3 text-sm font-medium text-foreground">No file selected</div>
-        <p className="mt-1 max-w-xs text-[12px] leading-5 text-muted-foreground">Choose a file from this directory to preview its live contents.</p>
-      </div>
-    );
-  }
-
-  const kind = hostFilePreviewKind(file);
-  return (
-    <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-      <PreviewHeader file={file} onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        <PreviewBody file={file} kind={kind} {...preview} onRetry={onRetry} onOpenHostFile={onOpenHostFile} />
-      </div>
-      <PreviewFooter file={file} kind={kind} />
-    </div>
-  );
-}
-
 export function HostFilePreviewDialog({
   file,
   open,
@@ -378,12 +342,15 @@ function DirectoryToolbar({
 }
 
 function Breadcrumbs({ path, onSelect }: { path: string; onSelect: (path: string) => void }) {
+  const items = breadcrumbs(path);
+  if (items.length === 1) return null;
+
   return (
     <nav aria-label="Host file path" className="flex min-w-0 flex-wrap items-center gap-1 text-[11px]">
-      {breadcrumbs(path).map((crumb, index, items) => (
+      {items.map((crumb, index, allItems) => (
         <span key={crumb.path} className="flex min-w-0 items-center gap-1">
           {index > 0 ? <span className="text-muted-foreground/50" aria-hidden="true">/</span> : null}
-          {index === items.length - 1 ? (
+          {index === allItems.length - 1 ? (
             <span className="min-w-0 break-all font-mono text-foreground" aria-current="page">{crumb.label}</span>
           ) : (
             <button type="button" className="max-w-[14rem] break-all font-mono text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40" onClick={() => onSelect(crumb.path)}>
@@ -400,56 +367,35 @@ function DirectoryEntry({ entry, selected, onOpen }: { entry: HostFileEntry; sel
   const Icon = fileIcon(entry);
   const action = entry.kind === "directory" ? "Open directory" : "Preview file";
   return (
-    <li className="flex min-w-0 items-stretch gap-1">
+    <li className="flex min-w-0 items-center gap-1">
       <button
         type="button"
         onClick={() => onOpen(entry)}
         className={cn(
-          "flex min-w-0 flex-1 items-start gap-2.5 rounded-md border px-2.5 py-2 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
+          "flex min-w-0 flex-1 items-center gap-2 rounded-md border px-2 py-1.5 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
           selected ? "border-primary/40 bg-primary/5" : "border-transparent hover:border-border hover:bg-muted/45",
         )}
         aria-label={`${action}: ${entry.name}`}
         aria-pressed={entry.kind === "file" ? selected : undefined}
+        title={entry.path}
       >
-        <Icon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-        <span className="min-w-0 flex-1">
-          <span className="block break-all text-[12.5px] font-medium text-foreground">{entry.name}</span>
-          <span className="mt-0.5 block truncate font-mono text-[9.5px] text-muted-foreground" title={entry.path}>{entry.path}</span>
-          {entry.errorCode ? <span className="mt-0.5 block text-[9.5px] text-destructive">{entry.errorCode}</span> : null}
-          <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[9.5px] text-muted-foreground">
-            <span>{entry.kind === "directory" ? "Folder" : hostFilePreviewKind(entry)}</span>
-            <span>{formatHostFileSize(entry.size)}</span>
-            <span>{formatHostFileModifiedAt(entry.modifiedAt)}</span>
+        <Icon className="size-4 shrink-0 text-primary" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">{entry.name}</span>
+        <span className="shrink-0 text-[9px] text-muted-foreground sm:hidden">{formatHostFileSize(entry.size)}</span>
+        <span className="hidden min-w-0 max-w-[52%] shrink items-center justify-end gap-2 text-[9.5px] text-muted-foreground sm:flex">
+          <span className={cn("min-w-0 truncate", entry.errorCode && "text-destructive")} title={entry.errorCode || undefined}>
+            {entry.errorCode || (entry.kind === "directory" ? "Folder" : hostFilePreviewKind(entry))}
           </span>
+          <span className="shrink-0">{formatHostFileSize(entry.size)}</span>
+          <span className="hidden shrink-0 lg:inline">{formatHostFileModifiedAt(entry.modifiedAt)}</span>
         </span>
+        {entry.errorCode ? (
+          <span className="sr-only">{entry.errorCode}</span>
+        ) : null}
       </button>
       <CopyPathButton path={entry.path} compact />
     </li>
   );
-}
-
-function initialCompactPreview() {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
-  return window.matchMedia("(max-width: 1023px)").matches;
-}
-
-function useCompactPreview() {
-  const [compact, setCompact] = useState(initialCompactPreview);
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const media = window.matchMedia("(max-width: 1023px)");
-    const update = () => setCompact(media.matches);
-    update();
-    if (media.addEventListener) media.addEventListener("change", update);
-    else media.addListener?.(update);
-    return () => {
-      if (media.removeEventListener) media.removeEventListener("change", update);
-      else media.removeListener?.(update);
-    };
-  }, []);
-
-  return compact;
 }
 
 function compareEntries(left: HostFileEntry, right: HostFileEntry, sort: HostFileSort) {
@@ -487,8 +433,6 @@ export function HostFilesPane({ initialPath = "/", onOpenHostFile }: { initialPa
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<HostFileSort>("name");
   const [revision, setRevision] = useState(0);
-  const compactPreview = useCompactPreview();
-
   useEffect(() => {
     const nextPath = initialPath || "/";
     if (pathRef.current !== nextPath) {
@@ -739,14 +683,9 @@ export function HostFilesPane({ initialPath = "/", onOpenHostFile }: { initialPa
               <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground" role="status"><Loader2 className="size-4 animate-spin" />Loading files…</div>
             ) : null}
           </section>
-          {!compactPreview ? (
-            <aside className="min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-9rem)]" aria-label="File preview">
-              <HostFilePreviewPanel file={previewFile} preview={preview} onRetry={retryPreview} onClose={() => setPreviewFile(null)} onOpenHostFile={openPath} />
-            </aside>
-          ) : null}
         </div>
       </div>
-      {compactPreview ? <HostFilePreviewDialog file={previewFile} open={Boolean(previewFile)} onOpenChange={(open) => { if (!open) setPreviewFile(null); }} preview={preview} onRetry={retryPreview} onOpenHostFile={openPath} /> : null}
+      <HostFilePreviewDialog file={previewFile} open={Boolean(previewFile)} onOpenChange={(open) => { if (!open) setPreviewFile(null); }} preview={preview} onRetry={retryPreview} onOpenHostFile={openPath} />
     </main>
   );
 }

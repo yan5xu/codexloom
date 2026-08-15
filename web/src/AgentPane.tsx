@@ -12,6 +12,7 @@ import { UsageBarTooltip, usageDayLabel } from "./components/UsageBarTooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { subscribeThreadEvents } from "./thread-events";
 import { oldestWaitingMs } from "./product-state";
+import { blockStableID, markerPercent, messageMarkerForBlock, type MessageMarker } from "./message-markers";
 
 const CUSTOM_MODEL_VALUE = "__custom";
 const FALLBACK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -62,9 +63,65 @@ function formatAttachmentSize(bytes: number) {
 }
 
 function feedBlockKey(block: Block) {
-  if (block.kind === "user") return `user:${block.ts}:${block.text.slice(0, 48)}`;
-  if (block.kind === "sys") return `sys:${block.ts}:${block.text.slice(0, 48)}`;
-  return `${block.kind}:${block.id}`;
+  return blockStableID(block);
+}
+
+type PositionedMessageMarker = MessageMarker & { position: number };
+
+function MessageMarkerRail({ markers, highlightedID, onSelect }: {
+  markers: PositionedMessageMarker[];
+  highlightedID: string;
+  onSelect: (id: string) => void;
+}) {
+  const [hoveredID, setHoveredID] = useState("");
+  const [focusedID, setFocusedID] = useState("");
+  if (markers.length === 0) return null;
+  const previewID = hoveredID || focusedID || highlightedID;
+  const previewMarker = markers.find((marker) => marker.id === previewID);
+  return (
+    <div
+      className="pointer-events-none absolute inset-y-1 right-0 z-20 w-3"
+      data-testid="message-marker-rail"
+      aria-label="Loaded message markers"
+    >
+      <div className="absolute inset-y-0 right-0.5 w-px bg-border/80" />
+      {previewMarker && (
+        <div
+          className="pointer-events-none absolute right-4 z-30 overflow-visible rounded-lg border border-border/80 bg-card/95 px-3 py-2 text-foreground shadow-[0_10px_30px_rgb(15_23_42_/_0.16)] backdrop-blur-md"
+          data-testid="message-marker-hover-card"
+          style={{
+            top: `clamp(0px, calc(${previewMarker.position}% - 28px), calc(100% - 58px))`,
+            width: "min(18rem, calc(100vw - 2rem))",
+          }}
+        >
+          <span className="absolute -right-1 top-5 size-2 rotate-45 border-r border-t border-border/80 bg-card" aria-hidden="true" />
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={`size-2 shrink-0 rounded-sm ${previewMarker.colorClass}`} aria-hidden="true" />
+            <span className="truncate text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{previewMarker.typeLabel}</span>
+          </div>
+          <p className="mt-1 max-h-9 overflow-hidden break-words text-[11px] font-medium leading-[1.15rem]">{previewMarker.detail}</p>
+          <span className="mt-1 block text-[9px] text-muted-foreground">Click to jump</span>
+        </div>
+      )}
+      {markers.map((marker) => (
+        <button
+          key={marker.id}
+          type="button"
+          aria-label={`Jump to ${marker.label}`}
+          data-message-marker-id={marker.id}
+          data-message-marker-kind={marker.kind}
+          aria-current={highlightedID === marker.id ? "true" : undefined}
+          onClick={() => onSelect(marker.id)}
+          onMouseEnter={() => setHoveredID(marker.id)}
+          onMouseLeave={() => setHoveredID((current) => current === marker.id ? "" : current)}
+          onFocus={() => setFocusedID(marker.id)}
+          onBlur={() => setFocusedID((current) => current === marker.id ? "" : current)}
+          className={`pointer-events-auto absolute right-0 h-[3px] w-2 rounded-l-full ${marker.colorClass} opacity-75 shadow-[0_0_0_1px_rgb(255_255_255_/_0.5)] transition-[width,height,opacity,transform] duration-150 hover:z-10 hover:h-1 hover:w-4 hover:opacity-100 focus-visible:z-10 focus-visible:h-1 focus-visible:w-4 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+          style={{ top: `calc(${marker.position}% - 1.5px)` }}
+        />
+      ))}
+    </div>
+  );
 }
 
 export function AgentPane({
@@ -111,6 +168,7 @@ export function AgentPane({
   const [interruptedAction, setInterruptedAction] = useState<"continue" | "dismiss" | "">("");
   const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [sendKind, setSendKind] = useState<"task" | "answer" | "compact">("task");
+  const [highlightedMessageID, setHighlightedMessageID] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
   const [configSection, setConfigSection] = useState<"profile" | "team" | "external" | "triggers" | "runtime" | "usage">("profile");
   const [nameDraft, setNameDraft] = useState(agent.name);
@@ -149,6 +207,8 @@ export function AgentPane({
   const scrollAnchorTimerRef = useRef<number | null>(null);
   const virtualPinTimerRef = useRef<number | null>(null);
   const initialBottomSettleTimerRef = useRef<number | null>(null);
+  const markerHighlightTimerRef = useRef<number | null>(null);
+  const markerRevealTimerRef = useRef<number | null>(null);
   const loadedRef = useRef(0); // turns loaded so far
   const totalRef = useRef(0); // total turns in rollout
   const loadingRef = useRef(false);
@@ -216,6 +276,63 @@ export function AgentPane({
       }, sync ? 180 : 0);
     },
   });
+
+  const messageIndex = useMemo(() => {
+    const next = new Map<string, number>();
+    feedRows.forEach((row, index) => {
+      if (row.kind === "block") next.set(blockStableID(row.block), index);
+    });
+    return next;
+  }, [feedRows]);
+
+  const messageMarkers: PositionedMessageMarker[] = (() => {
+    const virtualItems = new Map(feedVirtualizer.getVirtualItems().map((item) => [String(item.key), item]));
+    const totalSize = Math.max(feedVirtualizer.getTotalSize(), 1);
+    return feedRows.flatMap((row, index) => {
+      if (row.kind !== "block") return [];
+      const marker = messageMarkerForBlock(row.block);
+      const virtualItem = virtualItems.get(row.key);
+      const position = virtualItem
+        ? Math.min(99.5, Math.max(0.5, (virtualItem.start / totalSize) * 100))
+        : markerPercent(index, feedRows.length);
+      return [{ ...marker, position }];
+    });
+  })();
+
+  const jumpToMessage = useCallback((messageID: string) => {
+    const index = messageIndex.get(messageID);
+    if (index === undefined) return;
+    if (markerHighlightTimerRef.current !== null) window.clearTimeout(markerHighlightTimerRef.current);
+    if (markerRevealTimerRef.current !== null) window.clearTimeout(markerRevealTimerRef.current);
+    setHighlightedMessageID(messageID);
+    feedVirtualizer.scrollToIndex(index, { align: "center" });
+
+    let attempts = 0;
+    const reveal = () => {
+      const element = Array.from(feedRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") || [])
+        .find((candidate) => candidate.dataset.messageId === messageID);
+      if (element) {
+        if (typeof element.scrollIntoView === "function") element.scrollIntoView({ block: "center", behavior: "smooth" });
+        markerRevealTimerRef.current = null;
+        return;
+      }
+      if (attempts >= 12) {
+        markerRevealTimerRef.current = null;
+        return;
+      }
+      attempts += 1;
+      markerRevealTimerRef.current = window.setTimeout(reveal, 50);
+    };
+    markerRevealTimerRef.current = window.setTimeout(reveal, 0);
+    markerHighlightTimerRef.current = window.setTimeout(() => {
+      markerHighlightTimerRef.current = null;
+      setHighlightedMessageID("");
+    }, 1500);
+  }, [feedVirtualizer, messageIndex]);
+
+  useEffect(() => {
+    if (highlightedMessageID && !messageIndex.has(highlightedMessageID)) setHighlightedMessageID("");
+  }, [highlightedMessageID, messageIndex]);
   useEffect(() => {
     if (!active) return;
     // Virtualizer.measure() clears every cached row size. Existing tall rows
@@ -259,6 +376,8 @@ export function AgentPane({
     if (scrollAnchorTimerRef.current !== null) window.clearTimeout(scrollAnchorTimerRef.current);
     if (virtualPinTimerRef.current !== null) window.clearTimeout(virtualPinTimerRef.current);
     if (initialBottomSettleTimerRef.current !== null) window.clearTimeout(initialBottomSettleTimerRef.current);
+    if (markerHighlightTimerRef.current !== null) window.clearTimeout(markerHighlightTimerRef.current);
+    if (markerRevealTimerRef.current !== null) window.clearTimeout(markerRevealTimerRef.current);
     for (const attachment of attachmentsRef.current) {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
     }
@@ -1278,12 +1397,16 @@ export function AgentPane({
               {active ? feedVirtualizer.getVirtualItems().map((virtualRow) => {
                 const row = feedRows[virtualRow.index];
                 if (!row) return null;
+                const messageID = row.kind === "block" ? blockStableID(row.block) : "";
                 return (
                   <div
                     key={virtualRow.key}
                     data-index={virtualRow.index}
+                    data-message-id={messageID || undefined}
+                    data-message-kind={row.kind === "block" ? messageMarkerForBlock(row.block).kind : undefined}
+                    data-message-highlighted={messageID && highlightedMessageID === messageID ? "true" : undefined}
                     ref={measureFeedRow}
-                    className="absolute left-0 top-0 flow-root w-full py-px"
+                    className={`absolute left-0 top-0 flow-root w-full py-px transition-[background-color,box-shadow] duration-300 ${messageID && highlightedMessageID === messageID ? "rounded-md bg-[var(--loom-blue)]/8 ring-2 ring-[var(--loom-blue)]/55" : ""}`}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {row.kind === "approval" ? (
@@ -1317,6 +1440,13 @@ export function AgentPane({
             </div>
           </div>
         </div>
+        {active && (
+          <MessageMarkerRail
+            markers={messageMarkers}
+            highlightedID={highlightedMessageID}
+            onSelect={jumpToMessage}
+          />
+        )}
         {active && showJumpToBottom && (
           <button
             type="button"

@@ -1,5 +1,8 @@
 import {
   AlertCircle,
+  ArrowDownUp,
+  Check,
+  Copy,
   Download,
   File,
   FileAudio,
@@ -11,8 +14,10 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
+  Search,
+  X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   fetchHostFileNode,
   fetchHostTextPreview,
@@ -27,7 +32,6 @@ import {
   type HostFileNode,
   type HostFilePreviewKind,
 } from "./host-files";
-import type { ReactNode } from "react";
 import { Button, buttonVariants } from "./components/ui/button";
 import {
   Dialog,
@@ -37,13 +41,10 @@ import {
   DialogTitle,
 } from "./components/ui/dialog";
 import { MarkdownContent } from "./pages/agent/markdown";
+import { copyText } from "./lib/clipboard";
 import { cn } from "./lib/utils";
 
-function parentDirectory(path: string) {
-  const normalized = path.replace(/\/+$/, "") || "/";
-  const slash = normalized.lastIndexOf("/");
-  return slash <= 0 ? "/" : normalized.slice(0, slash);
-}
+type HostFileSort = "name" | "type" | "size" | "modified";
 
 function breadcrumbs(path: string) {
   const normalized = path.startsWith("/") ? path.replace(/\/+$/, "") || "/" : `/${path}`;
@@ -81,6 +82,10 @@ function fileIcon(entry: Pick<HostFileEntry, "kind" | "mimeType" | "path">) {
   }
 }
 
+function entryType(entry: HostFileEntry) {
+  return entry.kind === "directory" ? "folder" : hostFilePreviewKind(entry);
+}
+
 function FileMetadata({ file }: { file: HostFileEntry }) {
   return (
     <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-muted-foreground">
@@ -93,6 +98,35 @@ function FileMetadata({ file }: { file: HostFileEntry }) {
   );
 }
 
+function CopyPathButton({ path, compact = false }: { path: string; compact?: boolean }) {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const label = status === "copied" ? "Path copied" : status === "failed" ? "Copy path failed" : "Copy path";
+
+  const copyPath = async () => {
+    const copied = await copyText(path);
+    setStatus(copied ? "copied" : "failed");
+    window.setTimeout(() => setStatus("idle"), 1600);
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size={compact ? "icon-sm" : "sm"}
+      onClick={copyPath}
+      aria-label={label}
+      title={label}
+      className={cn(
+        compact ? "size-7" : "h-7 px-2 text-[10px]",
+        status === "copied" ? "text-success" : status === "failed" ? "text-destructive" : "text-muted-foreground",
+      )}
+    >
+      {status === "copied" ? <Check /> : status === "failed" ? <AlertCircle /> : <Copy />}
+      {!compact ? <span aria-live="polite">{label}</span> : null}
+    </Button>
+  );
+}
+
 function PreviewBody({
   file,
   kind,
@@ -100,6 +134,7 @@ function PreviewBody({
   loading,
   error,
   truncated,
+  onRetry,
   onOpenHostFile,
 }: {
   file: HostFileEntry;
@@ -108,17 +143,24 @@ function PreviewBody({
   loading: boolean;
   error: string;
   truncated: boolean;
+  onRetry: () => void;
   onOpenHostFile?: (path: string) => void;
 }) {
   if (!file.readable) {
     return <PreviewMessage tone="error">This file is not readable by the Host process.</PreviewMessage>;
   }
-  if (error) return <PreviewMessage tone="error">{error}</PreviewMessage>;
+  if (error) {
+    return (
+      <PreviewMessage tone="error" action={<Button type="button" variant="outline" size="sm" onClick={onRetry}>Retry</Button>}>
+        {error}
+      </PreviewMessage>
+    );
+  }
   if (loading) {
     return (
       <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
         <Loader2 className="size-4 animate-spin" />
-        Reading a bounded preview…
+        Reading file…
       </div>
     );
   }
@@ -129,7 +171,7 @@ function PreviewBody({
       return (
         <div className="min-w-0">
           {truncated ? <PreviewMessage>Preview limited to {formatHostFileSize(MAX_HOST_PREVIEW_BYTES)}. Download the file for the complete content.</PreviewMessage> : null}
-          <pre className="max-h-[min(62dvh,680px)] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/25 p-3 font-mono text-[12px] leading-5 text-foreground">{text}</pre>
+          <pre className="max-h-[min(58dvh,640px)] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/25 p-3 font-mono text-[12px] leading-5 text-foreground">{text}</pre>
         </div>
       );
     case "markdown":
@@ -140,22 +182,98 @@ function PreviewBody({
         </div>
       );
     case "image":
-      return <img src={contentURL} alt={file.name} className="mx-auto max-h-[min(65dvh,720px)] max-w-full object-contain" />;
+      return <img src={contentURL} alt={file.name} className="mx-auto max-h-[min(60dvh,680px)] max-w-full object-contain" />;
     case "pdf":
-      return <iframe title={`Preview of ${file.name}`} src={contentURL} className="h-[min(68dvh,740px)] min-h-80 w-full rounded-md border border-border" />;
+      return <iframe title={`Preview of ${file.name}`} src={contentURL} className="h-[min(64dvh,680px)] min-h-80 w-full rounded-md border border-border" />;
     case "audio":
       return <audio controls preload="metadata" src={contentURL} className="w-full" aria-label={`Preview of ${file.name}`} />;
     case "video":
-      return <video controls preload="metadata" src={contentURL} className="mx-auto max-h-[min(65dvh,720px)] max-w-full" aria-label={`Preview of ${file.name}`} />;
+      return <video controls preload="metadata" src={contentURL} className="mx-auto max-h-[min(60dvh,680px)] max-w-full" aria-label={`Preview of ${file.name}`} />;
     case "unknown":
       return <PreviewMessage>This format has no inline preview. Use Download to retrieve the live file.</PreviewMessage>;
   }
 }
 
-function PreviewMessage({ children, tone = "muted" }: { children: ReactNode; tone?: "muted" | "error" }) {
+function PreviewMessage({ children, tone = "muted", action }: { children: ReactNode; tone?: "muted" | "error"; action?: ReactNode }) {
   return (
     <div className={cn("mb-3 rounded-md border px-3 py-2 text-[12px] leading-5", tone === "error" ? "border-destructive/35 bg-destructive/5 text-destructive" : "border-border bg-muted/25 text-muted-foreground")} role={tone === "error" ? "alert" : undefined}>
-      {children}
+      <div className="min-w-0 break-words">{children}</div>
+      {action ? <div className="mt-2">{action}</div> : null}
+    </div>
+  );
+}
+
+function PreviewHeader({ file, onClose }: { file: HostFileEntry; onClose?: () => void }) {
+  const Icon = fileIcon(file);
+  return (
+    <div className="min-w-0 border-b border-border px-4 py-3">
+      <div className="flex min-w-0 items-start gap-2">
+        <Icon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <div className="break-all text-sm font-semibold text-foreground">{file.name}</div>
+          <div className="mt-1 text-[11px] text-muted-foreground">{file.kind === "directory" ? "Folder" : hostFilePreviewKind(file)}</div>
+        </div>
+        {onClose ? <Button type="button" variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close preview" title="Close preview"><X /></Button> : null}
+      </div>
+      <div className="mt-3 flex min-w-0 items-start gap-1 rounded-md bg-muted/35 px-2 py-1.5">
+        <code className="min-w-0 flex-1 select-text break-all font-mono text-[10px] leading-4 text-muted-foreground" title={file.path}>{file.path}</code>
+        <CopyPathButton path={file.path} compact />
+      </div>
+      <div className="mt-2"><FileMetadata file={file} /></div>
+    </div>
+  );
+}
+
+function PreviewFooter({ file, kind }: { file: HostFileEntry; kind: HostFilePreviewKind }) {
+  return (
+    <div className="flex flex-col gap-2 border-t border-border bg-muted/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+      <span className="min-w-0 break-all text-left font-mono text-[10px] text-muted-foreground">{kind === "unknown" ? "metadata only" : kind}</span>
+      <a className={buttonVariants({ variant: "outline", size: "sm" })} href={hostFileContentURL(file.path, "download")} download>
+        <Download />
+        Download
+      </a>
+    </div>
+  );
+}
+
+type PreviewState = {
+  text: string;
+  loading: boolean;
+  error: string;
+  truncated: boolean;
+};
+
+function HostFilePreviewPanel({
+  file,
+  preview,
+  onRetry,
+  onClose,
+  onOpenHostFile,
+}: {
+  file: HostFileEntry | null;
+  preview: PreviewState;
+  onRetry: () => void;
+  onClose?: () => void;
+  onOpenHostFile?: (path: string) => void;
+}) {
+  if (!file) {
+    return (
+      <div className="flex min-h-[18rem] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/60 px-5 py-10 text-center">
+        <FileText className="size-7 text-muted-foreground/60" aria-hidden="true" />
+        <div className="mt-3 text-sm font-medium text-foreground">No file selected</div>
+        <p className="mt-1 max-w-xs text-[12px] leading-5 text-muted-foreground">Choose a file from this directory to preview its live contents.</p>
+      </div>
+    );
+  }
+
+  const kind = hostFilePreviewKind(file);
+  return (
+    <div className="flex min-h-[18rem] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+      <PreviewHeader file={file} onClose={onClose} />
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        <PreviewBody file={file} kind={kind} {...preview} onRetry={onRetry} onOpenHostFile={onOpenHostFile} />
+      </div>
+      <PreviewFooter file={file} kind={kind} />
     </div>
   );
 }
@@ -164,86 +282,97 @@ export function HostFilePreviewDialog({
   file,
   open,
   onOpenChange,
+  preview,
+  onRetry,
   onOpenHostFile,
 }: {
   file: HostFileEntry | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  preview: PreviewState;
+  onRetry: () => void;
   onOpenHostFile?: (path: string) => void;
 }) {
-  const kind = file ? hostFilePreviewKind(file) : "unknown";
-  const [text, setText] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [truncated, setTruncated] = useState(false);
-
-  useEffect(() => {
-    if (!open || !file || (kind !== "text" && kind !== "markdown")) return;
-    const controller = new AbortController();
-    let current = true;
-    setLoading(true);
-    setText("");
-    setError("");
-    setTruncated(false);
-    const start = window.setTimeout(() => {
-      fetchHostTextPreview(file.path, MAX_HOST_PREVIEW_BYTES, controller.signal)
-        .then((preview) => {
-          setText(preview.text);
-          setTruncated(preview.truncated);
-        })
-        .catch((reason: unknown) => {
-          if (reason instanceof DOMException && reason.name === "AbortError") return;
-          setError(hostErrorMessage(reason));
-        })
-        .finally(() => { if (current) setLoading(false); });
-    }, 0);
-    return () => {
-      current = false;
-      window.clearTimeout(start);
-      controller.abort();
-    };
-  }, [file?.path, kind, open]);
-
   if (!file) return null;
 
+  const kind = hostFilePreviewKind(file);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="h-dvh w-screen max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-none p-0 sm:h-[min(92dvh,920px)] sm:w-[min(96vw,1240px)] sm:max-w-none sm:rounded-xl">
         <DialogHeader className="min-w-0 border-b border-border px-4 py-3 pr-14">
-          <DialogTitle className="break-all pr-2">{file?.name || "Host file"}</DialogTitle>
-          {file ? (
-            <DialogDescription className="min-w-0 space-y-1">
-              <span className="block break-all font-mono text-[10px]">{file.path}</span>
-              <FileMetadata file={file} />
-            </DialogDescription>
-          ) : null}
+          <DialogTitle className="break-all pr-2">{file.name}</DialogTitle>
+          <DialogDescription className="min-w-0 space-y-2">
+            <div className="flex min-w-0 items-start gap-1 rounded-md bg-muted/35 px-2 py-1.5">
+              <code className="min-w-0 flex-1 select-text break-all font-mono text-[10px] leading-4" title={file.path}>{file.path}</code>
+              <CopyPathButton path={file.path} compact />
+            </div>
+            <FileMetadata file={file} />
+          </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 overflow-auto px-4 py-4">
-          {file ? <PreviewBody file={file} kind={kind} text={text} loading={loading} error={error} truncated={truncated} onOpenHostFile={onOpenHostFile} /> : null}
+          <PreviewBody file={file} kind={kind} {...preview} onRetry={onRetry} onOpenHostFile={onOpenHostFile} />
         </div>
-        <div className="-mx-4 -mb-4 flex flex-col gap-2 rounded-b-xl border-t border-border bg-muted/50 p-4 sm:flex-row sm:items-center sm:justify-between">
-          {file ? <span className="min-w-0 break-all text-left font-mono text-[10px] text-muted-foreground">{kind === "unknown" ? "metadata only" : kind}</span> : <span />}
-          {file ? (
-            <a className={buttonVariants({ variant: "outline", size: "sm" })} href={hostFileContentURL(file.path, "download")} download>
-              <Download />
-              Download
-            </a>
-          ) : null}
-        </div>
+        <PreviewFooter file={file} kind={kind} />
       </DialogContent>
     </Dialog>
   );
 }
 
-function DirectoryToolbar({ path, loading, onRefresh }: { path: string; loading: boolean; onRefresh: () => void }) {
+function DirectoryToolbar({
+  path,
+  pathDraft,
+  pathError,
+  loading,
+  onPathDraftChange,
+  onPathSubmit,
+  onRefresh,
+}: {
+  path: string;
+  pathDraft: string;
+  pathError: string;
+  loading: boolean;
+  onPathDraftChange: (value: string) => void;
+  onPathSubmit: () => void;
+  onRefresh: () => void;
+}) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <FolderOpen className="size-4 shrink-0 text-primary" aria-hidden="true" />
-      <span className="min-w-0 flex-1 break-all font-mono text-[12px] text-foreground" title={path}>{path}</span>
-      <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading} aria-label="Refresh host files">
-        <RefreshCw className={cn(loading && "animate-spin")} />
-        Refresh
-      </Button>
+    <div className="min-w-0 space-y-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <FolderOpen className="size-4 shrink-0 text-primary" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[15px] font-semibold text-foreground">Host files</div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">Browse files readable by the Host process. Read only.</div>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading} aria-label="Refresh host files">
+          <RefreshCw className={cn(loading && "animate-spin")} />
+          Refresh
+        </Button>
+      </div>
+      <form
+        aria-label="Go to absolute Host path"
+        className="flex min-w-0 flex-wrap items-center gap-1.5"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onPathSubmit();
+        }}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md border border-border bg-muted/35 px-2 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20">
+          <input
+            type="text"
+            value={pathDraft}
+            onChange={(event) => onPathDraftChange(event.target.value)}
+            aria-label="Absolute Host path"
+            placeholder="/absolute/path"
+            spellCheck={false}
+            className="min-w-0 flex-1 bg-transparent py-1.5 font-mono text-[11px] leading-4 outline-none placeholder:text-muted-foreground/65"
+          />
+          <CopyPathButton path={path} compact />
+        </div>
+        <Button type="submit" variant="outline" size="sm" disabled={loading}>
+          Go
+        </Button>
+      </form>
+      {pathError ? <div className="min-w-0 break-words text-[11px] text-destructive" role="alert">{pathError}</div> : null}
     </div>
   );
 }
@@ -267,39 +396,108 @@ function Breadcrumbs({ path, onSelect }: { path: string; onSelect: (path: string
   );
 }
 
-function DirectoryEntry({ entry, onOpen }: { entry: HostFileEntry; onOpen: (entry: HostFileEntry) => void }) {
+function DirectoryEntry({ entry, selected, onOpen }: { entry: HostFileEntry; selected: boolean; onOpen: (entry: HostFileEntry) => void }) {
   const Icon = fileIcon(entry);
   const action = entry.kind === "directory" ? "Open directory" : "Preview file";
   return (
-    <li>
-      <button type="button" onClick={() => onOpen(entry)} className="flex w-full min-w-0 items-start gap-3 rounded-md border border-transparent px-3 py-2.5 text-left outline-none transition-colors hover:border-border hover:bg-muted/45 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40" aria-label={`${action}: ${entry.name}`}>
+    <li className="flex min-w-0 items-stretch gap-1">
+      <button
+        type="button"
+        onClick={() => onOpen(entry)}
+        className={cn(
+          "flex min-w-0 flex-1 items-start gap-2.5 rounded-md border px-2.5 py-2 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40",
+          selected ? "border-primary/40 bg-primary/5" : "border-transparent hover:border-border hover:bg-muted/45",
+        )}
+        aria-label={`${action}: ${entry.name}`}
+        aria-pressed={entry.kind === "file" ? selected : undefined}
+      >
         <Icon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="block break-all text-[12.5px] font-medium text-foreground">{entry.name}</span>
-          <span className="mt-0.5 block break-all font-mono text-[10px] text-muted-foreground">{entry.path}</span>
-          {entry.errorCode ? <span className="mt-1 block text-[10px] text-destructive">{entry.errorCode}</span> : null}
-        </span>
-        <span className="flex max-w-[8rem] shrink-0 flex-col items-end break-words text-right font-mono text-[9.5px] text-muted-foreground sm:max-w-none sm:text-[10px]">
-          <span className="block uppercase">{entry.kind}</span>
-          <span className="mt-0.5 block">{formatHostFileSize(entry.size)}</span>
-          <span className="mt-0.5 block">{formatHostFileModifiedAt(entry.modifiedAt)}</span>
+          <span className="mt-0.5 block truncate font-mono text-[9.5px] text-muted-foreground" title={entry.path}>{entry.path}</span>
+          {entry.errorCode ? <span className="mt-0.5 block text-[9.5px] text-destructive">{entry.errorCode}</span> : null}
+          <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[9.5px] text-muted-foreground">
+            <span>{entry.kind === "directory" ? "Folder" : hostFilePreviewKind(entry)}</span>
+            <span>{formatHostFileSize(entry.size)}</span>
+            <span>{formatHostFileModifiedAt(entry.modifiedAt)}</span>
+          </span>
         </span>
       </button>
+      <CopyPathButton path={entry.path} compact />
     </li>
   );
 }
 
+function initialCompactPreview() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
+  return window.matchMedia("(max-width: 1023px)").matches;
+}
+
+function useCompactPreview() {
+  const [compact, setCompact] = useState(initialCompactPreview);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 1023px)");
+    const update = () => setCompact(media.matches);
+    update();
+    if (media.addEventListener) media.addEventListener("change", update);
+    else media.addListener?.(update);
+    return () => {
+      if (media.removeEventListener) media.removeEventListener("change", update);
+      else media.removeListener?.(update);
+    };
+  }, []);
+
+  return compact;
+}
+
+function compareEntries(left: HostFileEntry, right: HostFileEntry, sort: HostFileSort) {
+  if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
+  let result = 0;
+  if (sort === "type") result = entryType(left).localeCompare(entryType(right), undefined, { sensitivity: "base" });
+  if (sort === "size") result = left.size - right.size;
+  if (sort === "modified") result = new Date(left.modifiedAt).getTime() - new Date(right.modifiedAt).getTime();
+  if (result === 0) result = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+  return result;
+}
+
+function isAbsoluteHostPath(value: string) {
+  const trimmed = value.trim();
+  return trimmed === "/" || (trimmed.startsWith("/") && !trimmed.startsWith("//"));
+}
+
 export function HostFilesPane({ initialPath = "/", onOpenHostFile }: { initialPath?: string; onOpenHostFile?: (path: string) => void }) {
   const [path, setPath] = useState(initialPath || "/");
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const [pathDraft, setPathDraft] = useState(initialPath || "/");
+  const [pathError, setPathError] = useState("");
+  const pendingDirectPathRef = useRef<string | null>(null);
+  const directPathBeforeRef = useRef(initialPath || "/");
   const [node, setNode] = useState<HostFileNode | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [previewFile, setPreviewFile] = useState<HostFileEntry | null>(null);
+  const [previewText, setPreviewText] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [previewTruncated, setPreviewTruncated] = useState(false);
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<HostFileSort>("name");
   const [revision, setRevision] = useState(0);
+  const compactPreview = useCompactPreview();
 
   useEffect(() => {
-    setPath(initialPath || "/");
-    setPreviewFile(null);
+    const nextPath = initialPath || "/";
+    if (pathRef.current !== nextPath) {
+      setPath(nextPath);
+      setPreviewFile(null);
+    }
+    setPathDraft(nextPath);
+    setPathError("");
+    setSearch("");
   }, [initialPath]);
 
   useEffect(() => {
@@ -308,14 +506,27 @@ export function HostFilesPane({ initialPath = "/", onOpenHostFile }: { initialPa
     setLoading(true);
     setError("");
     setNode(null);
+    setPathDraft(path);
     const start = window.setTimeout(() => {
       fetchHostFileNode(path, controller.signal)
         .then((nextNode) => {
+          if (pendingDirectPathRef.current === path) {
+            pendingDirectPathRef.current = null;
+            onOpenHostFile?.(path);
+          }
           setNode(nextNode);
           if (nextNode.kind === "file" && path !== "/") setPreviewFile(nextNode);
         })
         .catch((reason: unknown) => {
           if (reason instanceof DOMException && reason.name === "AbortError") return;
+          if (pendingDirectPathRef.current === path) {
+            pendingDirectPathRef.current = null;
+            const fallback = directPathBeforeRef.current;
+            setPathError(`Could not open path: ${hostErrorMessage(reason)}`);
+            setPath(fallback);
+            setPathDraft(fallback);
+            return;
+          }
           setNode(null);
           setError(hostErrorMessage(reason));
         })
@@ -328,66 +539,214 @@ export function HostFilesPane({ initialPath = "/", onOpenHostFile }: { initialPa
     };
   }, [path, revision]);
 
+  const previewKind = previewFile ? hostFilePreviewKind(previewFile) : "unknown";
+  useEffect(() => {
+    if (!previewFile) {
+      setPreviewText("");
+      setPreviewLoading(false);
+      setPreviewError("");
+      setPreviewTruncated(false);
+      return;
+    }
+    setPreviewText("");
+    setPreviewError("");
+    setPreviewTruncated(false);
+    if (!previewFile.readable || (previewKind !== "text" && previewKind !== "markdown")) {
+      setPreviewLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let current = true;
+    setPreviewLoading(true);
+    const start = window.setTimeout(() => {
+      fetchHostTextPreview(previewFile.path, MAX_HOST_PREVIEW_BYTES, controller.signal)
+        .then((preview) => {
+          setPreviewText(preview.text);
+          setPreviewTruncated(preview.truncated);
+        })
+        .catch((reason: unknown) => {
+          if (reason instanceof DOMException && reason.name === "AbortError") return;
+          setPreviewError(hostErrorMessage(reason));
+        })
+        .finally(() => { if (current) setPreviewLoading(false); });
+    }, 0);
+    return () => {
+      current = false;
+      window.clearTimeout(start);
+      controller.abort();
+    };
+  }, [previewFile?.path, previewFile?.readable, previewKind, previewRevision]);
+
+  const preview = { text: previewText, loading: previewLoading, error: previewError, truncated: previewTruncated };
   const directory = node?.kind === "directory" ? (node as HostDirectory) : null;
   const entries = useMemo(() => {
     if (!directory) return [];
-    return [...directory.entries].sort((left, right) => left.kind === right.kind ? left.name.localeCompare(right.name) : left.kind === "directory" ? -1 : 1);
-  }, [directory]);
+    const query = search.trim().toLocaleLowerCase();
+    return [...directory.entries]
+      .filter((entry) => !query || entry.name.toLocaleLowerCase().includes(query))
+      .sort((left, right) => compareEntries(left, right, sort));
+  }, [directory, search, sort]);
 
   const refresh = () => {
+    setPathError("");
     setRevision((current) => current + 1);
   };
-
+  const retryPreview = () => setPreviewRevision((current) => current + 1);
+  const goHome = () => {
+    pendingDirectPathRef.current = null;
+    setPreviewFile(null);
+    setSearch("");
+    setPathDraft("/");
+    setPathError("");
+    setPath("/");
+    onOpenHostFile?.("/");
+  };
   const openEntry = (entry: HostFileEntry) => {
     if (entry.kind === "directory") {
+      pendingDirectPathRef.current = null;
       setPreviewFile(null);
+      setSearch("");
+      setPathDraft(entry.path);
+      setPathError("");
       setPath(entry.path);
     } else {
       setPreviewFile(entry);
     }
   };
-
   const openPath = (nextPath: string) => {
+    pendingDirectPathRef.current = null;
     setPreviewFile(null);
+    setSearch("");
+    setPathDraft(nextPath);
+    setPathError("");
     setPath(nextPath);
     onOpenHostFile?.(nextPath);
   };
+  const submitPath = () => {
+    const nextPath = pathDraft.trim();
+    if (!isAbsoluteHostPath(nextPath)) {
+      setPathError("Enter an absolute Host path starting with /.");
+      return;
+    }
+    setPathError("");
+    setPreviewFile(null);
+    setSearch("");
+    setPathDraft(nextPath);
+    if (nextPath === path) {
+      setRevision((current) => current + 1);
+      return;
+    }
+    directPathBeforeRef.current = path;
+    pendingDirectPathRef.current = nextPath;
+    setPath(nextPath);
+  };
+
+  const totalEntries = directory?.entries.length || 0;
+  const resultLabel = search.trim() ? `${entries.length} of ${totalEntries} items` : `${totalEntries} ${totalEntries === 1 ? "item" : "items"}`;
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" aria-label="Host files">
       <div className="shrink-0 border-b border-border px-4 py-3 md:px-6">
-        <div className="mx-auto max-w-[1080px] space-y-2">
-          <DirectoryToolbar path={path} loading={loading} onRefresh={refresh} />
+        <div className="mx-auto max-w-[1180px] space-y-2">
+          <DirectoryToolbar
+            path={path}
+            pathDraft={pathDraft}
+            pathError={pathError}
+            loading={loading}
+            onPathDraftChange={(value) => {
+              setPathDraft(value);
+              if (pathError) setPathError("");
+            }}
+            onPathSubmit={submitPath}
+            onRefresh={refresh}
+          />
           <Breadcrumbs path={path} onSelect={openPath} />
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1080px] px-4 py-4 md:px-6 md:py-6">
-          {error ? (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/35 bg-destructive/5 px-3 py-3 text-[12px] leading-5 text-destructive" role="alert">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span className="min-w-0 break-words">{error}</span>
-            </div>
-          ) : directory ? (
-            <>
-              <div className="mb-3 flex min-w-0 items-center justify-between gap-3">
-                <div className="min-w-0 break-all text-[12px] text-muted-foreground">{entries.length} {entries.length === 1 ? "entry" : "entries"} · hidden files included</div>
-                {directory.readable ? null : <span className="text-[11px] text-destructive">not readable</span>}
+        <div className="mx-auto grid min-w-0 max-w-[1180px] gap-4 px-4 py-4 md:px-6 md:py-6 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.78fr)]">
+          <section className="min-w-0" aria-label="Host file list">
+            {error ? (
+              <div className="rounded-md border border-destructive/35 bg-destructive/5 px-3 py-3 text-[12px] leading-5 text-destructive" role="alert">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                  <span className="min-w-0 flex-1 break-words">Failed to read directory: {error}</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={refresh}>Retry</Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={goHome}>Go to Home</Button>
+                </div>
               </div>
-              {entries.length > 0 ? <ul className="space-y-1">{entries.map((entry) => <DirectoryEntry key={entry.path} entry={entry} onOpen={openEntry} />)}</ul> : <div className="rounded-md border border-dashed border-border px-4 py-10 text-center text-[12px] text-muted-foreground">This directory is empty.</div>}
-            </>
-          ) : node?.kind === "file" ? (
-            <div className="rounded-md border border-border bg-card px-4 py-4">
-              <div className="break-all text-sm font-medium">{node.name}</div>
-              <FileMetadata file={node} />
-              <p className="mt-3 text-[12px] text-muted-foreground">The file preview is open. Use Download for the live file.</p>
-            </div>
-          ) : loading ? (
-            <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-muted-foreground" role="status"><Loader2 className="size-4 animate-spin" />Loading Host files…</div>
+            ) : directory ? (
+              <>
+                <div className="mb-3 flex min-w-0 flex-col gap-3">
+                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0 break-words text-[12px] text-muted-foreground">{resultLabel} · hidden files included</div>
+                    {directory.readable ? null : <span className="text-[11px] text-destructive">not readable</span>}
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
+                    <label className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-card px-2.5 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20">
+                      <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      <span className="sr-only">Search current directory</span>
+                      <input
+                        type="search"
+                        value={search}
+                        onChange={(event) => setSearch(event.target.value)}
+                        placeholder="Search current directory"
+                        aria-label="Search current directory"
+                        className="min-w-0 flex-1 bg-transparent py-1.5 text-[12px] outline-none placeholder:text-muted-foreground/65"
+                      />
+                    </label>
+                    <label className="flex shrink-0 items-center gap-2 rounded-md border border-border bg-card px-2.5">
+                      <ArrowDownUp className="size-3.5 text-muted-foreground" aria-hidden="true" />
+                      <span className="sr-only">Sort files</span>
+                      <select value={sort} onChange={(event) => setSort(event.target.value as HostFileSort)} aria-label="Sort files" className="bg-transparent py-1.5 text-[12px] outline-none">
+                        <option value="name">Name</option>
+                        <option value="type">Type</option>
+                        <option value="size">Size</option>
+                        <option value="modified">Modified</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                {totalEntries === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-12 text-center text-[12px] text-muted-foreground">
+                    <FolderOpen className="mx-auto size-6 text-muted-foreground/60" aria-hidden="true" />
+                    <div className="mt-3 font-medium text-foreground">This directory is empty</div>
+                    <p className="mt-1">Files created on the Host will appear here after Refresh.</p>
+                  </div>
+                ) : entries.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border bg-card/60 px-4 py-12 text-center text-[12px] text-muted-foreground">
+                    <Search className="mx-auto size-6 text-muted-foreground/60" aria-hidden="true" />
+                    <div className="mt-3 font-medium text-foreground">No items found</div>
+                    <p className="mt-1">Try a different name in this directory.</p>
+                  </div>
+                ) : (
+                  <ul className="space-y-1" aria-label="Host file entries" data-density="compact">
+                    {entries.map((entry) => <DirectoryEntry key={entry.path} entry={entry} selected={previewFile?.path === entry.path} onOpen={openEntry} />)}
+                  </ul>
+                )}
+              </>
+            ) : node?.kind === "file" ? (
+              <div className="rounded-xl border border-border bg-card px-4 py-4">
+                <div className="break-all text-sm font-medium">{node.name}</div>
+                <div className="mt-2 flex items-start gap-1"><code className="min-w-0 flex-1 select-text break-all font-mono text-[10px] text-muted-foreground">{node.path}</code><CopyPathButton path={node.path} compact /></div>
+                <div className="mt-2"><FileMetadata file={node} /></div>
+                <p className="mt-3 text-[12px] text-muted-foreground">The file preview is open. Use Download for the live file.</p>
+              </div>
+            ) : loading ? (
+              <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground" role="status"><Loader2 className="size-4 animate-spin" />Loading files…</div>
+            ) : null}
+          </section>
+          {!compactPreview ? (
+            <aside className="min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-9rem)]" aria-label="File preview">
+              <HostFilePreviewPanel file={previewFile} preview={preview} onRetry={retryPreview} onClose={() => setPreviewFile(null)} onOpenHostFile={openPath} />
+            </aside>
           ) : null}
         </div>
       </div>
-      <HostFilePreviewDialog file={previewFile} open={Boolean(previewFile)} onOpenChange={(open) => { if (!open) setPreviewFile(null); }} onOpenHostFile={(nextPath) => openPath(nextPath)} />
+      {compactPreview ? <HostFilePreviewDialog file={previewFile} open={Boolean(previewFile)} onOpenChange={(open) => { if (!open) setPreviewFile(null); }} preview={preview} onRetry={retryPreview} onOpenHostFile={openPath} /> : null}
     </main>
   );
 }

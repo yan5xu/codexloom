@@ -34,6 +34,11 @@ function entryButtons(container: HTMLElement) {
   return within(container).getAllByRole("button", { name: /^(Open directory|Preview file):/ });
 }
 
+function editPath() {
+  fireEvent.click(screen.getByRole("button", { name: "Edit absolute Host path" }));
+  return screen.getByRole("textbox", { name: "Absolute Host path" });
+}
+
 describe("HostFilesPane", () => {
   it("loads a directory only when the pane is selected, includes hidden files, navigates and refreshes", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -62,26 +67,92 @@ describe("HostFilesPane", () => {
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
   });
 
+  it("resolves the Host home before reading the default directory", async () => {
+    const homePath = "/Users/cp";
+    const homeDirectory = { ...rootDirectory, path: homePath, name: "cp" };
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/files/home") return Promise.resolve(jsonResponse({ path: homePath, name: "cp", kind: "directory", readable: true }));
+      if (url === `/api/files?path=${encodeURIComponent(homePath)}`) return Promise.resolve(jsonResponse(homeDirectory));
+      return Promise.resolve(jsonResponse(rootDirectory));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<HostFilesPane initialPath="/" />);
+    expect(await screen.findByText(".hidden")).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/files/home");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/files/home",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/files?path=%2FUsers%2Fcp",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+    expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent(homePath);
+  });
+
+  it("surfaces a home resolution error without guessing a fallback path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: { code: "home_unavailable", message: "home unavailable" } }, 500));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<HostFilesPane initialPath="/" />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not resolve Host home: home unavailable (home_unavailable)");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not duplicate the root path and shows breadcrumbs only for nested navigation", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("path=%2Ftmp%2Fissue69-file-fixture%2Fnested")) {
         return Promise.resolve(jsonResponse({ ...rootDirectory, path: "/tmp/issue69-file-fixture/nested", name: "nested", entries: [] }));
       }
+      if (url === "/api/files/home") return Promise.resolve(jsonResponse({ path: "/", name: "/", kind: "directory", readable: true }));
       return Promise.resolve(jsonResponse({ ...rootDirectory, path: "/", name: "/", entries: [] }));
     });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<HostFilesPane initialPath="/" />);
     expect(await screen.findByText("0 items · hidden files included")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Absolute Host path" })).toHaveValue("/");
-    expect(screen.queryByRole("navigation", { name: "Host file path" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("/");
+    expect(screen.getByRole("navigation", { name: "Host file path" })).toHaveTextContent("/");
 
-    const pathInput = screen.getByRole("textbox", { name: "Absolute Host path" });
+    const pathInput = editPath();
     fireEvent.change(pathInput, { target: { value: "/tmp/issue69-file-fixture/nested" } });
     fireEvent.submit(screen.getByRole("form", { name: "Go to absolute Host path" }));
     expect(await screen.findByText("0 items · hidden files included")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Host file path" })).toBeInTheDocument();
+  });
+
+  it("switches the fused breadcrumb to an editor and restores it on cancel or blur", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(rootDirectory)));
+
+    render(<HostFilesPane initialPath="/tmp/issue69-file-fixture" />);
+    await screen.findByText(".hidden");
+
+    const pathInput = editPath();
+    expect(pathInput).toHaveValue("/tmp/issue69-file-fixture");
+    fireEvent.change(pathInput, { target: { value: "/tmp/changed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("textbox", { name: "Absolute Host path" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("issue69-file-fixture");
+
+    const blurredInput = editPath();
+    fireEvent.change(blurredInput, { target: { value: "/tmp/blurred" } });
+    fireEvent.blur(blurredInput);
+    expect(screen.queryByRole("textbox", { name: "Absolute Host path" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("issue69-file-fixture");
+  });
+
+  it("keeps the workspace fixed and confines directory rows to the list scroll region", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(rootDirectory)));
+
+    render(<HostFilesPane initialPath="/tmp/issue69-file-fixture" />);
+    await screen.findByText(".hidden");
+
+    expect(screen.getByRole("main", { name: "Host files" })).toHaveClass("overflow-hidden");
+    expect(screen.getByTestId("host-files-content")).toHaveClass("h-full", "min-h-0", "w-full");
+    expect(screen.getByTestId("host-file-list-scroll")).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
   });
 
   it("filters the current directory and sorts locally without another directory request", async () => {
@@ -245,7 +316,9 @@ describe("HostFilesPane", () => {
 
   it("shows the API error with Retry and Go to Home instead of substituting an empty directory", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      if (String(input) === "/api/files?path=%2Ftmp%2Fmissing") return Promise.resolve(jsonResponse({ error: { code: "not_found", message: "path does not exist" } }, 404));
+      const url = String(input);
+      if (url === "/api/files?path=%2Ftmp%2Fmissing") return Promise.resolve(jsonResponse({ error: { code: "not_found", message: "path does not exist" } }, 404));
+      if (url === "/api/files/home") return Promise.resolve(jsonResponse({ path: "/tmp/issue69-file-fixture", name: "issue69-file-fixture", kind: "directory", readable: true }));
       return Promise.resolve(jsonResponse(rootDirectory));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -255,7 +328,8 @@ describe("HostFilesPane", () => {
     expect(screen.queryByText("hidden files included")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Go to Home" }));
     expect(await screen.findByText(".hidden")).toBeInTheDocument();
-    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/files?path=%2F")).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/files/home")).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/files?path=%2Ftmp%2Fissue69-file-fixture")).toBe(true);
   });
 
   it("navigates to an absolute directory path from the toolbar and updates the host-file route", async () => {
@@ -269,12 +343,14 @@ describe("HostFilesPane", () => {
 
     render(<HostFilesPane initialPath="/tmp/issue69-file-fixture" onOpenHostFile={onOpenHostFile} />);
     await screen.findByText(".hidden");
-    const pathInput = screen.getByRole("textbox", { name: "Absolute Host path" });
+    const pathInput = editPath();
     fireEvent.change(pathInput, { target: { value: "  /tmp/issue69-file-fixture/nested  " } });
-    fireEvent.submit(screen.getByRole("form", { name: "Go to absolute Host path" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
 
     expect(await screen.findByText("0 items · hidden files included")).toBeInTheDocument();
-    expect(pathInput).toHaveValue("/tmp/issue69-file-fixture/nested");
+    expect(screen.queryByRole("textbox", { name: "Absolute Host path" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("nested");
+    expect(screen.getByRole("navigation", { name: "Host file path" })).toHaveTextContent("/tmp/issue69-file-fixture/nested");
     expect(onOpenHostFile).toHaveBeenCalledWith("/tmp/issue69-file-fixture/nested");
     expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/files?path=%2Ftmp%2Fissue69-file-fixture%2Fnested")).toBe(true);
   });
@@ -293,8 +369,8 @@ describe("HostFilesPane", () => {
 
     render(<HostFilesPane initialPath="/tmp/issue69-file-fixture" onOpenHostFile={onOpenHostFile} />);
     await screen.findByText(".hidden");
-    fireEvent.change(screen.getByRole("textbox", { name: "Absolute Host path" }), { target: { value: filePath } });
-    fireEvent.submit(screen.getByRole("form", { name: "Go to absolute Host path" }));
+    fireEvent.change(editPath(), { target: { value: filePath } });
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
 
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(await screen.findByText("direct preview")).toBeInTheDocument();
@@ -308,8 +384,8 @@ describe("HostFilesPane", () => {
 
     render(<HostFilesPane initialPath="/tmp/issue69-file-fixture" />);
     await screen.findByText(".hidden");
-    fireEvent.change(screen.getByRole("textbox", { name: "Absolute Host path" }), { target: { value: "nested/probe.txt" } });
-    fireEvent.submit(screen.getByRole("form", { name: "Go to absolute Host path" }));
+    fireEvent.change(editPath(), { target: { value: "nested/probe.txt" } });
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent("absolute Host path");
     expect(screen.getByText(".hidden")).toBeInTheDocument();
@@ -329,13 +405,14 @@ describe("HostFilesPane", () => {
 
     render(<HostFilesPane initialPath="/tmp/issue69-file-fixture" />);
     await screen.findByText(".hidden");
-    const pathInput = screen.getByRole("textbox", { name: "Absolute Host path" });
+    const pathInput = editPath();
     fireEvent.change(pathInput, { target: { value: missingPath } });
-    fireEvent.submit(screen.getByRole("form", { name: "Go to absolute Host path" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not open path: path does not exist (not_found)");
     expect(await screen.findByText(".hidden")).toBeInTheDocument();
-    expect(pathInput).toHaveValue("/tmp/issue69-file-fixture");
+    expect(screen.queryByRole("textbox", { name: "Absolute Host path" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("issue69-file-fixture");
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes(encodeURIComponent(missingPath)))).toBe(true);
   });
 });

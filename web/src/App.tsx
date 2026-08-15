@@ -1407,7 +1407,7 @@ export default function App() {
   };
 
   return (
-    <div className="loom-app-viewport flex h-screen w-screen max-w-full overflow-hidden bg-background">
+    <div className="loom-app-viewport fixed inset-0 flex h-screen w-screen max-w-full overflow-hidden bg-background">
       {/* backdrop — only on mobile when the drawer is open */}
       {sidebarOpen && (
         <div
@@ -1418,7 +1418,7 @@ export default function App() {
       {/* Sidebar is a full drawer on mobile and fully retracts on desktop. */}
       <aside
         aria-label="Agent workspace sidebar"
-        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col border-r border-sidebar-border/80 bg-sidebar shadow-xl transition-[transform,translate] duration-200 md:z-auto md:border-sidebar-border md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:hidden" : "md:static md:flex md:translate-x-0"} ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col overflow-hidden border-r border-sidebar-border/80 bg-sidebar shadow-xl transition-[transform,translate] duration-200 md:z-auto md:border-sidebar-border md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:hidden" : "md:static md:flex md:translate-x-0"} ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >

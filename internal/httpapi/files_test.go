@@ -61,6 +61,94 @@ func TestHostFileMetadataIncludesHiddenEntriesAndAbsolutePaths(t *testing.T) {
 	}
 }
 
+func TestHostFileHomeReturnsCleanReadableDirectory(t *testing.T) {
+	root := t.TempDir()
+	rawHome := filepath.Join(root, "nested", "..", "home")
+	cleanHome := filepath.Clean(rawHome)
+	if err := os.MkdirAll(cleanHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(cleanHome, "marker.txt")
+	if err := os.WriteFile(marker, []byte("unchanged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", rawHome)
+	server := newFileServer(t)
+	defer server.Close()
+
+	response := homeRequest(t, server)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	var home fileHomeResponse
+	if err := json.NewDecoder(response.Body).Decode(&home); err != nil {
+		t.Fatal(err)
+	}
+	if home != (fileHomeResponse{Path: cleanHome, Name: filepath.Base(cleanHome), Kind: "directory", Readable: true}) {
+		t.Fatalf("home response = %#v", home)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "unchanged" {
+		t.Fatalf("home fixture changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestHostFileHomeErrorsAreClassifiableAndReadOnly(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "marker.txt")
+	if err := os.WriteFile(marker, []byte("unchanged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := newFileServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T)
+		status      int
+		code        string
+		restoreMode os.FileMode
+	}{
+		{name: "home unavailable", setup: func(t *testing.T) { t.Setenv("HOME", "") }, status: http.StatusInternalServerError, code: "home_unavailable"},
+		{name: "home not found", setup: func(t *testing.T) { t.Setenv("HOME", filepath.Join(root, "missing")) }, status: http.StatusNotFound, code: "home_not_found"},
+		{name: "home not directory", setup: func(t *testing.T) { t.Setenv("HOME", marker) }, status: http.StatusConflict, code: "home_not_directory"},
+		{name: "home not readable", setup: func(t *testing.T) {
+			home := filepath.Join(root, "unreadable")
+			if err := os.Mkdir(home, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+		}, status: http.StatusForbidden, code: "not_readable", restoreMode: 0o755},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.setup(t)
+			response := homeRequest(t, server)
+			defer response.Body.Close()
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != test.status || body.Error.Code != test.code {
+				t.Fatalf("status=%d code=%q, want status=%d code=%q", response.StatusCode, body.Error.Code, test.status, test.code)
+			}
+			if test.restoreMode != 0 {
+				home := filepath.Join(root, "unreadable")
+				if err := os.Chmod(home, test.restoreMode); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "unchanged" {
+		t.Fatalf("home error requests changed fixture: data=%q err=%v", data, err)
+	}
+}
+
 func TestHostFilePreviewIsBoundedAndContentSupportsRange(t *testing.T) {
 	root := fileFixture(t)
 	server := newFileServer(t)
@@ -121,6 +209,7 @@ func TestHostFileErrorsAreClassifiableAndReadOnly(t *testing.T) {
 		code     string
 	}{
 		{name: "relative", path: "probe.txt", endpoint: "/api/files", status: http.StatusBadRequest, code: "path_must_be_absolute"},
+		{name: "tilde", path: "~", endpoint: "/api/files", status: http.StatusBadRequest, code: "path_must_be_absolute"},
 		{name: "missing", path: filepath.Join(root, "missing.txt"), endpoint: "/api/files", status: http.StatusNotFound, code: "not_found"},
 		{name: "directory as content", path: root, endpoint: "/api/files/content", status: http.StatusConflict, code: "not_file"},
 		{name: "file as preview limit", path: filepath.Join(root, "probe.txt"), endpoint: "/api/files/preview", status: http.StatusBadRequest, code: "invalid_preview_limit"},
@@ -199,6 +288,18 @@ func newFileServer(t *testing.T) *httptest.Server {
 
 func fileRequest(t *testing.T, server *httptest.Server, method, endpoint, path string) *http.Response {
 	return fileRequestWithHeaders(t, server, method, endpoint, path, nil)
+}
+
+func homeRequest(t *testing.T, server *httptest.Server) *http.Response {
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/files/home", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
 }
 
 func fileRequestWithQuery(t *testing.T, server *httptest.Server, method, endpoint, path string, extra map[string]string) *http.Response {

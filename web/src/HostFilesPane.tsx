@@ -357,9 +357,8 @@ function DirectoryToolbar({
             onPathSubmit();
           }}
           onBlur={(event) => {
-            const nextTarget = event.relatedTarget;
             if (preserveEditOnBlur.current) return;
-            if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) onCancelEdit();
+            onCancelEdit();
           }}
         >
           <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md border border-ring bg-muted/35 px-2 ring-2 ring-ring/20">

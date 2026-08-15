@@ -139,9 +139,14 @@ describe("HostFilesPane", () => {
 
     const blurredInput = editPath();
     fireEvent.change(blurredInput, { target: { value: "/tmp/blurred" } });
-    fireEvent.blur(blurredInput);
-    expect(screen.queryByRole("textbox", { name: "Absolute Host path" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("issue69-file-fixture");
+    const fetchCallsBeforeBlur = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+    within(screen.getByRole("form", { name: "Go to absolute Host path" })).getByRole("button", { name: "Copy path" }).focus();
+    expect(document.activeElement).not.toBe(blurredInput);
+    await waitFor(() => {
+      expect(screen.queryByRole("textbox", { name: "Absolute Host path" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Edit absolute Host path" })).toHaveTextContent("issue69-file-fixture");
+    });
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(fetchCallsBeforeBlur);
   });
 
   it("keeps the workspace fixed and confines directory rows to the list scroll region", async () => {

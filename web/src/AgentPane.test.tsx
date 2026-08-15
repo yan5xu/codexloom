@@ -6,7 +6,7 @@ const virtualizerHarness = vi.hoisted(() => ({
   options: [] as Array<Record<string, unknown>>,
   instance: {
     getTotalSize: vi.fn(() => 0),
-    getVirtualItems: vi.fn(() => []),
+    getVirtualItems: vi.fn((): Array<{ index: number; key: string | number; start: number; size: number; end: number; lane: number }> => []),
     measureElement: vi.fn(),
     resizeItem: vi.fn(),
     scrollToIndex: vi.fn(),
@@ -60,6 +60,9 @@ const props = {
 describe("AgentPane", () => {
   beforeEach(() => {
     virtualizerHarness.options.length = 0;
+    virtualizerHarness.instance.getTotalSize.mockReset().mockReturnValue(0);
+    virtualizerHarness.instance.getVirtualItems.mockReset().mockReturnValue([]);
+    virtualizerHarness.instance.scrollToIndex.mockReset();
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 0));
     vi.stubGlobal("cancelAnimationFrame", (id: number) => window.clearTimeout(id));
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -111,6 +114,63 @@ describe("AgentPane", () => {
     expect(latestOptions?.enabled).toBe(true);
     expect(latestOptions?.initialOffset).toBeTypeOf("function");
     expect((latestOptions?.initialOffset as () => number)()).toBe(900);
+  });
+
+  it("renders loaded message markers and jumps by stable message identity", async () => {
+    const history = {
+      total: 1,
+      turns: [{
+        id: "turn-markers",
+        items: [
+          { type: "user", id: "user-marker", timestamp: "2026-08-16T01:00:00Z", text: "loaded task" },
+          { type: "answer", id: "answer-marker", timestamp: "2026-08-16T01:00:01Z", text: "loaded answer" },
+        ],
+      }],
+    };
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      const body = url.includes("/thread/history")
+        ? history
+        : url.endsWith("/artifacts")
+          ? { artifacts: [] }
+          : url.endsWith("/profile")
+            ? { profile: { identity: "", domain: "", scope: "", version: 1 } }
+            : url.endsWith("/addresses")
+              ? { addresses: [] }
+              : url === "/api/integrations/connections"
+                ? { connections: [] }
+                : url.startsWith("/api/integrations/conversations")
+                  ? { memberships: [] }
+                  : init?.method === "PATCH" && url.endsWith("/config")
+                    ? { agent: testAgent }
+                    : {};
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    virtualizerHarness.instance.getTotalSize.mockReturnValue(200);
+    virtualizerHarness.instance.getVirtualItems.mockReturnValue([
+      { index: 0, key: "user:user-marker", start: 0, size: 100, end: 100, lane: 0 },
+      { index: 1, key: "agent:answer-marker", start: 100, size: 100, end: 200, lane: 0 },
+    ]);
+
+    render(<AgentPane {...props} active />);
+    const rail = await screen.findByTestId("message-marker-rail");
+    const markers = rail.querySelectorAll("[data-message-marker-id]");
+    expect(markers).toHaveLength(2);
+    expect(markers[0]).toHaveAttribute("data-message-marker-kind", "user");
+    expect(markers[1]).toHaveAttribute("data-message-marker-kind", "assistant");
+    fireEvent.mouseEnter(markers[0]);
+    const hoverCard = screen.getByTestId("message-marker-hover-card");
+    expect(hoverCard).toHaveTextContent("User task");
+    expect(hoverCard).toHaveTextContent("loaded task");
+    expect(hoverCard).toHaveTextContent("Click to jump");
+    fireEvent.mouseLeave(markers[0]);
+    expect(screen.queryByTestId("message-marker-hover-card")).toBeNull();
+
+    virtualizerHarness.instance.scrollToIndex.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /Jump to Agent response/ }));
+    expect(virtualizerHarness.instance.scrollToIndex).toHaveBeenCalledWith(1, { align: "center" });
+    await waitFor(() => expect(screen.getByTestId("message-marker-rail").parentElement?.querySelector("[data-message-highlighted='true']")).toHaveAttribute("data-message-id", "agent:answer-marker"));
   });
 
   it("shows the configured working directory as read-only selectable text between Name and Provider", async () => {

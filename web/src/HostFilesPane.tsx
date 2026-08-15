@@ -356,10 +356,6 @@ function DirectoryToolbar({
             preserveEditOnBlur.current = false;
             onPathSubmit();
           }}
-          onBlur={(event) => {
-            if (preserveEditOnBlur.current) return;
-            onCancelEdit();
-          }}
         >
           <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md border border-ring bg-muted/35 px-2 ring-2 ring-ring/20">
             <input
@@ -367,6 +363,10 @@ function DirectoryToolbar({
               type="text"
               value={pathDraft}
               onChange={(event) => onPathDraftChange(event.target.value)}
+              onBlur={() => {
+                if (preserveEditOnBlur.current) return;
+                onCancelEdit();
+              }}
               aria-label="Absolute Host path"
               placeholder="/absolute/path"
               spellCheck={false}

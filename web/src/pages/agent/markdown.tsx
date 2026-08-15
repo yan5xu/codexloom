@@ -9,6 +9,7 @@ import type { PluggableList } from "unified";
 import type { ComponentProps, ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { absoluteHostPathFromHref } from "../../host-files";
+import { plantumlRenderer } from "./plantuml";
 import "katex/dist/katex.min.css";
 
 /* ================================================================
@@ -66,6 +67,7 @@ export function MarkdownContent({ content, streaming = false, className, onOpenH
     code,
     cjk,
     math,
+    renderers: [plantumlRenderer],
     ...(mermaidPlugin ? { mermaid: mermaidPlugin } : {}),
   };
 

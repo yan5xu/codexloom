@@ -12,7 +12,7 @@ import { UsageBarTooltip, usageDayLabel } from "./components/UsageBarTooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { subscribeThreadEvents } from "./thread-events";
 import { oldestWaitingMs } from "./product-state";
-import { blockStableID, markerPercent, messageMarkerForBlock, type MessageMarker } from "./message-markers";
+import { blockStableID, messageMarkerClusters, messageMarkerLensRange, receivedMessageMarkerForBlock, timelineMarkerPercent, type MessageMarker } from "./message-markers";
 
 const CUSTOM_MODEL_VALUE = "__custom";
 const FALLBACK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -68,58 +68,185 @@ function feedBlockKey(block: Block) {
 
 type PositionedMessageMarker = MessageMarker & { position: number };
 
-function MessageMarkerRail({ markers, highlightedID, onSelect }: {
+function markerTimeLabel(timestamp?: string): string {
+  if (!timestamp) return "";
+  const value = new Date(timestamp);
+  if (!Number.isFinite(value.getTime())) return "";
+  return value.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
   markers: PositionedMessageMarker[];
   highlightedID: string;
   onSelect: (id: string) => void;
 }) {
-  const [hoveredID, setHoveredID] = useState("");
-  const [focusedID, setFocusedID] = useState("");
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null);
+  const lensListRef = useRef<HTMLDivElement | null>(null);
+  const activeLensItemRef = useRef<HTMLButtonElement | null>(null);
+  const clusters = useMemo(() => messageMarkerClusters(markers.length), [markers.length]);
+  const highlightedIndex = markers.findIndex((marker) => marker.id === highlightedID);
+  const activeIndex = hoveredIndex ?? focusedIndex ?? pinnedIndex ?? (highlightedIndex >= 0 ? highlightedIndex : null);
+  const lensOpen = hoveredIndex !== null || focusedIndex !== null || pinnedIndex !== null;
+  const range = activeIndex === null ? { start: 0, end: 0 } : messageMarkerLensRange(markers.length, activeIndex);
+  const lensMarkers = markers.slice(range.start, range.end);
+  const closeLens = () => {
+    setHoveredIndex(null);
+    setFocusedIndex(null);
+    setPinnedIndex(null);
+  };
+
+  useEffect(() => {
+    if (markers.length === 0) {
+      setHoveredIndex(null);
+      setFocusedIndex(null);
+      setPinnedIndex(null);
+      return;
+    }
+    setPinnedIndex((current) => current === null ? null : Math.min(current, markers.length - 1));
+  }, [markers.length]);
+
+  useEffect(() => {
+    if (!lensOpen) return;
+    const list = lensListRef.current;
+    const item = activeLensItemRef.current;
+    if (!list || !item) return;
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    if (itemRect.top < listRect.top) {
+      list.scrollTop -= listRect.top - itemRect.top;
+    } else if (itemRect.bottom > listRect.bottom) {
+      list.scrollTop += itemRect.bottom - listRect.bottom;
+    }
+  }, [activeIndex, lensOpen, range.end, range.start]);
+
   if (markers.length === 0) return null;
-  const previewID = hoveredID || focusedID || highlightedID;
-  const previewMarker = markers.find((marker) => marker.id === previewID);
   return (
     <div
-      className="pointer-events-none absolute inset-y-1 right-0 z-20 w-3"
-      data-testid="message-marker-rail"
-      aria-label="Loaded message markers"
+      className="pointer-events-none absolute inset-y-5 right-4 z-20 w-5 overflow-visible"
+      data-testid="message-timeline"
+      aria-label="Received message timeline"
+      onMouseLeave={() => setHoveredIndex(null)}
     >
-      <div className="absolute inset-y-0 right-0.5 w-px bg-border/80" />
-      {previewMarker && (
+      <div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2 rounded-full border border-border/70 bg-card/80 shadow-[0_2px_10px_rgb(15_23_42_/_0.08)] backdrop-blur-sm" aria-hidden="true" />
+      <div className="absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-border" aria-hidden="true" />
+      <button
+        type="button"
+        aria-controls="received-message-lens"
+        aria-expanded={pinnedIndex !== null}
+        aria-label={`${pinnedIndex === null ? "Open" : "Close"} received message timeline, ${markers.length} messages`}
+        onClick={() => {
+          if (pinnedIndex !== null) {
+            closeLens();
+            return;
+          }
+          setPinnedIndex(Math.max(0, highlightedIndex >= 0 ? highlightedIndex : markers.length - 1));
+        }}
+        onMouseEnter={() => setHoveredIndex((current) => current ?? Math.max(0, highlightedIndex >= 0 ? highlightedIndex : markers.length - 1))}
+        onFocus={() => setFocusedIndex(Math.max(0, highlightedIndex >= 0 ? highlightedIndex : markers.length - 1))}
+        onBlur={() => setFocusedIndex(null)}
+        className="pointer-events-auto absolute -top-3 left-1/2 z-20 flex size-7 -translate-x-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="flex min-w-5 items-center justify-center rounded-full border border-border bg-card px-1 py-0.5 font-mono text-[8px] font-semibold leading-none text-muted-foreground shadow-sm">
+          {markers.length > 99 ? "99+" : markers.length}
+        </span>
+      </button>
+
+      {lensOpen && activeIndex !== null && (
         <div
-          className="pointer-events-none absolute right-4 z-30 overflow-visible rounded-lg border border-border/80 bg-card/95 px-3 py-2 text-foreground shadow-[0_10px_30px_rgb(15_23_42_/_0.16)] backdrop-blur-md"
-          data-testid="message-marker-hover-card"
-          style={{
-            top: `clamp(0px, calc(${previewMarker.position}% - 28px), calc(100% - 58px))`,
-            width: "min(18rem, calc(100vw - 2rem))",
-          }}
+          id="received-message-lens"
+          className="pointer-events-auto absolute right-8 top-1/2 z-30 flex max-h-[min(22rem,100%)] w-[min(20rem,calc(100vw-4rem))] -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border/80 bg-card/95 text-foreground shadow-[0_18px_50px_rgb(15_23_42_/_0.18)] backdrop-blur-md"
+          data-testid="message-timeline-lens"
         >
-          <span className="absolute -right-1 top-5 size-2 rotate-45 border-r border-t border-border/80 bg-card" aria-hidden="true" />
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={`size-2 shrink-0 rounded-sm ${previewMarker.colorClass}`} aria-hidden="true" />
-            <span className="truncate text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{previewMarker.typeLabel}</span>
+          <span className="absolute -right-1 top-1/2 size-2 -translate-y-1/2 rotate-45 border-r border-t border-border/80 bg-card" aria-hidden="true" />
+          <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Received messages</p>
+              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">Nearby {activeIndex! + 1} of {markers.length}</p>
+            </div>
+            {pinnedIndex !== null && (
+              <button type="button" aria-label="Close received message timeline" onClick={closeLens} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <X className="size-3.5" />
+              </button>
+            )}
           </div>
-          <p className="mt-1 max-h-9 overflow-hidden break-words text-[11px] font-medium leading-[1.15rem]">{previewMarker.detail}</p>
-          <span className="mt-1 block text-[9px] text-muted-foreground">Click to jump</span>
+          <div ref={lensListRef} className="min-h-0 flex-1 overflow-y-auto p-1.5">
+            {lensMarkers.map((marker, offset) => {
+              const index = range.start + offset;
+              const selected = index === activeIndex;
+              const time = markerTimeLabel(marker.timestamp);
+              return (
+                <button
+                  key={marker.id}
+                  ref={selected ? activeLensItemRef : undefined}
+                  type="button"
+                  aria-label={`Jump to ${marker.label}`}
+                  data-message-timeline-lens-id={marker.id}
+                  onClick={() => {
+                    onSelect(marker.id);
+                    closeLens();
+                  }}
+                  onMouseEnter={() => setHoveredIndex(index)}
+                  onFocus={() => setFocusedIndex(index)}
+                  onBlur={() => setFocusedIndex(null)}
+                  className={cn(
+                    "group flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    selected && "bg-muted/80",
+                  )}
+                >
+                  <span className={`h-7 w-1 shrink-0 rounded-full ${marker.colorClass}`} aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">{marker.typeLabel}</span>
+                      {time && <span className="ml-auto shrink-0 font-mono text-[8px] text-muted-foreground/75">{time}</span>}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] font-medium leading-4">{marker.detail}</span>
+                  </span>
+                  <span className="shrink-0 font-mono text-[8px] text-muted-foreground/70">{index + 1}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
-      {markers.map((marker) => (
-        <button
-          key={marker.id}
-          type="button"
-          aria-label={`Jump to ${marker.label}`}
-          data-message-marker-id={marker.id}
-          data-message-marker-kind={marker.kind}
-          aria-current={highlightedID === marker.id ? "true" : undefined}
-          onClick={() => onSelect(marker.id)}
-          onMouseEnter={() => setHoveredID(marker.id)}
-          onMouseLeave={() => setHoveredID((current) => current === marker.id ? "" : current)}
-          onFocus={() => setFocusedID(marker.id)}
-          onBlur={() => setFocusedID((current) => current === marker.id ? "" : current)}
-          className={`pointer-events-auto absolute right-0 h-[3px] w-2 rounded-l-full ${marker.colorClass} opacity-75 shadow-[0_0_0_1px_rgb(255_255_255_/_0.5)] transition-[width,height,opacity,transform] duration-150 hover:z-10 hover:h-1 hover:w-4 hover:opacity-100 focus-visible:z-10 focus-visible:h-1 focus-visible:w-4 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
-          style={{ top: `calc(${marker.position}% - 1.5px)` }}
-        />
-      ))}
+      {clusters.map((cluster) => {
+        const index = Math.floor((cluster.startIndex + cluster.endIndex) / 2);
+        const marker = markers[index];
+        const active = activeIndex !== null && activeIndex >= cluster.startIndex && activeIndex <= cluster.endIndex;
+        const near = activeIndex !== null && Math.min(Math.abs(activeIndex - cluster.startIndex), Math.abs(activeIndex - cluster.endIndex)) <= 2;
+        const colors = [...new Set(markers.slice(cluster.startIndex, cluster.endIndex + 1).map((item) => item.colorClass))].slice(0, 3);
+        return (
+          <button
+            key={`${marker.id}:${cluster.startIndex}`}
+            type="button"
+            aria-label={cluster.count === 1 ? `Jump to ${marker.label}` : `Jump near ${marker.label}, ${cluster.count} messages in this group`}
+            data-message-marker-id={marker.id}
+            data-message-marker-kind={marker.kind}
+            data-message-cluster-size={cluster.count}
+            aria-current={highlightedID === marker.id ? "true" : undefined}
+            onClick={() => {
+              onSelect(marker.id);
+              closeLens();
+            }}
+            onMouseEnter={() => setHoveredIndex(index)}
+            onFocus={() => setFocusedIndex(index)}
+            onBlur={() => setFocusedIndex(null)}
+            className="pointer-events-auto absolute left-1/2 z-10 flex size-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            style={{ top: `${cluster.position}%` }}
+          >
+            <span
+              className={cn(
+                "flex overflow-hidden rounded-full border border-background/80 opacity-70 shadow-sm transition-[width,height,opacity,box-shadow] duration-150",
+                active ? "size-3 opacity-100 shadow-[0_0_0_3px_rgb(59_130_246_/_0.18)]" : near ? "size-2.5 opacity-90" : cluster.count > 1 ? "size-2" : "size-1.5",
+              )}
+              aria-hidden="true"
+            >
+              {colors.map((color) => <span key={color} className={`h-full min-w-px flex-1 ${color}`} />)}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -286,17 +413,15 @@ export function AgentPane({
   }, [feedRows]);
 
   const messageMarkers: PositionedMessageMarker[] = (() => {
-    const virtualItems = new Map(feedVirtualizer.getVirtualItems().map((item) => [String(item.key), item]));
-    const totalSize = Math.max(feedVirtualizer.getTotalSize(), 1);
-    return feedRows.flatMap((row, index) => {
+    const received = feedRows.flatMap((row) => {
       if (row.kind !== "block") return [];
-      const marker = messageMarkerForBlock(row.block);
-      const virtualItem = virtualItems.get(row.key);
-      const position = virtualItem
-        ? Math.min(99.5, Math.max(0.5, (virtualItem.start / totalSize) * 100))
-        : markerPercent(index, feedRows.length);
-      return [{ ...marker, position }];
+      const marker = receivedMessageMarkerForBlock(row.block, agent);
+      return marker ? [marker] : [];
     });
+    return received.map((marker, index) => ({
+      ...marker,
+      position: timelineMarkerPercent(index, received.length),
+    }));
   })();
 
   const jumpToMessage = useCallback((messageID: string) => {
@@ -1398,12 +1523,13 @@ export function AgentPane({
                 const row = feedRows[virtualRow.index];
                 if (!row) return null;
                 const messageID = row.kind === "block" ? blockStableID(row.block) : "";
+                const messageMarker = row.kind === "block" ? receivedMessageMarkerForBlock(row.block, agent) : null;
                 return (
                   <div
                     key={virtualRow.key}
                     data-index={virtualRow.index}
                     data-message-id={messageID || undefined}
-                    data-message-kind={row.kind === "block" ? messageMarkerForBlock(row.block).kind : undefined}
+                    data-message-kind={messageMarker?.kind}
                     data-message-highlighted={messageID && highlightedMessageID === messageID ? "true" : undefined}
                     ref={measureFeedRow}
                     className={`absolute left-0 top-0 flow-root w-full py-px transition-[background-color,box-shadow] duration-300 ${messageID && highlightedMessageID === messageID ? "rounded-md bg-[var(--loom-blue)]/8 ring-2 ring-[var(--loom-blue)]/55" : ""}`}
@@ -1441,7 +1567,7 @@ export function AgentPane({
           </div>
         </div>
         {active && (
-          <MessageMarkerRail
+          <ReceivedMessageTimeline
             markers={messageMarkers}
             highlightedID={highlightedMessageID}
             onSelect={jumpToMessage}

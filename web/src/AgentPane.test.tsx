@@ -116,14 +116,48 @@ describe("AgentPane", () => {
     expect((latestOptions?.initialOffset as () => number)()).toBe(900);
   });
 
-  it("renders loaded message markers and jumps by stable message identity", async () => {
+  it("renders only received message markers and jumps by stable message identity", async () => {
     const history = {
       total: 1,
       turns: [{
         id: "turn-markers",
         items: [
           { type: "user", id: "user-marker", timestamp: "2026-08-16T01:00:00Z", text: "loaded task" },
-          { type: "answer", id: "answer-marker", timestamp: "2026-08-16T01:00:01Z", text: "loaded answer" },
+          {
+            type: "user",
+            id: "agent-message-item",
+            timestamp: "2026-08-16T01:00:01Z",
+            text: `<agent_message version="1" id="msg-inbound" response="required" status="open">
+  <from>loom-product</from><to>agent-scroll</to><subject>Inbound work</subject><body>body</body>
+</agent_message>`,
+          },
+          {
+            type: "user",
+            id: "schedule-item",
+            timestamp: "2026-08-16T01:00:02Z",
+            text: `<agent_message version="1" id="msg-schedule" response="none" status="closed">
+  <from>scheduler</from><to>agent-scroll</to><subject>Daily review</subject><body>body</body>
+</agent_message>`,
+          },
+          {
+            type: "user",
+            id: "external-item",
+            timestamp: "2026-08-16T01:00:03Z",
+            text: `<inbox_message version="1" id="imsg-inbound" inbox_item_id="inbox-1" expectation="optional">
+  <origin provider="parall" address_id="address-1" />
+  <sender id="sender-1">External sender</sender><conversation id="conversation-1" type="group" />
+  <reply_policy>none</reply_policy><body>External body</body>
+</inbox_message>`,
+          },
+          {
+            type: "user",
+            id: "outbound-item",
+            timestamp: "2026-08-16T01:00:04Z",
+            text: `<agent_message version="1" id="msg-outbound" response="none" status="closed">
+  <from>agent-scroll</from><to>agent-other</to><subject>Outbound work</subject><body>body</body>
+</agent_message>`,
+          },
+          { type: "answer", id: "answer-marker", timestamp: "2026-08-16T01:00:05Z", text: "loaded answer" },
         ],
       }],
     };
@@ -147,30 +181,46 @@ describe("AgentPane", () => {
       return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
     });
 
-    virtualizerHarness.instance.getTotalSize.mockReturnValue(200);
+    virtualizerHarness.instance.getTotalSize.mockReturnValue(600);
     virtualizerHarness.instance.getVirtualItems.mockReturnValue([
       { index: 0, key: "user:user-marker", start: 0, size: 100, end: 100, lane: 0 },
-      { index: 1, key: "agent:answer-marker", start: 100, size: 100, end: 200, lane: 0 },
+      { index: 1, key: "agentMessage:msg-inbound", start: 100, size: 100, end: 200, lane: 0 },
+      { index: 2, key: "agentMessage:msg-schedule", start: 200, size: 100, end: 300, lane: 0 },
+      { index: 3, key: "externalMessage:imsg-inbound", start: 300, size: 100, end: 400, lane: 0 },
+      { index: 4, key: "agentMessage:msg-outbound", start: 400, size: 100, end: 500, lane: 0 },
+      { index: 5, key: "agent:answer-marker", start: 500, size: 100, end: 600, lane: 0 },
     ]);
 
     render(<AgentPane {...props} active />);
-    const rail = await screen.findByTestId("message-marker-rail");
-    const markers = rail.querySelectorAll("[data-message-marker-id]");
-    expect(markers).toHaveLength(2);
-    expect(markers[0]).toHaveAttribute("data-message-marker-kind", "user");
-    expect(markers[1]).toHaveAttribute("data-message-marker-kind", "assistant");
+    const timeline = await screen.findByTestId("message-timeline");
+    const markers = timeline.querySelectorAll("[data-message-marker-id]");
+    expect(markers).toHaveLength(4);
+    expect(Array.from(markers).map((marker) => marker.getAttribute("data-message-marker-kind"))).toEqual([
+      "owner", "agent", "schedule", "external",
+    ]);
     fireEvent.mouseEnter(markers[0]);
-    const hoverCard = screen.getByTestId("message-marker-hover-card");
-    expect(hoverCard).toHaveTextContent("User task");
-    expect(hoverCard).toHaveTextContent("loaded task");
-    expect(hoverCard).toHaveTextContent("Click to jump");
-    fireEvent.mouseLeave(markers[0]);
-    expect(screen.queryByTestId("message-marker-hover-card")).toBeNull();
+    const lens = screen.getByTestId("message-timeline-lens");
+    expect(lens).toHaveTextContent("Received messages");
+    expect(lens).toHaveTextContent("Owner message");
+    expect(lens).toHaveTextContent("loaded task");
+    expect(lens.querySelectorAll("[data-message-timeline-lens-id]")).toHaveLength(4);
+    fireEvent.mouseLeave(timeline);
+    expect(screen.queryByTestId("message-timeline-lens")).toBeNull();
+
+    const timelineToggle = screen.getByRole("button", { name: /Open received message timeline, 4 messages/ });
+    fireEvent.mouseEnter(timelineToggle);
+    expect(screen.getByTestId("message-timeline-lens")).toBeInTheDocument();
+    fireEvent.click(timelineToggle);
+    expect(screen.getByTestId("message-timeline-lens")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close received message timeline" }));
+    expect(screen.queryByTestId("message-timeline-lens")).toBeNull();
 
     virtualizerHarness.instance.scrollToIndex.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: /Jump to Agent response/ }));
+    fireEvent.click(markers[1]);
     expect(virtualizerHarness.instance.scrollToIndex).toHaveBeenCalledWith(1, { align: "center" });
-    await waitFor(() => expect(screen.getByTestId("message-marker-rail").parentElement?.querySelector("[data-message-highlighted='true']")).toHaveAttribute("data-message-id", "agent:answer-marker"));
+    await waitFor(() => expect(screen.getByTestId("message-timeline").parentElement?.querySelector("[data-message-highlighted='true']")).toHaveAttribute("data-message-id", "agentMessage:msg-inbound"));
+    expect(timeline.parentElement?.querySelector("[data-message-id='agentMessage:msg-outbound']")).not.toHaveAttribute("data-message-kind");
+    expect(timeline.parentElement?.querySelector("[data-message-id='agent:answer-marker']")).not.toHaveAttribute("data-message-kind");
   });
 
   it("shows the configured working directory as read-only selectable text between Name and Provider", async () => {

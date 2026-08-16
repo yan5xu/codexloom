@@ -606,6 +606,10 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 		h.mu.Unlock()
 		return SendResult{}, errf(404, "agent not found: %s", key)
 	}
+	if h.agentCwdUpdatePendingLocked(meta.ID) {
+		h.mu.Unlock()
+		return SendResult{}, errf(409, "agent %q cwd update is in progress; retry after it completes", meta.Name)
+	}
 	if topicID != "" {
 		topic := h.topics[topicID]
 		if topic == nil || !topicHasAgent(topic, meta.ID, meta.ID) {
@@ -701,6 +705,11 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 		h.mu.Unlock()
 		rt.startMu.Unlock()
 		return SendResult{}, errf(404, "agent vanished")
+	}
+	if h.agentCwdUpdatePendingLocked(agentID) || h.runtimes[agentID] != rt {
+		h.mu.Unlock()
+		rt.startMu.Unlock()
+		return SendResult{}, errf(409, "agent %q runtime changed before Turn start; retry", meta.Name)
 	}
 	if rt.activeTurn != nil && !rt.activeTurn.finished {
 		h.mu.Unlock()

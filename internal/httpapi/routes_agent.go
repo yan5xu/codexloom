@@ -73,6 +73,19 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, map[string]any{"agent": agent})
 	})
+	mux.HandleFunc("PATCH /api/agents/{key}/cwd", func(w http.ResponseWriter, r *http.Request) {
+		var body hub.AgentCwdUpdateParams
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		result, err := s.hub.UpdateAgentCwd(r.PathValue("key"), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	})
 	mux.HandleFunc("POST /api/agents/{key}/provider", func(w http.ResponseWriter, r *http.Request) {
 		var body hub.ProviderSwitchParams
 		if err := readJSON(r, &body); err != nil {

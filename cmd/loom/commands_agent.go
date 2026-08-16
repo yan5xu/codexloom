@@ -381,6 +381,39 @@ func cmdRename(a args) {
 	fmt.Printf("%s %s -> %s (%s)\n", green("renamed"), a.positional[0], bold(str(s, "name")), str(s, "id"))
 }
 
+func normalizeRequestedAgentCwd(value string) (string, error) {
+	cwd := strings.TrimSpace(value)
+	if cwd == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(cwd) {
+		return "", fmt.Errorf("--cwd must be an absolute directory")
+	}
+	return filepath.Clean(cwd), nil
+}
+
+func cmdAgentUpdate(a args) {
+	if len(a.positional) != 1 {
+		usage("agent update <name|id> [--cwd /absolute/path/to/agent-home]")
+	}
+	cwd, err := normalizeRequestedAgentCwd(a.flags["cwd"])
+	if err != nil {
+		fail(err)
+	}
+	body := map[string]any{}
+	if cwd != "" {
+		body["cwd"] = cwd
+	}
+	resp, err := api("PATCH", "/api/agents/"+url.PathEscape(a.positional[0])+"/cwd", body)
+	if err != nil {
+		fail(err)
+	}
+	update, _ := resp["update"].(map[string]any)
+	fmt.Printf("%s %s (%s)\n  thread:  %s\n  old cwd: %s\n  new cwd: %s\n  effect:  %s\n  runtime: %s\n  skills:  %s\n",
+		green("updated"), bold(str(update, "agentName")), str(update, "agentId"), str(update, "threadId"),
+		str(update, "oldCwd"), str(update, "newCwd"), str(update, "effectiveState"), str(update, "runtimeState"), str(update, "skillsState"))
+}
+
 func cmdAgentProvider(a args) {
 	if len(a.positional) < 1 || strings.TrimSpace(a.flags["provider"]) == "" {
 		usage("agent provider <name|id> --provider PROVIDER [--model MODEL]")

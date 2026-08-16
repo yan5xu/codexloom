@@ -158,6 +158,9 @@ func (h *Hub) verifyRuntimeThreadControl(agentID string, rt *runtime) error {
 	if meta == nil {
 		return errf(404, "agent vanished")
 	}
+	if h.agentCwdUpdatePendingLocked(agentID) || h.runtimes[agentID] != rt {
+		return errf(409, "agent %q runtime changed before Thread control; retry", meta.Name)
+	}
 	host := h.codexHost
 	if host == nil || rt == nil || host.generation != rt.hostGeneration || host.client != rt.client {
 		return errf(500, "CodexHost changed before Thread control started")
@@ -281,21 +284,21 @@ func (h *Hub) ReloadSkills() (SkillInventory, error) {
 }
 
 func (h *Hub) requestSkillInventory(host *codexHostRuntime) (SkillInventory, error) {
-	params := map[string]any{"forceReload": true}
 	h.mu.Lock()
-	seen := map[string]bool{}
-	cwds := make([]string, 0, len(h.agents))
-	for _, agent := range h.agents {
-		cwd := strings.TrimSpace(agent.Cwd)
-		if cwd != "" && !seen[cwd] {
-			seen[cwd] = true
-			cwds = append(cwds, cwd)
-		}
-	}
+	cwds := h.agentSkillInventoryCwdsLocked("", "")
 	h.mu.Unlock()
+	inventory, err := h.requestSkillInventoryForCwds(host, cwds)
+	if err != nil {
+		return SkillInventory{}, err
+	}
+	h.projectAgentSkillInventory(&inventory)
+	return inventory, nil
+}
+
+func (h *Hub) requestSkillInventoryForCwds(host *codexHostRuntime, cwds []string) (SkillInventory, error) {
+	params := map[string]any{"forceReload": true}
 	if len(cwds) > 0 {
-		sort.Strings(cwds)
-		params["cwds"] = cwds
+		params["cwds"] = append([]string(nil), cwds...)
 	}
 	raw, err := host.client.Request("skills/list", params, 30*time.Second)
 	if err != nil {
@@ -305,8 +308,29 @@ func (h *Hub) requestSkillInventory(host *codexHostRuntime) (SkillInventory, err
 	if err := json.Unmarshal(raw, &inventory); err != nil {
 		return SkillInventory{}, fmt.Errorf("decode skills/list: %w", err)
 	}
-	h.projectAgentSkillInventory(&inventory)
 	return inventory, nil
+}
+
+// agentSkillInventoryCwdsLocked returns the exact Agent Home set sent to
+// Codex. overrideAgentID/overrideCwd lets a governed cwd update refresh the
+// prospective inventory before committing the new Agent registry value.
+// h.mu must be held.
+func (h *Hub) agentSkillInventoryCwdsLocked(overrideAgentID, overrideCwd string) []string {
+	seen := map[string]bool{}
+	cwds := make([]string, 0, len(h.agents))
+	for _, agent := range h.agents {
+		cwd := agent.Cwd
+		if agent.ID == overrideAgentID {
+			cwd = overrideCwd
+		}
+		cwd = strings.TrimSpace(cwd)
+		if cwd != "" && !seen[cwd] {
+			seen[cwd] = true
+			cwds = append(cwds, cwd)
+		}
+	}
+	sort.Strings(cwds)
+	return cwds
 }
 
 func (h *Hub) reloadSkillsForGeneration(generation uint64) {

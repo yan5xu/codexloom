@@ -314,6 +314,7 @@ type Hub struct {
 	seqs                    map[string]int64
 	globalSeq               int64
 	runtimes                map[string]*runtime
+	agentCwdUpdates         map[string]struct{}
 	subs                    map[string]map[*subscriber]struct{}
 	globalSubs              map[*subscriber]struct{}
 	remoteConfig            RemoteConfig
@@ -438,6 +439,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		goals:                  map[string]*ThreadGoal{},
 		seqs:                   map[string]int64{},
 		runtimes:               map[string]*runtime{},
+		agentCwdUpdates:        map[string]struct{}{},
 		subs:                   map[string]map[*subscriber]struct{}{},
 		globalSubs:             map[*subscriber]struct{}{},
 		triggerObservations:    map[string]struct{}{},
@@ -1001,6 +1003,9 @@ func (h *Hub) LastSeq(key string) int64 {
 func (h *Hub) getRuntimeLocked(meta *Agent) (*runtime, error) {
 	if err := h.threadControlFailureLocked(meta.ThreadID); err != nil {
 		return nil, err
+	}
+	if h.agentCwdUpdatePendingLocked(meta.ID) {
+		return nil, errf(409, "agent %q cwd update is in progress; retry after it completes", meta.Name)
 	}
 	if rt, ok := h.runtimes[meta.ID]; ok && !rt.client.Closed() {
 		select {

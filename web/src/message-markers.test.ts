@@ -3,9 +3,9 @@ import { emptyFeed, reduceFeed, type Block, type FeedState, type TopicContextPay
 import {
   blockStableID,
   messageMarkerClusters,
-  messageMarkerLensRange,
   receivedMessageKindForBlock,
   receivedMessageMarkerForBlock,
+  timelineIndexAtClientY,
   timelineMarkerPercent,
   type MessageMarkerRecipient,
 } from "./message-markers";
@@ -202,10 +202,13 @@ describe("received message marker metadata", () => {
     expect(clusters.every((cluster) => cluster.position >= 6 && cluster.position <= 94)).toBe(true);
   });
 
-  it("opens a bounded seven-message lens around the selected timeline area", () => {
-    expect(messageMarkerLensRange(0, 0)).toEqual({ start: 0, end: 0 });
-    expect(messageMarkerLensRange(100, 0)).toEqual({ start: 0, end: 7 });
-    expect(messageMarkerLensRange(100, 50)).toEqual({ start: 47, end: 54 });
-    expect(messageMarkerLensRange(100, 99)).toEqual({ start: 93, end: 100 });
+  it("maps the full timeline hover target back to the nearest loaded message", () => {
+    expect(timelineIndexAtClientY(100, 100, 400, 0)).toBe(0);
+    expect(timelineIndexAtClientY(100, 100, 0, 100)).toBe(0);
+    expect(timelineIndexAtClientY(100, 100, 400, 100)).toBe(0);
+    expect(timelineIndexAtClientY(300, 100, 400, 100)).toBe(50);
+    expect(timelineIndexAtClientY(500, 100, 400, 100)).toBe(99);
+    expect(timelineIndexAtClientY(50, 100, 400, 100)).toBe(0);
+    expect(timelineIndexAtClientY(550, 100, 400, 100)).toBe(99);
   });
 });

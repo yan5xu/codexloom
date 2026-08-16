@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight,
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type ModelProvider, type PlatformConnection, type Schedule, type TeamView, type ThreadGoal, type Trigger } from "./types";
 import { emptyFeed, reduceFeed } from "./feed";
 import type { Block } from "./feed";
@@ -12,7 +12,7 @@ import { UsageBarTooltip, usageDayLabel } from "./components/UsageBarTooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { subscribeThreadEvents } from "./thread-events";
 import { oldestWaitingMs } from "./product-state";
-import { blockStableID, messageMarkerClusters, messageMarkerLensRange, receivedMessageMarkerForBlock, timelineMarkerPercent, type MessageMarker } from "./message-markers";
+import { blockStableID, messageMarkerClusters, receivedMessageMarkerForBlock, timelineIndexAtClientY, timelineMarkerPercent, type MessageMarker } from "./message-markers";
 
 const CUSTOM_MODEL_VALUE = "__custom";
 const FALLBACK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -89,8 +89,6 @@ function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
   const highlightedIndex = markers.findIndex((marker) => marker.id === highlightedID);
   const activeIndex = hoveredIndex ?? focusedIndex ?? pinnedIndex ?? (highlightedIndex >= 0 ? highlightedIndex : null);
   const lensOpen = hoveredIndex !== null || focusedIndex !== null || pinnedIndex !== null;
-  const range = activeIndex === null ? { start: 0, end: 0 } : messageMarkerLensRange(markers.length, activeIndex);
-  const lensMarkers = markers.slice(range.start, range.end);
   const closeLens = () => {
     setHoveredIndex(null);
     setFocusedIndex(null);
@@ -119,14 +117,23 @@ function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
     } else if (itemRect.bottom > listRect.bottom) {
       list.scrollTop += itemRect.bottom - listRect.bottom;
     }
-  }, [activeIndex, lensOpen, range.end, range.start]);
+  }, [activeIndex, lensOpen]);
+
+  const hoverTimelineAtPointer = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-message-timeline-surface]")) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    setHoveredIndex(timelineIndexAtClientY(event.clientY, rect.top, rect.height, markers.length));
+  };
 
   if (markers.length === 0) return null;
   return (
     <div
-      className="pointer-events-none absolute inset-y-5 right-4 z-20 w-5 overflow-visible"
+      className="pointer-events-auto absolute inset-y-5 right-2 z-20 w-8 overflow-visible"
       data-testid="message-timeline"
       aria-label="Received message timeline"
+      onMouseEnter={hoverTimelineAtPointer}
+      onMouseMove={hoverTimelineAtPointer}
       onMouseLeave={() => setHoveredIndex(null)}
     >
       <div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2 rounded-full border border-border/70 bg-card/80 shadow-[0_2px_10px_rgb(15_23_42_/_0.08)] backdrop-blur-sm" aria-hidden="true" />
@@ -136,6 +143,7 @@ function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
         aria-controls="received-message-lens"
         aria-expanded={pinnedIndex !== null}
         aria-label={`${pinnedIndex === null ? "Open" : "Close"} received message timeline, ${markers.length} messages`}
+        data-message-timeline-surface="control"
         onClick={() => {
           if (pinnedIndex !== null) {
             closeLens();
@@ -158,12 +166,13 @@ function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
           id="received-message-lens"
           className="pointer-events-auto absolute right-8 top-1/2 z-30 flex max-h-[min(22rem,100%)] w-[min(20rem,calc(100vw-4rem))] -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border/80 bg-card/95 text-foreground shadow-[0_18px_50px_rgb(15_23_42_/_0.18)] backdrop-blur-md"
           data-testid="message-timeline-lens"
+          data-message-timeline-surface="lens"
         >
           <span className="absolute -right-1 top-1/2 size-2 -translate-y-1/2 rotate-45 border-r border-t border-border/80 bg-card" aria-hidden="true" />
           <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Received messages</p>
-              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">Nearby {activeIndex! + 1} of {markers.length}</p>
+              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">Focused {activeIndex! + 1} of {markers.length} · scroll for all loaded</p>
             </div>
             {pinnedIndex !== null && (
               <button type="button" aria-label="Close received message timeline" onClick={closeLens} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -171,9 +180,8 @@ function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
               </button>
             )}
           </div>
-          <div ref={lensListRef} className="min-h-0 flex-1 overflow-y-auto p-1.5">
-            {lensMarkers.map((marker, offset) => {
-              const index = range.start + offset;
+          <div ref={lensListRef} className="min-h-0 flex-1 overscroll-contain overflow-y-auto p-1.5" data-testid="message-timeline-lens-list">
+            {markers.map((marker, index) => {
               const selected = index === activeIndex;
               const time = markerTimeLabel(marker.timestamp);
               return (
@@ -187,7 +195,6 @@ function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
                     onSelect(marker.id);
                     closeLens();
                   }}
-                  onMouseEnter={() => setHoveredIndex(index)}
                   onFocus={() => setFocusedIndex(index)}
                   onBlur={() => setFocusedIndex(null)}
                   className={cn(
@@ -224,6 +231,7 @@ function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
             data-message-marker-id={marker.id}
             data-message-marker-kind={marker.kind}
             data-message-cluster-size={cluster.count}
+            data-message-timeline-surface="marker"
             aria-current={highlightedID === marker.id ? "true" : undefined}
             onClick={() => {
               onSelect(marker.id);

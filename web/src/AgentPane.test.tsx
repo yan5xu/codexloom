@@ -117,6 +117,12 @@ describe("AgentPane", () => {
   });
 
   it("renders only received message markers and jumps by stable message identity", async () => {
+    const extraOwnerItems = Array.from({ length: 8 }, (_, index) => ({
+      type: "user",
+      id: `owner-extra-${index}`,
+      timestamp: `2026-08-16T01:01:${String(index).padStart(2, "0")}Z`,
+      text: `loaded owner message ${index + 1}`,
+    }));
     const history = {
       total: 1,
       turns: [{
@@ -149,6 +155,7 @@ describe("AgentPane", () => {
   <reply_policy>none</reply_policy><body>External body</body>
 </inbox_message>`,
           },
+          ...extraOwnerItems,
           {
             type: "user",
             id: "outbound-item",
@@ -181,39 +188,64 @@ describe("AgentPane", () => {
       return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
     });
 
-    virtualizerHarness.instance.getTotalSize.mockReturnValue(600);
-    virtualizerHarness.instance.getVirtualItems.mockReturnValue([
-      { index: 0, key: "user:user-marker", start: 0, size: 100, end: 100, lane: 0 },
-      { index: 1, key: "agentMessage:msg-inbound", start: 100, size: 100, end: 200, lane: 0 },
-      { index: 2, key: "agentMessage:msg-schedule", start: 200, size: 100, end: 300, lane: 0 },
-      { index: 3, key: "externalMessage:imsg-inbound", start: 300, size: 100, end: 400, lane: 0 },
-      { index: 4, key: "agentMessage:msg-outbound", start: 400, size: 100, end: 500, lane: 0 },
-      { index: 5, key: "agent:answer-marker", start: 500, size: 100, end: 600, lane: 0 },
-    ]);
+    virtualizerHarness.instance.getTotalSize.mockReturnValue(history.turns[0].items.length * 100);
+    virtualizerHarness.instance.getVirtualItems.mockReturnValue(history.turns[0].items.map((item, index) => ({
+      index,
+      key: item.id,
+      start: index * 100,
+      size: 100,
+      end: (index + 1) * 100,
+      lane: 0,
+    })));
 
     render(<AgentPane {...props} active />);
     const timeline = await screen.findByTestId("message-timeline");
     const markers = timeline.querySelectorAll("[data-message-marker-id]");
-    expect(markers).toHaveLength(4);
+    expect(markers).toHaveLength(12);
     expect(Array.from(markers).map((marker) => marker.getAttribute("data-message-marker-kind"))).toEqual([
-      "owner", "agent", "schedule", "external",
+      "owner", "agent", "schedule", "external", ...Array.from({ length: 8 }, () => "owner"),
     ]);
-    fireEvent.mouseEnter(markers[0]);
+    vi.spyOn(timeline, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      bottom: 500,
+      left: 0,
+      right: 32,
+      width: 32,
+      height: 400,
+      x: 0,
+      y: 100,
+      toJSON: () => ({}),
+    });
+    fireEvent.mouseMove(timeline, { clientY: 300 });
     const lens = screen.getByTestId("message-timeline-lens");
     expect(lens).toHaveTextContent("Received messages");
-    expect(lens).toHaveTextContent("Owner message");
-    expect(lens).toHaveTextContent("loaded task");
-    expect(lens.querySelectorAll("[data-message-timeline-lens-id]")).toHaveLength(4);
+    expect(lens).toHaveTextContent("Focused 7 of 12 · scroll for all loaded");
+    const lensItems = Array.from(lens.querySelectorAll<HTMLElement>("[data-message-timeline-lens-id]"));
+    expect(lensItems).toHaveLength(12);
+    const lensIDs = lensItems.map((item) => item.dataset.messageTimelineLensId);
+    const lensList = screen.getByTestId("message-timeline-lens-list");
+    lensList.scrollTop = 120;
+    fireEvent.scroll(lensList);
+    fireEvent.mouseEnter(lensItems[10]);
+    expect(Array.from(lens.querySelectorAll<HTMLElement>("[data-message-timeline-lens-id]")).map((item) => item.dataset.messageTimelineLensId)).toEqual(lensIDs);
+    expect(lens).toHaveTextContent("Focused 7 of 12 · scroll for all loaded");
+    expect(lensList.scrollTop).toBe(120);
     fireEvent.mouseLeave(timeline);
     expect(screen.queryByTestId("message-timeline-lens")).toBeNull();
 
-    const timelineToggle = screen.getByRole("button", { name: /Open received message timeline, 4 messages/ });
+    const timelineToggle = screen.getByRole("button", { name: /Open received message timeline, 12 messages/ });
     fireEvent.mouseEnter(timelineToggle);
     expect(screen.getByTestId("message-timeline-lens")).toBeInTheDocument();
     fireEvent.click(timelineToggle);
     expect(screen.getByTestId("message-timeline-lens")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close received message timeline" }));
     expect(screen.queryByTestId("message-timeline-lens")).toBeNull();
+
+    virtualizerHarness.instance.scrollToIndex.mockClear();
+    fireEvent.mouseEnter(markers[0]);
+    const farMessage = screen.getByTestId("message-timeline-lens").querySelectorAll<HTMLElement>("[data-message-timeline-lens-id]")[10];
+    fireEvent.click(farMessage);
+    expect(virtualizerHarness.instance.scrollToIndex).toHaveBeenCalledWith(10, { align: "center" });
 
     virtualizerHarness.instance.scrollToIndex.mockClear();
     fireEvent.click(markers[1]);

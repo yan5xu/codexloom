@@ -114,6 +114,13 @@ export function timelineMarkerPercent(position: number, count: number): number {
   return Math.min(94, Math.max(6, 6 + (position / (count - 1)) * 88));
 }
 
+export function timelineIndexAtClientY(clientY: number, top: number, height: number, count: number): number {
+  if (count <= 1 || height <= 0) return 0;
+  const percent = ((clientY - top) / height) * 100;
+  const normalized = (Math.min(94, Math.max(6, percent)) - 6) / 88;
+  return Math.min(count - 1, Math.max(0, Math.round(normalized * (count - 1))));
+}
+
 export function messageMarkerClusters(count: number, maxClusters = 28): MessageMarkerCluster[] {
   if (count <= 0 || maxClusters <= 0) return [];
   const size = Math.max(1, Math.ceil(count / maxClusters));
@@ -128,12 +135,4 @@ export function messageMarkerClusters(count: number, maxClusters = 28): MessageM
     });
   }
   return clusters;
-}
-
-export function messageMarkerLensRange(count: number, activeIndex: number, size = 7): { start: number; end: number } {
-  if (count <= 0) return { start: 0, end: 0 };
-  const windowSize = Math.max(1, Math.min(count, size));
-  const index = Math.min(count - 1, Math.max(0, activeIndex));
-  const start = Math.min(count - windowSize, Math.max(0, index - Math.floor(windowSize / 2)));
-  return { start, end: start + windowSize };
 }

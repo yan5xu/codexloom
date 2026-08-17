@@ -359,6 +359,8 @@ func main() {
 		cmdVersion(a)
 	case "doctor":
 		cmdDoctor(a)
+	case "launch-agent":
+		cmdLaunchAgent(a)
 	case "dev":
 		cmdDev(a)
 	case "approve", "reject":
@@ -488,6 +490,8 @@ Compatibility shortcuts:
   chub backups [prune]
   chub version [--running]
   chub doctor
+  loom launch-agent install --executable /absolute/codex-loom --working-directory /absolute/path [--output PLIST]
+  loom launch-agent preflight [--plist PLIST]
   chub dev canary start [--agent NAME ...] [--port auto|N] [--from DATA_DIR]
   chub dev canary status|stop
   chub approve <name|id> <approvalId>   /  chub reject <name|id> <approvalId>

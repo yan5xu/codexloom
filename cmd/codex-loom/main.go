@@ -19,11 +19,15 @@ import (
 
 	"github.com/yan5xu/codex-loom/internal/httpapi"
 	"github.com/yan5xu/codex-loom/internal/hub"
+	"github.com/yan5xu/codex-loom/internal/proxyenv"
 	"github.com/yan5xu/codex-loom/internal/store"
 	"github.com/yan5xu/codex-loom/internal/webui"
 )
 
 func main() {
+	if _, err := proxyenv.Apply(); err != nil {
+		log.Fatalf("configure proxy bypass: %v", err)
+	}
 	startedAt := time.Now()
 	defaultPort := 4870
 	p := os.Getenv("CODEX_LOOM_PORT")

@@ -24,7 +24,7 @@ REST 与 SSE 入口。业务对象、字段和命令语义以对应领域文档�
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/version` | Build, commit, builtAt, dataDir, mode, webAsset |
+| GET | `/api/version` | Build identity plus secret-free proxy runtime readback |
 | GET | `/api/health` | Liveness and current Agent count |
 | GET | `/api/usage` | Team token usage overview |
 | GET | `/api/workload` | Team workload overview |
@@ -45,6 +45,10 @@ REST 与 SSE 入口。业务对象、字段和命令语义以对应领域文档�
 
 `GET /api/usage`、`GET /api/workload`、`GET /api/activity/daily` 支持
 `from`/`to`/`tz` 或 `days`/`date` 查询参数。没有显式窗口时使用默认窗口。
+
+`GET /api/version` 的 `proxy` 只返回 Hub 与 CodexHost 规范化 bypass 列表的条目数、SHA-256、
+CodexHost loaded/matching 状态；不返回具体 host/domain。该列表只来自显式的 `NO_PROXY`、
+`no_proxy`、`CODEX_LOOM_NO_PROXY`，不读取或推断 Provider `base_url`。
 
 ## Agent, Turn, and Thread
 

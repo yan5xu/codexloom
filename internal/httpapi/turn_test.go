@@ -40,7 +40,12 @@ func TestTurnGetRouteFindsTurnWithoutAgentKey(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	ro, err := st.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	h, err := hub.OpenWithOptions(ro, hub.OpenOptions{Passive: true})
 	if err != nil {
 		t.Fatal(err)
 	}

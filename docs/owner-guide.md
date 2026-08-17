@@ -11,8 +11,9 @@ two diverge, the Chinese guide governs and this translation should be updated;
 this file must not introduce independent product meaning.
 
 Current-behavior statements in this draft were checked against `origin/main`
-at commit `81696e1`. Topics and Triggers are separately identified as
-development-build behavior because they are not part of that baseline.
+at commit `bf7c2017cc8669bf8d3383773c48d0a6edfeb8a8`. Topics and
+Triggers are both present in that `main` baseline and its corresponding
+running build.
 
 CodexLoom helps one person establish, use, coordinate, and adjust a team of
 long-lived Codex agents. Codex remains the agent runtime. Loom adds stable
@@ -136,7 +137,7 @@ frequencies.
 |---|---|---|
 | Most of the day | Agent workspace | Which long-lived Agent am I working with? |
 | When asked | Needs You | What fact, choice, or authorization requires me? |
-| Across days or Agents | Topics (development build) | Who owns this bounded matter now, and what is it waiting for? |
+| Across days or Agents | Topics | Who owns this bounded matter now, and what is it waiting for? |
 | Periodically | Overview | Is the team operating normally, and what deserves investigation? |
 | When responsibilities change | Team | Who owns what, and do declared relationships still fit the work? |
 | When external roles change | External | Which Agent may act as which identity in which conversation? |
@@ -198,7 +199,9 @@ The normal loop is:
    their judgment is required.
 3. Ordinary internal replies and external interactions return to the directly
    responsible Agent rather than to the Owner.
-4. A decision that genuinely requires a human appears in Needs You.
+4. After the Agent explicitly identifies a required human fact, choice, or
+   authorization and creates a request with `loom ask-user`, the item
+   enters Needs You.
 5. The Agent returns a readable result to the relationship that initiated the
    work.
 
@@ -209,7 +212,9 @@ The important distinction is causal:
 
 Agent Inbox belongs to the Agent. It can be useful evidence of workload,
 routing, or a tooling problem, but it is not a second Owner task list. Needs You
-contains the items that require the Owner to act.
+collects Owner requests the Agent explicitly created with `loom ask-user`;
+it is not a complete list of every pending decision, approval, or abnormal
+state.
 
 **Validated practice:** ordinary Agent-to-Agent replies should return to the
 requesting Agent for integration. Sending every intermediate reply to the Owner
@@ -259,15 +264,13 @@ Different Loom mechanisms solve different continuity problems.
 | Ask another Agent for domain judgment | Message | Request, reply, delivery, and causal ownership |
 | Obtain a human fact, choice, or authorization | Needs You | A durable human decision and resumption path |
 | Wake work at a known time | Schedule | Time-based recurrence |
-| Share a bounded matter across days and Agents | Topic (development build) | A responsible Agent, scoped participants, brief, waiting state, and evidence links |
-| Resume when an external fact changes | Trigger (development build) | A governed reason to re-check provider state |
+| Share a bounded matter across days and Agents | Topic | A responsible Agent, scoped participants, brief, waiting state, and evidence links |
+| Resume when an external fact changes | Trigger | A governed reason to re-check provider state |
 
-**Current behavior:** Agent Threads, Goals, Messages, Needs You, and Schedules
-are present on `main` at the base of this draft.
-
-**Development build:** Topics and Triggers are running in the current local
-development build but are not present on that `main` baseline. Their final user
-instructions must be rechecked after their implementation is integrated.
+**Current behavior:** Agent Threads, Goals, Messages, Needs You, Schedules,
+Topics, and Triggers are present on the `main` baseline for this draft.
+Resolving a Topic does not cascade to other work objects; a Trigger supplies
+only a reason to re-check an external fact.
 
 ### Messages are for direct responsibility boundaries
 
@@ -339,16 +342,24 @@ from quality, waiting, rework, and context loss; it is not a model guarantee.
 
 ### Needs You is for a human decision
 
-Use Needs You only when work cannot responsibly continue without an Owner fact,
-choice, or authorization. Include what is blocked, the exact question, and the
+Only when work cannot responsibly continue without an Owner fact, choice, or
+authorization should the Agent explicitly create Needs You with
+`loom ask-user`. Include what is blocked, the exact question, and the
 consequence of each available choice. After the Owner responds, the original
 Agent should continue the same work rather than requiring the Owner to restate
 the context.
 
+**Current behavior:** a silent stall does not create Needs You automatically.
+Codex tool approval uses a separate pending-approval entry. Therefore, no Needs
+You does not prove that no decision or approval is pending, and it does not
+prove system health. The current product also does not infer and create these
+requests automatically from Activity.
+
 ### Topics are for bounded shared continuity
 
-**Development build:** this mechanism is not part of the `main` baseline for
-this draft.
+**Current behavior:** Topic is part of the `main` baseline for this draft.
+It remains a thin shared coordination record and does not own the Agent
+execution lifecycle or replace a Thread, Goal, or project system.
 
 A Topic is not a shared model Session or a project-management board. It is a
 thin coordination record for a bounded matter that spans Turns, days, or
@@ -401,10 +412,11 @@ remaining a temporary Topic instruction.
 
 ### Triggers are reasons to re-check, not conclusions
 
-**Development build:** this mechanism is not part of the `main` baseline for
-this draft. The current adapter observes supported GitHub pull-request and
+**Current behavior:** Trigger is part of the `main` baseline for this
+draft. The current adapter observes supported GitHub pull-request and
 workflow-run changes. Deployment, approval, webhook, and other providers remain
-future scope.
+future scope. A Trigger neither changes a Goal automatically nor steers an
+unrelated active Turn.
 
 A supported pull-request or workflow-run change can wake the responsible Agent.
 The event is a reason to read the current authoritative provider state. It
@@ -570,8 +582,9 @@ the domain work.
 - CodexLoom is local-first, self-hosted, and under active development.
 - Some behavior depends on experimental Codex interfaces and may change across
   Codex releases.
-- Topics and Triggers described above require the development build until their
-  implementation is integrated into `main`.
+- Trigger currently covers only the listed GitHub pull-request and workflow-run
+  conditions. Neither Topics nor Triggers replace authoritative readback of the
+  objects they coordinate.
 - Runtime metrics are diagnostic evidence and contain known data-quality limits;
   they cannot determine organization changes automatically.
 - Profiles and declared relationships express current responsibility but do not

@@ -523,42 +523,89 @@ func TestCodexHostEnvAddsConfiguredLoomDirectory(t *testing.T) {
 	}
 	t.Setenv("CODEX_LOOM_CLI_BIN", loomBin)
 	t.Setenv("PATH", "/usr/bin:/bin")
-	env := codexHostEnv()
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	t.Setenv("CODEX_LOOM_NO_PROXY", "")
+	env, err := codexHostEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := dir + string(os.PathListSeparator) + "/usr/bin:/bin"
 	if env["PATH"] != want {
 		t.Fatalf("CodexHost PATH = %q, want %q", env["PATH"], want)
 	}
 }
 
-func TestCodexHostEnvAddsConfiguredProviderHostsToProxyBypass(t *testing.T) {
+func TestCodexHostEnvMergesOnlyExplicitProxyBypassAndDualWrites(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CODEX_LOOM_CLI_BIN", "")
 	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("NO_PROXY", "localhost, EXAMPLE.invalid")
+	t.Setenv("no_proxy", "example.invalid,127.0.0.1")
+	t.Setenv("CODEX_LOOM_NO_PROXY", ".service.invalid,LOCALHOST")
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	config := `[model_providers.internal]
-base_url = "https://provider.example.test/v1"
-
-[model_providers.other]
-base_url = "http://10.20.30.40:8080/v1"
-`
-	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(config), 0o600); err != nil {
+	// A Provider host in Codex config is deliberately outside the contract.
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(`
+[model_providers.fixture]
+base_url = "https://auto-provider.invalid/v1"
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NO_PROXY", "localhost,provider.example.test")
-	t.Setenv("no_proxy", "localhost,provider.example.test")
-	t.Setenv("CODEX_LOOM_NO_PROXY", "extra.example.test")
-	env := codexHostEnv()
-	want := "localhost,provider.example.test,extra.example.test,10.20.30.40"
+	env, err := codexHostEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "localhost,EXAMPLE.invalid,127.0.0.1,.service.invalid"
 	if env["NO_PROXY"] != want || env["no_proxy"] != want {
 		t.Fatalf("CodexHost proxy bypass = %#v, want both spellings %q", env, want)
 	}
+	if strings.Contains(env["NO_PROXY"], "auto-provider.invalid") {
+		t.Fatalf("Provider host was automatically added: %q", env["NO_PROXY"])
+	}
 }
 
-func TestAppendNoProxyHostsDeduplicatesCaseInsensitively(t *testing.T) {
-	if got := appendNoProxyHosts("localhost,EXAMPLE.test", "example.test,extra.test", "LOCALHOST", "10.0.0.1"); got != "localhost,EXAMPLE.test,extra.test,10.0.0.1" {
-		t.Fatalf("appendNoProxyHosts = %q", got)
+func TestProxyRuntimeReadbackProvesHubAndChildIdentityWithoutValues(t *testing.T) {
+	t.Setenv("NO_PROXY", "alpha.invalid,shared.invalid")
+	t.Setenv("no_proxy", "SHARED.invalid,beta.invalid")
+	t.Setenv("CODEX_LOOM_NO_PROXY", "managed.invalid")
+	proxyLog := filepath.Join(t.TempDir(), "proxy.txt")
+	t.Setenv("CODEX_HOST_PROXY_LOG", proxyLog)
+	installFakeSharedCodexHost(t)
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	defer h.Shutdown()
+	if _, err := h.ensureCodexHost(); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := h.ProxyRuntimeSnapshot()
+	if !snapshot.Valid || !snapshot.CodexHostLoaded || !snapshot.Matching {
+		t.Fatalf("proxy runtime snapshot = %#v", snapshot)
+	}
+	if snapshot.Hub.EntryCount != 4 || snapshot.Hub.SHA256 == "" || snapshot.Hub != snapshot.CodexHost {
+		t.Fatalf("proxy summaries = hub %#v, child %#v", snapshot.Hub, snapshot.CodexHost)
+	}
+	data, err := os.ReadFile(proxyLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const canonical = "alpha.invalid,shared.invalid,beta.invalid,managed.invalid"
+	if strings.TrimSpace(string(data)) != canonical+"|"+canonical {
+		t.Fatalf("child proxy environment = %q", data)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "alpha.invalid") || strings.Contains(string(encoded), "managed.invalid") {
+		t.Fatalf("readback exposed proxy entries: %s", encoded)
 	}
 }
 
@@ -787,6 +834,7 @@ func installFakeSharedCodexHost(t *testing.T) string {
 	resumeMarker := filepath.Join(dir, "resumed")
 	script := `#!/bin/sh
 printf '%s\n' "$@" > "$CODEX_HOST_ARGS_LOG"
+[ -z "${CODEX_HOST_PROXY_LOG:-}" ] || printf '%s|%s\n' "$NO_PROXY" "$no_proxy" > "$CODEX_HOST_PROXY_LOG"
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$CODEX_HOST_LOG"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -873,6 +921,10 @@ done
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// CODEX_LOOM_CODEX_BIN has precedence over the compatibility alias and is
+	// commonly present in a managed developer environment. Override both so
+	// focused tests never accidentally start the caller's real Codex binary.
+	t.Setenv("CODEX_LOOM_CODEX_BIN", binPath)
 	t.Setenv("CODEX_REMOTE_BIN", binPath)
 	t.Setenv("CODEX_HOST_LOG", logPath)
 	t.Setenv("CODEX_HOST_ARGS_LOG", filepath.Join(dir, "args.txt"))

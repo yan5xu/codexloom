@@ -79,7 +79,7 @@ func (h *Hub) ListInboxEntries(agentKey, state, origin string) ([]InboxEntry, er
 		if agent := h.agents[item.AgentID]; agent != nil {
 			agentName = agent.Name
 		}
-		entry := InboxEntry{Item: *item, Message: *message, Address: *address, AgentName: agentName}
+		entry := InboxEntry{Item: *item, Message: *message, Address: cloneAgentAddressValue(*address), AgentName: agentName}
 		membership := h.memberships[item.MembershipID]
 		if membership == nil {
 			membership = h.membershipForConversationLocked(address.ID, message.Conversation.ConversationID)

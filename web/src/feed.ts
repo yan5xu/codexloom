@@ -57,7 +57,7 @@ export interface TopicContextEvent {
 }
 
 export type Block =
-  | { kind: "user"; ts: string; text: string; attachments: ExternalAttachment[] }
+  | { kind: "user"; id?: string; ts: string; text: string; attachments: ExternalAttachment[] }
   | {
       kind: "agentMessage";
       id: string;
@@ -145,6 +145,7 @@ export type Block =
       kind: "command";
       id: string;
       ts?: string;
+      description?: string;
       command: string;
       status: string;
       exitCode: number | null;
@@ -709,7 +710,7 @@ function loomManagedWorkBlock(text: string, ts: string): Block | null {
   }
 }
 
-function userBlock(ts: string, rawText: string, rawAttachments: any[] = []): Block {
+function userBlock(ts: string, rawText: string, rawAttachments: any[] = [], stableID = ""): Block {
   const extracted = extractLoomAttachments(rawText);
   const special =
     loomManagedWorkBlock(extracted.text, ts) ||
@@ -719,7 +720,8 @@ function userBlock(ts: string, rawText: string, rawAttachments: any[] = []): Blo
     externalMessageBlock(extracted.text, ts);
   if (special) return special;
   const attachments = mergeAttachments(extracted.attachments, rawAttachments.map(normalizeAttachment));
-  return { kind: "user", ts, text: extracted.text, attachments };
+  const id = stableID || `user:${ts}:${stableTextHash(`${extracted.text}\u0000${JSON.stringify(attachments)}`)}`;
+  return { kind: "user", id, ts, text: extracted.text, attachments };
 }
 
 export function summarizeTask(text: string): string {
@@ -749,48 +751,74 @@ export function summarizeTask(text: string): string {
   return text;
 }
 
+function historyItemID(turn: any, item: any, kind: string, fallbackText: string, occurrences: Map<string, number>): string {
+  const sourceID = [item?.id, item?.itemId, item?.messageId, item?.message_id]
+    .find((value) => typeof value === "string" && value.trim());
+  if (sourceID) return sourceID;
+
+  const turnID = typeof turn?.id === "string" && turn.id.trim() ? turn.id : "turn";
+  const timestamp = typeof item?.timestamp === "string" ? item.timestamp : "";
+  const base = `${kind}:${turnID}:${timestamp}:${stableTextHash(`${fallbackText}\u0000${JSON.stringify(item || {})}`)}`;
+  const occurrence = occurrences.get(base) || 0;
+  occurrences.set(base, occurrence + 1);
+  return occurrence === 0 ? base : `${base}:${occurrence}`;
+}
+
 // buildHistoryBlocks converts rollout history turns into renderable Blocks.
-// Shared by the initial seed (__history__) and scroll-up prepend.
-function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
+// Shared by the initial seed (__history__) and scroll-up prepend. IDs come
+// from rollout item IDs when present and deterministic content otherwise, so
+// reconcile/prepend never rename an existing message because of its window.
+function buildHistoryBlocks(turns: any[], _keyPrefix: string): Block[] {
   const blocks: Block[] = [];
+  const occurrences = new Map<string, number>();
   for (let i = 0; i < turns.length; i++) {
     const turn = turns[i];
     const items = turn.items || [];
     for (let j = 0; j < items.length; j++) {
       const it = items[j];
-      const id = `${keyPrefix}-${i}-${j}`;
       const timestamp = typeof it.timestamp === "string" ? it.timestamp : "";
       switch (it.type) {
         case "user":
-          blocks.push(userBlock(timestamp, structuredText(it.text), Array.isArray(it.attachments) ? it.attachments : []));
+          blocks.push(userBlock(
+            timestamp,
+            structuredText(it.text),
+            Array.isArray(it.attachments) ? it.attachments : [],
+            historyItemID(turn, it, "user", structuredText(it.text), occurrences),
+          ));
           break;
-        case "answer":
-          blocks.push({ kind: "agent", id, ts: timestamp, text: structuredText(it.text), streaming: false });
+        case "answer": {
+          const text = structuredText(it.text);
+          blocks.push({ kind: "agent", id: historyItemID(turn, it, "answer", text, occurrences), ts: timestamp, text, streaming: false });
           break;
+        }
         case "thinking": {
           const text = structuredText(it.text) || structuredText(it.summary) || structuredText(it.content);
           if (text.trim()) {
-            blocks.push({ kind: "think", id, ts: timestamp, text, done: true });
+            blocks.push({ kind: "think", id: historyItemID(turn, it, "thinking", text, occurrences), ts: timestamp, text, done: true });
           }
           break;
         }
         case "command":
+        case "commandExecution": {
+          const command = it.command || "";
           blocks.push({
-            kind: "command", id, ts: timestamp,
-            command: it.command || "",
+            kind: "command", id: historyItemID(turn, it, "command", command, occurrences), ts: timestamp,
+            ...(typeof it.description === "string" && it.description.trim() ? { description: it.description } : {}),
+            command,
             status: it.status || "completed",
             exitCode: it.exitCode ?? null,
             durationMs: it.durationMs ?? null,
-            output: it.output || "",
+            output: it.aggregatedOutput || it.output || "",
           });
           break;
+        }
         case "file_change":
-          blocks.push({ kind: "file", id, ts: timestamp, status: "completed", changes: it.changes || [] });
+          blocks.push({ kind: "file", id: historyItemID(turn, it, "file", JSON.stringify(it.changes || []), occurrences), ts: timestamp, status: "completed", changes: it.changes || [] });
           break;
         case "image":
           {
             const image = imageSrc(it);
-            if (image) blocks.push({ kind: "image", id, ts: timestamp, ...image });
+            if (image) blocks.push({ kind: "image", id: historyItemID(turn, it, "image", image.data, occurrences), ts: timestamp, ...image });
           }
           break;
       }
@@ -798,7 +826,7 @@ function buildHistoryBlocks(turns: any[], keyPrefix: string): Block[] {
     if (turn.usage?.totalTokens) {
       blocks.push({
         kind: "usage",
-        id: turn.id || `${keyPrefix}-turn-${i}`,
+        id: turn.id || historyItemID(turn, { type: "usage" }, "usage", JSON.stringify(turn.usage), occurrences),
         ts: turn.completedAt || turn.updatedAt || items.at(-1)?.timestamp || turn.startedAt || "",
         model: turn.model,
         inputTokens: turn.usage.inputTokens || 0,
@@ -874,7 +902,15 @@ export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
     case "loom/agent-created":
       return sys(state, ev.ts, "dim", `agent created · ${d.cwd}`);
     case "loom/user-message":
-      return push(state, userBlock(ev.ts, d.text || "", Array.isArray(d.attachments) ? d.attachments : []));
+      return push(
+        state,
+        userBlock(
+          ev.ts,
+          d.text || "",
+          Array.isArray(d.attachments) ? d.attachments : [],
+          [d.id, d.itemId, d.messageId].find((value) => typeof value === "string" && value.trim()) || "",
+        ),
+      );
     case "loom/artifact-published": {
       const artifact = normalizeAttachment(d.artifact);
       if (!artifact.id && !artifact.path && !artifact.url) return state;
@@ -974,17 +1010,31 @@ export function reduceFeed(state: FeedState, ev: LoomEvent): FeedState {
       }
       case "commandExecution": {
         const key = `c:${itemId}`;
-        const patch = {
+        const patch: {
+          description?: string;
+          command: string;
+          status: string;
+          exitCode: number | null;
+          durationMs: number | null;
+          output: string;
+        } = {
           command: item.command || "",
           status: item.status || (t === "item/completed" ? "completed" : "running"),
           exitCode: item.exitCode ?? null,
           durationMs: item.durationMs ?? null,
           output: item.aggregatedOutput || item.output || "",
         };
+        if (typeof item.description === "string" && item.description.trim()) {
+          patch.description = item.description;
+        }
         if (state.index[key] === undefined) {
           return push(state, { kind: "command", id: itemId, ts: ev.ts, ...patch }, key);
         }
-        return update(state, key, (b) => (b.kind === "command" ? { ...b, ...patch } : b));
+        return update(state, key, (b) => {
+          if (b.kind !== "command") return b;
+          // Older lifecycle payloads may omit the optional description.
+          return { ...b, ...patch };
+        });
       }
       case "fileChange": {
         const key = `f:${itemId}`;

@@ -30,7 +30,7 @@ func TestRasterArtifactCanBeEmbeddedCrossOrigin(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}

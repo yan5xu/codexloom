@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/yan5xu/codex-loom/internal/codex"
 	"github.com/yan5xu/codex-loom/internal/modelcatalog"
+	"github.com/yan5xu/codex-loom/internal/proxyenv"
 	loomskills "github.com/yan5xu/codex-loom/skills"
 )
 
@@ -29,6 +29,17 @@ type codexHostRuntime struct {
 	generation uint64
 	bin        string
 	catalogSHA string
+	proxy      proxyenv.Summary
+	// A mutating Thread RPC that timed out may still complete later. Do not
+	// reuse that Thread on the same app-server generation because a retry could
+	// duplicate context or work. Replacing the host terminates the old effect
+	// domain and starts with an empty fence map.
+	indeterminateThreads map[string]threadControlFailure
+}
+
+type threadControlFailure struct {
+	Method     string
+	ObservedAt string
 }
 
 type SkillInventorySkill struct {
@@ -73,9 +84,13 @@ func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
 	if err != nil {
 		return nil, errf(500, "prepare Codex model catalog: %s", err)
 	}
+	hostEnv, err := codexHostEnv()
+	if err != nil {
+		return nil, errf(500, "prepare CodexHost proxy bypass: %s", err)
+	}
 	client, err := codex.SpawnWithOptions(codex.SpawnOptions{
 		Bin:  codexHostBin(),
-		Env:  codexHostEnv(),
+		Env:  hostEnv,
 		Args: modelcatalog.SpawnArgs(catalog.Path),
 	})
 	if err != nil {
@@ -83,11 +98,13 @@ func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
 	}
 	h.codexHostGeneration++
 	host := &codexHostRuntime{
-		client:     client,
-		ready:      make(chan struct{}),
-		generation: h.codexHostGeneration,
-		bin:        codexHostBin(),
-		catalogSHA: catalog.SHA256,
+		client:               client,
+		ready:                make(chan struct{}),
+		generation:           h.codexHostGeneration,
+		bin:                  codexHostBin(),
+		catalogSHA:           catalog.SHA256,
+		proxy:                proxyenv.Summarize(hostEnv["NO_PROXY"]),
+		indeterminateThreads: map[string]threadControlFailure{},
 	}
 	client.OnNotification = func(method string, params json.RawMessage) {
 		h.onHostNotification(host.generation, method, params)
@@ -105,15 +122,71 @@ func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
 	return host, nil
 }
 
+// threadControlFailureLocked returns a conservative fence for the current
+// CodexHost only. h.mu must be held. A cold host replacement terminates the
+// outstanding request and intentionally clears this transient fence.
+func (h *Hub) threadControlFailureLocked(threadID string) error {
+	host := h.codexHost
+	if host == nil || host.client.Closed() || strings.TrimSpace(threadID) == "" {
+		return nil
+	}
+	failure, ok := host.indeterminateThreads[threadID]
+	if !ok {
+		return nil
+	}
+	return errf(500, "Codex Thread control outcome is indeterminate after %s timed out at %s; replace the current CodexHost before retrying the same work", failure.Method, failure.ObservedAt)
+}
+
+func (h *Hub) markThreadControlIndeterminate(rt *runtime, threadID, method string) {
+	if rt == nil || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	host := h.codexHost
+	if host == nil || host.generation != rt.hostGeneration || host.client != rt.client {
+		return
+	}
+	if host.indeterminateThreads == nil {
+		host.indeterminateThreads = map[string]threadControlFailure{}
+	}
+	if _, exists := host.indeterminateThreads[threadID]; exists {
+		return
+	}
+	host.indeterminateThreads[threadID] = threadControlFailure{
+		Method: strings.TrimSpace(method), ObservedAt: now(),
+	}
+}
+
+func (h *Hub) verifyRuntimeThreadControl(agentID string, rt *runtime) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	meta := h.agents[agentID]
+	if meta == nil {
+		return errf(404, "agent vanished")
+	}
+	if h.agentCwdUpdatePendingLocked(agentID) || h.runtimes[agentID] != rt {
+		return errf(409, "agent %q runtime changed before Thread control; retry", meta.Name)
+	}
+	host := h.codexHost
+	if host == nil || rt == nil || host.generation != rt.hostGeneration || host.client != rt.client {
+		return errf(500, "CodexHost changed before Thread control started")
+	}
+	return h.threadControlFailureLocked(meta.ThreadID)
+}
+
 func (h *Hub) materializeModelCatalog() (modelcatalog.Snapshot, error) {
 	dataDir := filepath.Join(os.TempDir(), "codexloom-runtime")
 	if h.st != nil {
+		if err := h.st.ValidateWritableIdentity(); err != nil {
+			return modelcatalog.Snapshot{}, err
+		}
 		dataDir = h.st.Dir()
 	}
 	return modelcatalog.Materialize(dataDir, os.Getenv("CODEX_LOOM_MODEL_CATALOG"))
 }
 
-func codexHostEnv() map[string]string {
+func codexHostEnv() (map[string]string, error) {
 	env := map[string]string{}
 	loomBin := strings.TrimSpace(os.Getenv("CODEX_LOOM_CLI_BIN"))
 	if loomBin == "" {
@@ -142,74 +215,50 @@ func codexHostEnv() map[string]string {
 			}
 		}
 	}
-
-	// launchd does not inherit the interactive shell's proxy bypass list. Add
-	// configured Provider hosts to both spellings without copying credentials
-	// or hard-coding organization-specific domains into the process environment.
-	noProxyValues := []string{os.Getenv("NO_PROXY"), os.Getenv("no_proxy"), os.Getenv("CODEX_LOOM_NO_PROXY")}
-	noProxyValues = append(noProxyValues, codexProviderHosts()...)
-	noProxy := appendNoProxyHosts(noProxyValues...)
-	if noProxy != "" {
-		env["NO_PROXY"] = noProxy
-		env["no_proxy"] = noProxy
+	canonical, err := proxyenv.Current()
+	if err != nil {
+		return nil, err
+	}
+	if canonical != "" {
+		// Some clients consult only one spelling. Give the shared CodexHost the
+		// exact same normalized operator-controlled value under both names.
+		env["NO_PROXY"] = canonical
+		env["no_proxy"] = canonical
 	}
 	if len(env) == 0 {
-		return nil
+		return nil, nil
 	}
-	return env
+	return env, nil
 }
 
-func codexProviderHosts() []string {
-	configHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil
-		}
-		configHome = filepath.Join(home, ".codex")
-	}
-	data, err := os.ReadFile(filepath.Join(configHome, "config.toml"))
+type ProxyRuntimeSnapshot struct {
+	Valid           bool             `json:"valid"`
+	Error           string           `json:"error,omitempty"`
+	Hub             proxyenv.Summary `json:"hub"`
+	CodexHostLoaded bool             `json:"codexHostLoaded"`
+	CodexHost       proxyenv.Summary `json:"codexHost"`
+	Matching        bool             `json:"matching"`
+}
+
+// ProxyRuntimeSnapshot exposes only counts and digests. It never returns the
+// configured bypass entries, Provider URLs, or other environment values.
+func (h *Hub) ProxyRuntimeSnapshot() ProxyRuntimeSnapshot {
+	canonical, err := proxyenv.Current()
 	if err != nil {
-		return nil
+		return ProxyRuntimeSnapshot{Error: err.Error()}
 	}
-	var hosts []string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "base_url") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		value := strings.TrimSpace(strings.SplitN(parts[1], "#", 2)[0])
-		value = strings.Trim(value, "\"'")
-		u, err := url.Parse(value)
-		if err != nil || u.Hostname() == "" {
-			continue
-		}
-		hosts = append(hosts, u.Hostname())
+	snapshot := ProxyRuntimeSnapshot{Valid: true, Hub: proxyenv.Summarize(canonical)}
+	h.mu.Lock()
+	host := h.codexHost
+	if host != nil && host.client != nil && !host.client.Closed() {
+		snapshot.CodexHostLoaded = true
+		snapshot.CodexHost = host.proxy
 	}
-	return hosts
-}
-
-func appendNoProxyHosts(values ...string) string {
-	seen := map[string]bool{}
-	var result []string
-	add := func(value string) {
-		for _, item := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
-			item = strings.TrimSpace(item)
-			key := strings.ToLower(item)
-			if item != "" && !seen[key] {
-				seen[key] = true
-				result = append(result, item)
-			}
-		}
+	h.mu.Unlock()
+	if snapshot.CodexHostLoaded {
+		snapshot.Matching = proxyenv.Same(snapshot.Hub, snapshot.CodexHost)
 	}
-	for _, value := range values {
-		add(value)
-	}
-	return strings.Join(result, ",")
+	return snapshot
 }
 
 func (h *Hub) ensureCodexHost() (*codexHostRuntime, error) {
@@ -238,6 +287,11 @@ func (h *Hub) initCodexHost(host *codexHostRuntime) {
 		return
 	}
 	if h.st != nil {
+		if err := h.st.ValidateWritableIdentity(); err != nil {
+			host.initErr = fmt.Errorf("validate builtin Skill store: %w", err)
+			host.client.Close()
+			return
+		}
 		skillRoot := filepath.Join(h.st.Dir(), "builtin-skills")
 		missing := missingUserSkills()
 		if len(missing) == 0 {
@@ -286,21 +340,21 @@ func (h *Hub) ReloadSkills() (SkillInventory, error) {
 }
 
 func (h *Hub) requestSkillInventory(host *codexHostRuntime) (SkillInventory, error) {
-	params := map[string]any{"forceReload": true}
 	h.mu.Lock()
-	seen := map[string]bool{}
-	cwds := make([]string, 0, len(h.agents))
-	for _, agent := range h.agents {
-		cwd := strings.TrimSpace(agent.Cwd)
-		if cwd != "" && !seen[cwd] {
-			seen[cwd] = true
-			cwds = append(cwds, cwd)
-		}
-	}
+	cwds := h.agentSkillInventoryCwdsLocked("", "")
 	h.mu.Unlock()
+	inventory, err := h.requestSkillInventoryForCwds(host, cwds)
+	if err != nil {
+		return SkillInventory{}, err
+	}
+	h.projectAgentSkillInventory(&inventory)
+	return inventory, nil
+}
+
+func (h *Hub) requestSkillInventoryForCwds(host *codexHostRuntime, cwds []string) (SkillInventory, error) {
+	params := map[string]any{"forceReload": true}
 	if len(cwds) > 0 {
-		sort.Strings(cwds)
-		params["cwds"] = cwds
+		params["cwds"] = append([]string(nil), cwds...)
 	}
 	raw, err := host.client.Request("skills/list", params, 30*time.Second)
 	if err != nil {
@@ -310,8 +364,29 @@ func (h *Hub) requestSkillInventory(host *codexHostRuntime) (SkillInventory, err
 	if err := json.Unmarshal(raw, &inventory); err != nil {
 		return SkillInventory{}, fmt.Errorf("decode skills/list: %w", err)
 	}
-	h.projectAgentSkillInventory(&inventory)
 	return inventory, nil
+}
+
+// agentSkillInventoryCwdsLocked returns the exact Agent Home set sent to
+// Codex. overrideAgentID/overrideCwd lets a governed cwd update refresh the
+// prospective inventory before committing the new Agent registry value.
+// h.mu must be held.
+func (h *Hub) agentSkillInventoryCwdsLocked(overrideAgentID, overrideCwd string) []string {
+	seen := map[string]bool{}
+	cwds := make([]string, 0, len(h.agents))
+	for _, agent := range h.agents {
+		cwd := agent.Cwd
+		if agent.ID == overrideAgentID {
+			cwd = overrideCwd
+		}
+		cwd = strings.TrimSpace(cwd)
+		if cwd != "" && !seen[cwd] {
+			seen[cwd] = true
+			cwds = append(cwds, cwd)
+		}
+	}
+	sort.Strings(cwds)
+	return cwds
 }
 
 func (h *Hub) reloadSkillsForGeneration(generation uint64) {

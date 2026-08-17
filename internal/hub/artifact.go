@@ -48,6 +48,9 @@ type threadArtifactRecord struct {
 }
 
 func (h *Hub) StageThreadArtifact(key, name, declaredMime string, source io.Reader) (ThreadArtifact, error) {
+	if err := h.st.ValidateWritableIdentity(); err != nil {
+		return ThreadArtifact{}, errf(500, "validate Thread artifact store: %s", err)
+	}
 	h.mu.Lock()
 	agent := h.resolveLocked(key)
 	if agent == nil {
@@ -145,6 +148,9 @@ func (h *Hub) OpenThreadArtifact(key, artifactID string) (ThreadArtifact, *os.Fi
 }
 
 func (h *Hub) PublishThreadArtifact(key, artifactID string) (ThreadArtifact, error) {
+	if err := h.st.ValidateWritableIdentity(); err != nil {
+		return ThreadArtifact{}, errf(500, "validate Thread artifact store: %s", err)
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	agent := h.resolveLocked(key)

@@ -47,7 +47,7 @@ func TestAddressLifecycleAndTransferAPIReturnManagedReceipts(t *testing.T) {
 	if err := st.SaveAgents(agents); err != nil {
 		t.Fatal(err)
 	}
-	h, err := hub.OpenWithOptions(st, hub.OpenOptions{Passive: true})
+	h, err := hub.Open(st)
 	if err != nil {
 		t.Fatal(err)
 	}

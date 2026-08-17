@@ -274,7 +274,9 @@ func (s *subscriber) close() {
 }
 
 type Hub struct {
-	st *store.Store
+	st              *store.Store
+	passive         bool
+	writerOwnership *store.WritableOwnership
 
 	mu                      sync.Mutex
 	contextCoverageMu       sync.Mutex
@@ -312,6 +314,7 @@ type Hub struct {
 	seqs                    map[string]int64
 	globalSeq               int64
 	runtimes                map[string]*runtime
+	agentCwdUpdates         map[string]struct{}
 	subs                    map[string]map[*subscriber]struct{}
 	globalSubs              map[*subscriber]struct{}
 	remoteConfig            RemoteConfig
@@ -325,6 +328,7 @@ type Hub struct {
 	codexHostGeneration     uint64
 	stop                    chan struct{}
 	stopOnce                sync.Once
+	shutdownOnce            sync.Once
 	stopping                bool
 	draining                bool
 	providerSwitching       bool
@@ -335,6 +339,23 @@ type Hub struct {
 	dispatchHumanAnswer     func(key, text string) (SendResult, error)
 	observeTrigger          triggerObserver
 	contextHistoryProbe     contextHistoryProbeFunc
+	threadResumeTimeout     time.Duration
+	developerContextTimeout time.Duration
+
+	integrationNormalizationPending  bool
+	gatewayState                     gatewayState
+	gatewayFoundationPoisoned        bool
+	gatewayFoundationPoisonReason    string
+	gatewayOpenGeneration            string
+	gatewayCoordinatorInitMu         sync.Mutex
+	gatewayCoordinator               *gatewayConnectionCoordinator
+	saveGatewayStateForTest          func(gatewayState) error
+	loadGatewayStateForTest          func(*gatewayState) (bool, error)
+	gatewayServiceAdapterForTest     func(gatewayLaunchPlan) (gatewayServiceAdapter, error)
+	gatewayProofWaitForTest          time.Duration
+	larkUpdateConnectionForTest      func(string, string) (PlatformConnection, error)
+	larkMigrationRecordWriteForTest  func() error
+	larkMigrationRecordRemoveForTest func(string) error
 }
 
 // New is retained for in-process callers that cannot recover from an invalid
@@ -362,8 +383,34 @@ func Open(st *store.Store) (*Hub, error) {
 }
 
 func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
+	if st == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	var ownership *store.WritableOwnership
+	if options.Passive {
+		if !st.ReadOnly() {
+			return nil, fmt.Errorf("passive Hub requires an independently opened read-only Store")
+		}
+	} else {
+		if st.ReadOnly() {
+			return nil, fmt.Errorf("writable Hub requires a writable Store")
+		}
+		var err error
+		ownership, err = st.ClaimWritableOwnership()
+		if err != nil {
+			return nil, err
+		}
+	}
+	opened := false
+	defer func() {
+		if !opened && ownership != nil {
+			ownership.Release()
+		}
+	}()
 	h := &Hub{
 		st:                     st,
+		passive:                options.Passive,
+		writerOwnership:        ownership,
 		agents:                 map[string]*Agent{},
 		agentSkillConfigs:      map[string]*AgentSkillConfig{},
 		comms:                  map[string]*AgentMessage{},
@@ -376,6 +423,9 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		organizationLinks:      map[string]*OrganizationRelationship{},
 		connections:            map[string]*PlatformConnection{},
 		addresses:              map[string]*AgentAddress{},
+		gatewayState:           emptyGatewayState(),
+		gatewayOpenGeneration:  newIntegrationID("gopen"),
+		gatewayCoordinator:     newGatewayConnectionCoordinator(),
 		addressOperations:      map[string]*AddressLifecycleOperation{},
 		memberships:            map[string]*ConversationMembership{},
 		conversationCandidates: map[string]*ConversationCandidate{},
@@ -389,10 +439,28 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		goals:                  map[string]*ThreadGoal{},
 		seqs:                   map[string]int64{},
 		runtimes:               map[string]*runtime{},
+		agentCwdUpdates:        map[string]struct{}{},
 		subs:                   map[string]map[*subscriber]struct{}{},
 		globalSubs:             map[*subscriber]struct{}{},
 		triggerObservations:    map[string]struct{}{},
 		stop:                   make(chan struct{}),
+	}
+	// Validate the complete private Gateway foundation against integrations
+	// before any startup recovery or compatibility normalization can write the
+	// durable tree. This keeps corrupt/newer state fail-closed at Hub open.
+	if err := h.loadIntegrations(); err != nil {
+		return nil, fmt.Errorf("load integrations: %w", err)
+	}
+	if err := h.loadGatewayState(); err != nil {
+		return nil, fmt.Errorf("load Gateway foundation: %w", err)
+	}
+	if h.integrationNormalizationPending && !options.Passive {
+		if len(h.gatewayState.Controls) != 0 {
+			return nil, fmt.Errorf("integration normalization requires explicit Gateway reconciliation")
+		}
+		if err := h.persistIntegrationsLocked(); err != nil {
+			return nil, fmt.Errorf("persist normalized integrations: %w", err)
+		}
 	}
 	h.globalSeq = st.LastSeq(globalEventLogID)
 	if err := st.LoadAgents(&h.agents); err != nil {
@@ -452,9 +520,6 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if err := h.validateLoadedCollaborationGroupsLocked(); err != nil {
 		return nil, fmt.Errorf("validate collaboration groups: %w", err)
 	}
-	if err := h.loadIntegrations(); err != nil {
-		return nil, fmt.Errorf("load integrations: %w", err)
-	}
 	if err := h.loadInboxState(); err != nil {
 		return nil, fmt.Errorf("load inbox state: %w", err)
 	}
@@ -485,7 +550,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	if h.topics == nil {
 		h.topics = map[string]*Topic{}
 	}
-	if h.normalizeTopicsLocked() {
+	if h.normalizeTopicsLocked() && !options.Passive {
 		if err := h.persistTopicsLocked(); err != nil {
 			return nil, fmt.Errorf("persist normalized Topics: %w", err)
 		}
@@ -508,6 +573,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 		h.seqs[meta.ID] = st.LastSeq(meta.ID)
 	}
 	if options.Passive {
+		opened = true
 		return h, nil
 	}
 
@@ -574,6 +640,7 @@ func OpenWithOptions(st *store.Store, options OpenOptions) (*Hub, error) {
 	go func() { defer h.background.Done(); h.remoteLoop() }()
 	go func() { defer h.background.Done(); h.eventMaintenanceLoop() }()
 	go func() { defer h.background.Done(); h.triggerLoop() }()
+	opened = true
 	return h, nil
 }
 
@@ -601,8 +668,10 @@ func (h *Hub) loadComms() error {
 			continue
 		}
 		msg := h.comms[id]
-		if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
-			return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+		if !h.passive {
+			if err := h.st.AppendComm(commRecord{Message: *msg}); err != nil {
+				return fmt.Errorf("persist repaired message %s: %w", msg.ID, err)
+			}
 		}
 	}
 	return nil
@@ -932,6 +1001,12 @@ func (h *Hub) LastSeq(key string) int64 {
 
 // getRuntimeLocked returns an Agent binding to the shared CodexHost.
 func (h *Hub) getRuntimeLocked(meta *Agent) (*runtime, error) {
+	if err := h.threadControlFailureLocked(meta.ThreadID); err != nil {
+		return nil, err
+	}
+	if h.agentCwdUpdatePendingLocked(meta.ID) {
+		return nil, errf(409, "agent %q cwd update is in progress; retry after it completes", meta.Name)
+	}
 	if rt, ok := h.runtimes[meta.ID]; ok && !rt.client.Closed() {
 		select {
 		case <-rt.ready:
@@ -1030,8 +1105,11 @@ func (h *Hub) initRuntime(agentID string, rt *runtime) {
 		rt.initErr = startThread()
 		return
 	}
-	err := resumeThread(rt.client, threadID, sandbox, cwd, providerID, model, disabledSkillPaths)
+	err := resumeThreadWithTimeout(rt.client, threadID, sandbox, cwd, providerID, model, disabledSkillPaths, h.effectiveThreadResumeTimeout())
 	if err != nil {
+		if codex.IsRequestTimeout(err) {
+			h.markThreadControlIndeterminate(rt, threadID, "thread/resume")
+		}
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "no rollout") || strings.Contains(msg, "not found") {
 			rt.initErr = startThread()
@@ -1064,10 +1142,21 @@ func threadBindingParams(sandbox, cwd, providerID, model string, disabledSkillPa
 }
 
 func resumeThread(client *codex.Client, threadID, sandbox, cwd, providerID, model string, disabledSkillPaths []string) error {
+	return resumeThreadWithTimeout(client, threadID, sandbox, cwd, providerID, model, disabledSkillPaths, 60*time.Second)
+}
+
+func resumeThreadWithTimeout(client *codex.Client, threadID, sandbox, cwd, providerID, model string, disabledSkillPaths []string, timeout time.Duration) error {
 	params := threadBindingParams(sandbox, cwd, providerID, model, disabledSkillPaths)
 	params["threadId"] = threadID
-	_, err := client.Request("thread/resume", params, 60*time.Second)
+	_, err := client.Request("thread/resume", params, timeout)
 	return err
+}
+
+func (h *Hub) effectiveThreadResumeTimeout() time.Duration {
+	if h.threadResumeTimeout > 0 {
+		return h.threadResumeTimeout
+	}
+	return 60 * time.Second
 }
 
 func codexSandboxMode(sandbox string) string {
@@ -1106,7 +1195,10 @@ func (h *Hub) resumeAgentThread(agentID string, rt *runtime) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errf(409, "agent has no Codex Thread binding")
 	}
-	if err := resumeThread(rt.client, threadID, sandbox, cwd, providerID, model, disabledSkillPaths); err != nil {
+	if err := resumeThreadWithTimeout(rt.client, threadID, sandbox, cwd, providerID, model, disabledSkillPaths, h.effectiveThreadResumeTimeout()); err != nil {
+		if codex.IsRequestTimeout(err) {
+			h.markThreadControlIndeterminate(rt, threadID, "thread/resume")
+		}
 		return errf(500, "resume Codex Thread: %s", err)
 	}
 	h.mu.Lock()

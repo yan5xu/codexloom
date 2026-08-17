@@ -248,6 +248,8 @@ func main() {
 			switch subcommand {
 			case "create", "list", "ls", "get", "rename":
 				cmd = subcommand
+			case "update":
+				cmd = "agent-update"
 			case "provider":
 				cmd = "agent-provider"
 			case "archive", "delete":
@@ -255,7 +257,7 @@ func main() {
 			case "kill":
 				cmd = "kill"
 			default:
-				usage("agent create|list|get|rename|provider|archive ...")
+				usage("agent create|list|get|update|rename|provider|archive ...")
 			}
 		} else if cmd == "thread" {
 			switch subcommand {
@@ -284,6 +286,8 @@ func main() {
 		cmdGet(a)
 	case "rename":
 		cmdRename(a)
+	case "agent-update":
+		cmdAgentUpdate(a)
 	case "agent-provider":
 		cmdAgentProvider(a)
 	case "send":
@@ -296,6 +300,8 @@ func main() {
 		cmdMsg(a)
 	case "ask-user":
 		cmdAskUser(a)
+	case "lark-migrate":
+		cmdLarkMigrate(a)
 	case "inbox":
 		cmdInbox(a)
 	case "outbox":
@@ -353,6 +359,8 @@ func main() {
 		cmdVersion(a)
 	case "doctor":
 		cmdDoctor(a)
+	case "launch-agent":
+		cmdLaunchAgent(a)
 	case "dev":
 		cmdDev(a)
 	case "approve", "reject":
@@ -374,6 +382,7 @@ func printHelp() {
 
 Compatibility shortcuts:
   chub create <name> --cwd <path> [--approval never|on-request] [--sandbox MODE] [--provider PROVIDER] [--model MODEL] [--effort minimal|low|medium|high|xhigh|max|ultra]
+  loom agent update <name|id> [--cwd /absolute/path/to/agent-home]
   chub list
   chub get <name|id>
   chub rename <name|id> <new-name>
@@ -481,6 +490,8 @@ Compatibility shortcuts:
   chub backups [prune]
   chub version [--running]
   chub doctor
+  loom launch-agent install --executable /absolute/codex-loom --working-directory /absolute/path [--output PLIST]
+  loom launch-agent preflight [--plist PLIST]
   chub dev canary start [--agent NAME ...] [--port auto|N] [--from DATA_DIR]
   chub dev canary status|stop
   chub approve <name|id> <approvalId>   /  chub reject <name|id> <approvalId>

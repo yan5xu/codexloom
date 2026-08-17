@@ -606,6 +606,10 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 		h.mu.Unlock()
 		return SendResult{}, errf(404, "agent not found: %s", key)
 	}
+	if h.agentCwdUpdatePendingLocked(meta.ID) {
+		h.mu.Unlock()
+		return SendResult{}, errf(409, "agent %q cwd update is in progress; retry after it completes", meta.Name)
+	}
 	if topicID != "" {
 		topic := h.topics[topicID]
 		if topic == nil || !topicHasAgent(topic, meta.ID, meta.ID) {
@@ -650,6 +654,13 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 	// Serialize readiness, epoch context injection and turn reservation for one
 	// runtime. Concurrent callers must not inject the same context revisions.
 	rt.startMu.Lock()
+	// getRuntimeLocked runs before startMu. Another caller may have timed out a
+	// mutating Thread RPC while this caller was waiting for serialization, so
+	// re-check the per-host fence at the actual control boundary.
+	if err := h.verifyRuntimeThreadControl(agentID, rt); err != nil {
+		rt.startMu.Unlock()
+		return SendResult{}, err
+	}
 	if err := waitReady(rt); err != nil {
 		rt.startMu.Unlock()
 		return SendResult{}, errf(500, "codex not ready: %s", err)
@@ -694,6 +705,11 @@ func (h *Hub) sendTaskWithContext(key, text string, artifactIDs []string, inacti
 		h.mu.Unlock()
 		rt.startMu.Unlock()
 		return SendResult{}, errf(404, "agent vanished")
+	}
+	if h.agentCwdUpdatePendingLocked(agentID) || h.runtimes[agentID] != rt {
+		h.mu.Unlock()
+		rt.startMu.Unlock()
+		return SendResult{}, errf(409, "agent %q runtime changed before Turn start; retry", meta.Name)
 	}
 	if rt.activeTurn != nil && !rt.activeTurn.finished {
 		h.mu.Unlock()

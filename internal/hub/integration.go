@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type PlatformConnection struct {
@@ -371,10 +372,22 @@ type InboxActionParams struct {
 }
 
 type ConnectionHeartbeatParams struct {
-	Status       string   `json:"status"`
-	Cursor       string   `json:"cursor"`
-	Capabilities []string `json:"capabilities"`
-	Error        string   `json:"error"`
+	Status         string                         `json:"status"`
+	Cursor         string                         `json:"cursor"`
+	Capabilities   []string                       `json:"capabilities"`
+	Error          string                         `json:"error"`
+	GatewayProcess *GatewayProcessHeartbeatParams `json:"_gatewayProcess,omitempty"`
+}
+
+// GatewayProcessHeartbeatParams is private connector-to-Runtime proof
+// plumbing. It is accepted only on the existing connector-authenticated
+// heartbeat route and is never projected into public Connection/SSE output.
+// Runtime supplies the observation timestamp on receipt.
+type GatewayProcessHeartbeatParams struct {
+	AttemptID        string `json:"attemptId"`
+	Generation       string `json:"generation"`
+	Build            string `json:"build"`
+	ExecutableDigest string `json:"executableDigest"`
 }
 
 type OutboxResultParams struct {
@@ -444,9 +457,7 @@ func (h *Hub) loadIntegrations() error {
 	}
 	changed := h.normalizeAddressLifecycleLocked()
 	changed = h.migrateAllowedConversationsLocked() || changed
-	if changed {
-		return h.persistIntegrationsLocked()
-	}
+	h.integrationNormalizationPending = changed
 	return nil
 }
 
@@ -519,8 +530,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendInbox(item); err != nil {
-				return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+			if !h.passive {
+				if err := h.st.AppendInbox(item); err != nil {
+					return fmt.Errorf("persist recovered inbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.inbox[id] = &copy
@@ -558,8 +571,10 @@ func (h *Hub) loadInboxState() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendAttempt(attempt); err != nil {
-				return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+			if !h.passive {
+				if err := h.st.AppendAttempt(attempt); err != nil {
+					return fmt.Errorf("persist recovered inbox attempt %s: %w", attempt.ID, err)
+				}
 			}
 			copy := attempt
 			h.attempts[id] = &copy
@@ -586,8 +601,10 @@ func (h *Hub) loadInboxState() error {
 		item := *current
 		if staleOutbox[id] {
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+			if !h.passive {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist terminal outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -599,8 +616,10 @@ func (h *Hub) loadInboxState() error {
 			item.ClaimExpiresAt = ""
 			item.LastError = "recovered legacy delivery claim after CodexLoom restart"
 			item.UpdatedAt = now()
-			if err := h.st.AppendOutbox(item); err != nil {
-				return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+			if !h.passive {
+				if err := h.st.AppendOutbox(item); err != nil {
+					return fmt.Errorf("persist recovered outbox item %s: %w", item.ID, err)
+				}
 			}
 			copy := item
 			h.outbox[id] = &copy
@@ -625,8 +644,10 @@ func (h *Hub) loadInboxState() error {
 		}
 	}
 	for _, item := range reconciledInbox {
-		if err := h.st.AppendInbox(item); err != nil {
-			return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+		if !h.passive {
+			if err := h.st.AppendInbox(item); err != nil {
+				return fmt.Errorf("persist reconciled inbox item %s: %w", item.ID, err)
+			}
 		}
 	}
 	return nil
@@ -655,8 +676,8 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 		return PlatformConnection{}, errf(400, "provider is required")
 	}
 	credentialRef := strings.TrimSpace(p.CredentialRef)
-	if credentialRef != "" && !strings.HasPrefix(credentialRef, "env:") && !strings.HasPrefix(credentialRef, "keychain:") {
-		return PlatformConnection{}, errf(400, "credentialRef must use env: or keychain:")
+	if credentialRef != "" && !validCredentialRef(credentialRef) {
+		return PlatformConnection{}, errf(400, "credentialRef must use env:, keychain:, or managed:")
 	}
 	enabled := true
 	if p.Enabled != nil {
@@ -668,15 +689,20 @@ func (h *Hub) CreateConnection(p ConnectionParams) (PlatformConnection, error) {
 		CredentialRef: credentialRef, Status: "disconnected", Capabilities: normalizeCapabilities(p.Capabilities),
 		Enabled: enabled, CreatedAt: ts, UpdatedAt: ts,
 	}
+	unlock := h.gatewayCoordinatorForUse().lock(connection.ID)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.requireGatewayFoundationHealthyLocked(); err != nil {
+		return PlatformConnection{}, err
+	}
 	h.connections[connection.ID] = &connection
 	if err := h.persistIntegrationsLocked(); err != nil {
 		delete(h.connections, connection.ID)
 		return PlatformConnection{}, errf(500, "save integration: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": connection})
-	return connection, nil
+	return clonePlatformConnectionValue(connection), nil
 }
 
 func (h *Hub) ListConnections() []PlatformConnection {
@@ -684,7 +710,8 @@ func (h *Hub) ListConnections() []PlatformConnection {
 	defer h.mu.Unlock()
 	out := make([]PlatformConnection, 0, len(h.connections))
 	for _, connection := range h.connections {
-		out = append(out, *connection)
+		h.applyGatewayHealthProjectionLocked(connection.ID)
+		out = append(out, clonePlatformConnectionValue(*connection))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out
@@ -694,8 +721,11 @@ func (h *Hub) ListConnections() []PlatformConnection {
 // provisioning attempt. Callers must only pass IDs that did not exist before
 // that attempt; existing integration state is never modified here.
 func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) error {
+	unlock := h.lockGatewayMutationScope(connectionIDs, addressIDs)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	lockedConnectionIDs := normalizeGatewayConnectionIDs(append(append([]string(nil), connectionIDs...), h.gatewayConnectionIDsForAddressesLocked(addressIDs)...))
 	nextConnections := cloneConnections(h.connections)
 	nextAddresses := cloneAddresses(h.addresses)
 	nextMemberships := cloneMemberships(h.memberships)
@@ -733,7 +763,14 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 				return errf(409, "cannot roll back connection %s while an address still references it", id)
 			}
 		}
+		if control := h.gatewayState.Controls[id]; control != nil && control.Lifecycle != gatewayBindingProvisioning {
+			return errf(409, "cannot roll back adopted Gateway connection %s", id)
+		}
 		delete(nextConnections, id)
+	}
+	ticket, err := h.prepareGatewayMutationLocked(lockedConnectionIDs...)
+	if err != nil {
+		return err
 	}
 	previousConnections, previousAddresses := h.connections, h.addresses
 	previousMemberships, previousCandidates := h.memberships, h.conversationCandidates
@@ -744,6 +781,9 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 		h.memberships, h.conversationCandidates = previousMemberships, previousCandidates
 		return errf(500, "save integration rollback: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return err
+	}
 	h.emitGlobalLocked("loom/integration-rollback", map[string]any{"connections": connectionIDs, "addresses": addressIDs})
 	return nil
 }
@@ -751,6 +791,17 @@ func (h *Hub) RollbackCreatedIntegration(connectionIDs, addressIDs []string) err
 // RestoreIntegrationResources puts existing resources back to their exact
 // pre-provisioning values after a failed provider migration.
 func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addresses []AgentAddress) error {
+	connectionIDs := make([]string, 0, len(connections))
+	addressIDs := make([]string, 0, len(addresses))
+	for i := range connections {
+		connectionIDs = append(connectionIDs, connections[i].ID)
+	}
+	for i := range addresses {
+		addressIDs = append(addressIDs, addresses[i].ID)
+		connectionIDs = append(connectionIDs, addresses[i].ConnectionID)
+	}
+	unlock := h.lockGatewayMutationScope(connectionIDs, addressIDs)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	nextConnections := cloneConnections(h.connections)
@@ -758,22 +809,30 @@ func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addr
 	for i := range connections {
 		connection := connections[i]
 		if _, exists := nextConnections[connection.ID]; exists {
-			copy := connection
+			copy := clonePlatformConnectionValue(connection)
 			nextConnections[connection.ID] = &copy
 		}
 	}
 	for i := range addresses {
 		address := addresses[i]
 		if _, exists := nextAddresses[address.ID]; exists {
-			copy := address
+			copy := cloneAgentAddressValue(address)
 			nextAddresses[address.ID] = &copy
 		}
+	}
+	lockedConnectionIDs := normalizeGatewayConnectionIDs(append(connectionIDs, h.gatewayConnectionIDsForAddressesLocked(addressIDs)...))
+	ticket, err := h.prepareGatewayMutationLocked(lockedConnectionIDs...)
+	if err != nil {
+		return err
 	}
 	previousConnections, previousAddresses := h.connections, h.addresses
 	h.connections, h.addresses = nextConnections, nextAddresses
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections, h.addresses = previousConnections, previousAddresses
 		return errf(500, "save integration restore: %s", err)
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return err
 	}
 	h.emitGlobalLocked("loom/integration-restored", map[string]any{"connections": connections, "addresses": addresses})
 	return nil
@@ -783,6 +842,10 @@ func (h *Hub) RestoreIntegrationResources(connections []PlatformConnection, addr
 // keeping them available for historical Inbox/Outbox resolution. Missing or
 // newer Membership configuration is projected onto the canonical Address.
 func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAddressID string, duplicateConnectionIDs, duplicateAddressIDs []string) (IntegrationConsolidationResult, error) {
+	lockedConnectionIDs := append([]string{canonicalConnectionID}, duplicateConnectionIDs...)
+	lockedAddressIDs := append([]string{canonicalAddressID}, duplicateAddressIDs...)
+	unlock := h.lockGatewayMutationScope(lockedConnectionIDs, lockedAddressIDs)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -834,6 +897,14 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 				return IntegrationConsolidationResult{}, errf(409, "connection %s also serves address %s", id, candidate.ID)
 			}
 		}
+	}
+	affectedConnectionIDs := append([]string{connection.ID}, connectionIDs...)
+	for id := range retiredConnections {
+		affectedConnectionIDs = append(affectedConnectionIDs, id)
+	}
+	ticket, err := h.prepareGatewayMutationLocked(affectedConnectionIDs...)
+	if err != nil {
+		return IntegrationConsolidationResult{}, err
 	}
 
 	connections := cloneConnections(h.connections)
@@ -944,12 +1015,15 @@ func (h *Hub) ConsolidateIntegrationIdentity(canonicalConnectionID, canonicalAdd
 		h.memberships, h.conversationCandidates = oldMemberships, oldCandidates
 		return IntegrationConsolidationResult{}, errf(500, "save integration consolidation: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return IntegrationConsolidationResult{}, err
+	}
 	sort.Strings(result.ArchivedConnectionIDs)
 	sort.Strings(result.ArchivedAddressIDs)
 	sort.Strings(result.ArchivedMembershipIDs)
 	result.CanonicalMembershipIDs = normalizeOrderedStrings(result.CanonicalMembershipIDs)
-	result.Connection = *h.connections[connection.ID]
-	result.Address = *h.addresses[address.ID]
+	result.Connection = clonePlatformConnectionValue(*h.connections[connection.ID])
+	result.Address = cloneAgentAddressValue(*h.addresses[address.ID])
 	h.emitGlobalLocked("loom/integration-consolidated", result)
 	return result, nil
 }
@@ -997,6 +1071,19 @@ func cloneConnections(values map[string]*PlatformConnection) map[string]*Platfor
 	return out
 }
 
+func clonePlatformConnectionValue(value PlatformConnection) PlatformConnection {
+	value.Capabilities = append([]string(nil), value.Capabilities...)
+	return value
+}
+
+func cloneAgentAddressValue(value AgentAddress) AgentAddress {
+	value.AllowActors = append([]string(nil), value.AllowActors...)
+	value.AllowConversations = append([]string(nil), value.AllowConversations...)
+	value.BlockActors = append([]string(nil), value.BlockActors...)
+	value.BlockConversations = append([]string(nil), value.BlockConversations...)
+	return value
+}
+
 func cloneAddresses(values map[string]*AgentAddress) map[string]*AgentAddress {
 	out := make(map[string]*AgentAddress, len(values))
 	for id, value := range values {
@@ -1042,6 +1129,8 @@ func maxInt(left, right int) int {
 }
 
 func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnection, error) {
+	unlock := h.gatewayCoordinatorForUse().lock(id)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[strings.TrimSpace(id)]
@@ -1064,8 +1153,8 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 	}
 	if p.CredentialRef != "" {
 		value := strings.TrimSpace(p.CredentialRef)
-		if !strings.HasPrefix(value, "env:") && !strings.HasPrefix(value, "keychain:") {
-			return PlatformConnection{}, errf(400, "credentialRef must use env: or keychain:")
+		if !validCredentialRef(value) {
+			return PlatformConnection{}, errf(400, "credentialRef must use env:, keychain:, or managed:")
 		}
 		next.CredentialRef = value
 	}
@@ -1079,16 +1168,27 @@ func (h *Hub) UpdateConnection(id string, p ConnectionParams) (PlatformConnectio
 		}
 	}
 	next.UpdatedAt = now()
+	ticket, err := h.prepareGatewayMutationLocked(next.ID)
+	if err != nil {
+		return PlatformConnection{}, err
+	}
 	h.connections[next.ID] = &next
 	if err := h.persistIntegrationsLocked(); err != nil {
 		h.connections[next.ID] = connection
 		return PlatformConnection{}, errf(500, "save integration: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return PlatformConnection{}, err
+	}
+	next = *h.connections[next.ID]
+	next.Capabilities = append([]string(nil), h.connections[next.ID].Capabilities...)
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
-	return next, nil
+	return clonePlatformConnectionValue(next), nil
 }
 
 func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (PlatformConnection, error) {
+	unlock := h.gatewayCoordinatorForUse().lock(id)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[id]
@@ -1108,6 +1208,43 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 		return PlatformConnection{}, errf(400, "invalid connection status %q", status)
 	}
 	ts := now()
+	if p.GatewayProcess != nil {
+		if status != "connected" || strings.TrimSpace(p.Error) != "" {
+			return PlatformConnection{}, errf(409, "Gateway process proof requires a connected heartbeat")
+		}
+		observedNow, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			return PlatformConnection{}, errf(500, "Runtime heartbeat clock is invalid")
+		}
+		proof := gatewayProcessProof{
+			AttemptID: strings.TrimSpace(p.GatewayProcess.AttemptID), Generation: strings.TrimSpace(p.GatewayProcess.Generation),
+			Build: strings.TrimSpace(p.GatewayProcess.Build), ExecutableDigest: strings.TrimSpace(p.GatewayProcess.ExecutableDigest), ObservedAt: ts,
+		}
+		if _, err := h.acceptGatewayProcessProofLocked(next.ID, proof, observedNow, p.Cursor, p.Capabilities); err != nil {
+			return PlatformConnection{}, err
+		}
+		projected := h.connections[next.ID]
+		if projected == nil {
+			return PlatformConnection{}, errf(404, "connection not found: %s", id)
+		}
+		copy := *projected
+		copy.Capabilities = append([]string(nil), projected.Capabilities...)
+		h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": copy})
+		return copy, nil
+	}
+	if handled, err := h.recordGatewayObservationLocked(next.ID, status, p.Error, ts, ts, p.Cursor, "", p.Capabilities); handled {
+		if err != nil {
+			return PlatformConnection{}, errf(500, "persist Gateway observation: %s", err)
+		}
+		projected := h.connections[next.ID]
+		if projected == nil {
+			return PlatformConnection{}, errf(404, "connection not found: %s", id)
+		}
+		copy := *projected
+		copy.Capabilities = append([]string(nil), projected.Capabilities...)
+		h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": copy})
+		return copy, nil
+	}
 	next.Status = status
 	next.LastHeartbeatAt = ts
 	next.UpdatedAt = ts
@@ -1124,14 +1261,24 @@ func (h *Hub) HeartbeatConnection(id string, p ConnectionHeartbeatParams) (Platf
 		return PlatformConnection{}, errf(500, "save connection heartbeat: %s", err)
 	}
 	h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": next})
-	return next, nil
+	return clonePlatformConnectionValue(next), nil
 }
 
 func (h *Hub) MarkConnectionDisconnected(id, reason string) {
+	unlock := h.gatewayCoordinatorForUse().lock(id)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[id]
 	if connection == nil {
+		return
+	}
+	if handled, err := h.recordGatewayObservationLocked(connection.ID, "disconnected", reason, now(), "", "", "", nil); handled {
+		if err != nil {
+			log.Printf("[codex-loom] persist disconnected Gateway observation %s: %v", id, err)
+			return
+		}
+		h.emitGlobalLocked("loom/integration-connection", map[string]any{"connection": *connection})
 		return
 	}
 	previous := *connection
@@ -1179,6 +1326,8 @@ func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
 		enabled = *p.Enabled
 	}
 
+	unlock := h.gatewayCoordinatorForUse().lock(connectionID)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[connectionID]
@@ -1209,6 +1358,10 @@ func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
 		BlockActors: normalizeIdentityList(p.BlockActors), BlockConversations: normalizeIdentityList(p.BlockConversations),
 		Enabled: enabled, Version: 1, CreatedAt: ts, UpdatedAt: ts,
 	}
+	ticket, err := h.prepareGatewayMutationLocked(connectionID)
+	if err != nil {
+		return AgentAddress{}, err
+	}
 	h.addresses[address.ID] = &address
 	createdMemberships := h.ensureAllowedConversationMembershipsLocked(&address)
 	if err := h.persistIntegrationsLocked(); err != nil {
@@ -1218,8 +1371,11 @@ func (h *Hub) CreateAddress(p AddressParams) (AgentAddress, error) {
 		}
 		return AgentAddress{}, errf(500, "save agent address: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return AgentAddress{}, err
+	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": address})
-	return address, nil
+	return cloneAgentAddressValue(address), nil
 }
 
 func (h *Hub) ListAddresses(agentKey string) ([]AgentAddress, error) {
@@ -1236,7 +1392,7 @@ func (h *Hub) ListAddresses(agentKey string) ([]AgentAddress, error) {
 	out := []AgentAddress{}
 	for _, address := range h.addresses {
 		if agentID == "" || address.AgentID == agentID {
-			out = append(out, *address)
+			out = append(out, cloneAgentAddressValue(*address))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
@@ -1244,6 +1400,8 @@ func (h *Hub) ListAddresses(agentKey string) ([]AgentAddress, error) {
 }
 
 func (h *Hub) UpdateAddress(id string, p AddressParams) (AgentAddress, error) {
+	unlock := h.lockGatewayMutationScope(nil, []string{id})
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	address := h.addresses[id]
@@ -1318,6 +1476,10 @@ func (h *Hub) UpdateAddress(id string, p AddressParams) (AgentAddress, error) {
 	}
 	next.UpdatedAt = now()
 	next.Version++
+	ticket, err := h.prepareGatewayMutationLocked(address.ConnectionID)
+	if err != nil {
+		return AgentAddress{}, err
+	}
 	previousMemberships := h.memberships
 	h.memberships = cloneMemberships(h.memberships)
 	h.addresses[id] = &next
@@ -1339,11 +1501,14 @@ func (h *Hub) UpdateAddress(id string, p AddressParams) (AgentAddress, error) {
 		h.memberships = previousMemberships
 		return AgentAddress{}, errf(500, "save agent address: %s", err)
 	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
+		return AgentAddress{}, err
+	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": next})
 	for _, membership := range updatedMemberships {
 		h.emitGlobalLocked("loom/conversation-membership", map[string]any{"membership": membership})
 	}
-	return next, nil
+	return cloneAgentAddressValue(next), nil
 }
 
 func (h *Hub) IngestMessage(p IngressParams) (IngressResult, error) {
@@ -1371,6 +1536,8 @@ func (h *Hub) IngestMessage(p IngressParams) (IngressResult, error) {
 		return IngressResult{}, err
 	}
 
+	unlock := h.gatewayCoordinatorForUse().lock(connectionID)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	connection := h.connections[connectionID]
@@ -1476,7 +1643,13 @@ func (h *Hub) IngestMessage(p IngressParams) (IngressResult, error) {
 	previousConnection := *connection
 	connection.LastEventAt = ts
 	connection.UpdatedAt = ts
-	if err := h.persistIntegrationsLocked(); err != nil {
+	rawStatus, rawError := h.rawGatewayObservationLocked(connection.ID, connection.Status, connection.LastError)
+	if handled, observationErr := h.recordGatewayObservationLocked(connection.ID, rawStatus, rawError, ts, "", connection.Cursor, ts, nil); handled {
+		if observationErr != nil {
+			*connection = previousConnection
+			log.Printf("[codex-loom] persist Gateway ingress observation %s: %v", item.ID, observationErr)
+		}
+	} else if err := h.persistIntegrationsLocked(); err != nil {
 		*connection = previousConnection
 		log.Printf("[codex-loom] persist connection cursor after inbox %s: %v", item.ID, err)
 	}
@@ -1562,7 +1735,13 @@ func (h *Hub) ignoreIngressLocked(connection *PlatformConnection, address *Agent
 	previous := *connection
 	connection.LastEventAt = now()
 	connection.UpdatedAt = connection.LastEventAt
-	if err := h.persistIntegrationsLocked(); err != nil {
+	rawStatus, rawError := h.rawGatewayObservationLocked(connection.ID, connection.Status, connection.LastError)
+	if handled, observationErr := h.recordGatewayObservationLocked(connection.ID, rawStatus, rawError, connection.LastEventAt, "", connection.Cursor, connection.LastEventAt, nil); handled {
+		if observationErr != nil {
+			*connection = previous
+			log.Printf("[codex-loom] persist ignored Gateway ingress for connection %s: %v", connection.ID, observationErr)
+		}
+	} else if err := h.persistIntegrationsLocked(); err != nil {
 		*connection = previous
 		log.Printf("[codex-loom] persist ignored ingress for connection %s: %v", connection.ID, err)
 	}

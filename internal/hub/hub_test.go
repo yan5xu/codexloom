@@ -56,6 +56,54 @@ func TestAgentEventIsMultiplexedToGlobalSubscribers(t *testing.T) {
 	}
 }
 
+func TestCommandExecutionDescriptionRemainsInRealtimeRawEvents(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := testHub(st)
+	h.stopping = true
+	h.agents["agent-1"] = &Agent{
+		ID: "agent-1", Name: "worker", ThreadID: "thread-1", Status: "running",
+		CurrentTurnID: "turn-1", CreatedAt: now(), UpdatedAt: now(),
+	}
+	rt := &runtime{
+		agentID:   "agent-1",
+		approvals: map[string]*approval{},
+		activeTurn: &turnState{
+			turnID: "turn-1", startedAt: time.Now(), stopWatchdog: make(chan struct{}),
+		},
+	}
+	for _, method := range []string{"item/started", "item/completed"} {
+		h.onNotification(rt, method, json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-1","command":"printf probe-ok","description":"Run the isolated command probe","status":"completed"}}`))
+	}
+	events, err := st.ReadEvents("agent-1", 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, event := range events {
+		if event.Type != "item/started" && event.Type != "item/completed" {
+			continue
+		}
+		var payload struct {
+			Item struct {
+				Description string `json:"description"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Item.Description != "Run the isolated command probe" {
+			t.Fatalf("%s description = %q", event.Type, payload.Item.Description)
+		}
+		seen++
+	}
+	if seen != 2 {
+		t.Fatalf("command lifecycle events = %d, want 2", seen)
+	}
+}
+
 func TestCompletedNotificationWithFailedTurnStatusProjectsFailure(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {

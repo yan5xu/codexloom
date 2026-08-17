@@ -1149,7 +1149,11 @@ func TestInboxRecoveryOnlyUsesLatestProjection(t *testing.T) {
 	}
 
 	for restart := 1; restart <= 2; restart++ {
-		h, err := OpenWithOptions(st, OpenOptions{Passive: true})
+		ro, err := st.OpenReadOnly()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := OpenWithOptions(ro, OpenOptions{Passive: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1163,6 +1167,9 @@ func TestInboxRecoveryOnlyUsesLatestProjection(t *testing.T) {
 			t.Fatalf("restart %d attempt = %#v", restart, got)
 		}
 		h.Shutdown()
+		if err := ro.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -1172,8 +1179,16 @@ func stoppedInboxTestHub(t *testing.T) *Hub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(st)
-	h.Shutdown()
+	h := testHub(st)
+	h.addresses = map[string]*AgentAddress{}
+	h.memberships = map[string]*ConversationMembership{}
+	h.conversationCandidates = map[string]*ConversationCandidate{}
+	h.messages = map[string]*InboxMessage{}
+	h.externalMessages = map[string]string{}
+	h.inbox = map[string]*InboxItem{}
+	h.attempts = map[string]*HandlingAttempt{}
+	h.outbox = map[string]*OutboxItem{}
+	h.providerOperations = map[string]*ProviderOperation{}
 	seedInboxAgent(t, h, "agent-a", "alpha")
 	return h
 }

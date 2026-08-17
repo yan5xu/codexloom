@@ -1,7 +1,8 @@
-import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight, CircleHelp, FileText, GitBranch, Inbox, Loader2, MessageSquare, Network, Paperclip, Pause, Pencil, Play, Plus, RadioTower, RefreshCw, RotateCcw, Send, SkipForward, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUpRight, BarChart3, CalendarClock, Check, ChevronRight, CircleHelp, Copy, FileText, GitBranch, Inbox, Loader2, MessageSquare, Network, Paperclip, Pause, Pencil, Play, Plus, RadioTower, RefreshCw, RotateCcw, Send, SkipForward, Square, Target, Trash2, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { api, uploadThreadArtifact, type Agent, type AgentAddress, type AgentProfile, type AgentTokenUsage, type ConversationMembership, type HumanRequest, type InboxEntry, type ModelProvider, type PlatformConnection, type Schedule, type TeamView, type ThreadGoal, type Trigger } from "./types";
 import { emptyFeed, reduceFeed } from "./feed";
 import type { Block } from "./feed";
@@ -11,6 +12,7 @@ import { UsageBarTooltip, usageDayLabel } from "./components/UsageBarTooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { subscribeThreadEvents } from "./thread-events";
 import { oldestWaitingMs } from "./product-state";
+import { blockStableID, messageMarkerClusters, receivedMessageMarkerForBlock, timelineIndexAtClientY, timelineMarkerPercent, type MessageMarker } from "./message-markers";
 
 const CUSTOM_MODEL_VALUE = "__custom";
 const FALLBACK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -61,9 +63,200 @@ function formatAttachmentSize(bytes: number) {
 }
 
 function feedBlockKey(block: Block) {
-  if (block.kind === "user") return `user:${block.ts}:${block.text.slice(0, 48)}`;
-  if (block.kind === "sys") return `sys:${block.ts}:${block.text.slice(0, 48)}`;
-  return `${block.kind}:${block.id}`;
+  return blockStableID(block);
+}
+
+type PositionedMessageMarker = MessageMarker & { position: number };
+
+function markerTimeLabel(timestamp?: string): string {
+  if (!timestamp) return "";
+  const value = new Date(timestamp);
+  if (!Number.isFinite(value.getTime())) return "";
+  return value.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function ReceivedMessageTimeline({ markers, highlightedID, onSelect }: {
+  markers: PositionedMessageMarker[];
+  highlightedID: string;
+  onSelect: (id: string) => void;
+}) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null);
+  const lensListRef = useRef<HTMLDivElement | null>(null);
+  const activeLensItemRef = useRef<HTMLButtonElement | null>(null);
+  const clusters = useMemo(() => messageMarkerClusters(markers.length), [markers.length]);
+  const highlightedIndex = markers.findIndex((marker) => marker.id === highlightedID);
+  const activeIndex = hoveredIndex ?? focusedIndex ?? pinnedIndex ?? (highlightedIndex >= 0 ? highlightedIndex : null);
+  const lensOpen = hoveredIndex !== null || focusedIndex !== null || pinnedIndex !== null;
+  const closeLens = () => {
+    setHoveredIndex(null);
+    setFocusedIndex(null);
+    setPinnedIndex(null);
+  };
+
+  useEffect(() => {
+    if (markers.length === 0) {
+      setHoveredIndex(null);
+      setFocusedIndex(null);
+      setPinnedIndex(null);
+      return;
+    }
+    setPinnedIndex((current) => current === null ? null : Math.min(current, markers.length - 1));
+  }, [markers.length]);
+
+  useEffect(() => {
+    if (!lensOpen) return;
+    const list = lensListRef.current;
+    const item = activeLensItemRef.current;
+    if (!list || !item) return;
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    if (itemRect.top < listRect.top) {
+      list.scrollTop -= listRect.top - itemRect.top;
+    } else if (itemRect.bottom > listRect.bottom) {
+      list.scrollTop += itemRect.bottom - listRect.bottom;
+    }
+  }, [activeIndex, lensOpen]);
+
+  const hoverTimelineAtPointer = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-message-timeline-surface]")) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    setHoveredIndex(timelineIndexAtClientY(event.clientY, rect.top, rect.height, markers.length));
+  };
+
+  if (markers.length === 0) return null;
+  return (
+    <div
+      className="pointer-events-auto absolute inset-y-5 right-2 z-20 w-8 overflow-visible"
+      data-testid="message-timeline"
+      aria-label="Received message timeline"
+      onMouseEnter={hoverTimelineAtPointer}
+      onMouseMove={hoverTimelineAtPointer}
+      onMouseLeave={() => setHoveredIndex(null)}
+    >
+      <div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2 rounded-full border border-border/70 bg-card/80 shadow-[0_2px_10px_rgb(15_23_42_/_0.08)] backdrop-blur-sm" aria-hidden="true" />
+      <div className="absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-border" aria-hidden="true" />
+      <button
+        type="button"
+        aria-controls="received-message-lens"
+        aria-expanded={pinnedIndex !== null}
+        aria-label={`${pinnedIndex === null ? "Open" : "Close"} received message timeline, ${markers.length} messages`}
+        data-message-timeline-surface="control"
+        onClick={() => {
+          if (pinnedIndex !== null) {
+            closeLens();
+            return;
+          }
+          setPinnedIndex(Math.max(0, highlightedIndex >= 0 ? highlightedIndex : markers.length - 1));
+        }}
+        onMouseEnter={() => setHoveredIndex((current) => current ?? Math.max(0, highlightedIndex >= 0 ? highlightedIndex : markers.length - 1))}
+        onFocus={() => setFocusedIndex(Math.max(0, highlightedIndex >= 0 ? highlightedIndex : markers.length - 1))}
+        onBlur={() => setFocusedIndex(null)}
+        className="pointer-events-auto absolute -top-3 left-1/2 z-20 flex size-7 -translate-x-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="flex min-w-5 items-center justify-center rounded-full border border-border bg-card px-1 py-0.5 font-mono text-[8px] font-semibold leading-none text-muted-foreground shadow-sm">
+          {markers.length > 99 ? "99+" : markers.length}
+        </span>
+      </button>
+
+      {lensOpen && activeIndex !== null && (
+        <div
+          id="received-message-lens"
+          className="pointer-events-auto absolute right-8 top-1/2 z-30 flex max-h-[min(22rem,100%)] w-[min(20rem,calc(100vw-4rem))] -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border/80 bg-card/95 text-foreground shadow-[0_18px_50px_rgb(15_23_42_/_0.18)] backdrop-blur-md"
+          data-testid="message-timeline-lens"
+          data-message-timeline-surface="lens"
+        >
+          <span className="absolute -right-1 top-1/2 size-2 -translate-y-1/2 rotate-45 border-r border-t border-border/80 bg-card" aria-hidden="true" />
+          <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Received messages</p>
+              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">Focused {activeIndex! + 1} of {markers.length} · scroll for all loaded</p>
+            </div>
+            {pinnedIndex !== null && (
+              <button type="button" aria-label="Close received message timeline" onClick={closeLens} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+          <div ref={lensListRef} className="min-h-0 flex-1 overscroll-contain overflow-y-auto p-1.5" data-testid="message-timeline-lens-list">
+            {markers.map((marker, index) => {
+              const selected = index === activeIndex;
+              const time = markerTimeLabel(marker.timestamp);
+              return (
+                <button
+                  key={marker.id}
+                  ref={selected ? activeLensItemRef : undefined}
+                  type="button"
+                  aria-label={`Jump to ${marker.label}`}
+                  data-message-timeline-lens-id={marker.id}
+                  onClick={() => {
+                    onSelect(marker.id);
+                    closeLens();
+                  }}
+                  onFocus={() => setFocusedIndex(index)}
+                  onBlur={() => setFocusedIndex(null)}
+                  className={cn(
+                    "group flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    selected && "bg-muted/80",
+                  )}
+                >
+                  <span className={`h-7 w-1 shrink-0 rounded-full ${marker.colorClass}`} aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">{marker.typeLabel}</span>
+                      {time && <span className="ml-auto shrink-0 font-mono text-[8px] text-muted-foreground/75">{time}</span>}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] font-medium leading-4">{marker.detail}</span>
+                  </span>
+                  <span className="shrink-0 font-mono text-[8px] text-muted-foreground/70">{index + 1}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {clusters.map((cluster) => {
+        const index = Math.floor((cluster.startIndex + cluster.endIndex) / 2);
+        const marker = markers[index];
+        const active = activeIndex !== null && activeIndex >= cluster.startIndex && activeIndex <= cluster.endIndex;
+        const near = activeIndex !== null && Math.min(Math.abs(activeIndex - cluster.startIndex), Math.abs(activeIndex - cluster.endIndex)) <= 2;
+        const colors = [...new Set(markers.slice(cluster.startIndex, cluster.endIndex + 1).map((item) => item.colorClass))].slice(0, 3);
+        return (
+          <button
+            key={`${marker.id}:${cluster.startIndex}`}
+            type="button"
+            aria-label={cluster.count === 1 ? `Jump to ${marker.label}` : `Jump near ${marker.label}, ${cluster.count} messages in this group`}
+            data-message-marker-id={marker.id}
+            data-message-marker-kind={marker.kind}
+            data-message-cluster-size={cluster.count}
+            data-message-timeline-surface="marker"
+            aria-current={highlightedID === marker.id ? "true" : undefined}
+            onClick={() => {
+              onSelect(marker.id);
+              closeLens();
+            }}
+            onMouseEnter={() => setHoveredIndex(index)}
+            onFocus={() => setFocusedIndex(index)}
+            onBlur={() => setFocusedIndex(null)}
+            className="pointer-events-auto absolute left-1/2 z-10 flex size-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            style={{ top: `${cluster.position}%` }}
+          >
+            <span
+              className={cn(
+                "flex overflow-hidden rounded-full border border-background/80 opacity-70 shadow-sm transition-[width,height,opacity,box-shadow] duration-150",
+                active ? "size-3 opacity-100 shadow-[0_0_0_3px_rgb(59_130_246_/_0.18)]" : near ? "size-2.5 opacity-90" : cluster.count > 1 ? "size-2" : "size-1.5",
+              )}
+              aria-hidden="true"
+            >
+              {colors.map((color) => <span key={color} className={`h-full min-w-px flex-1 ${color}`} />)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export function AgentPane({
@@ -78,6 +271,7 @@ export function AgentPane({
   onHumanRequestChanged,
   onPendingWorkChanged,
   onOpenUsage,
+  onOpenHostFile,
   onTrackTopic,
   onError,
   onAgentUpdated,
@@ -93,6 +287,7 @@ export function AgentPane({
   onHumanRequestChanged: () => Promise<unknown> | void;
   onPendingWorkChanged: () => Promise<unknown> | void;
   onOpenUsage: (agentID: string) => void;
+  onOpenHostFile?: (path: string) => void;
   onTrackTopic: () => void;
   onError: (msg: string) => void;
   onAgentUpdated: (agent: Agent) => void;
@@ -108,6 +303,7 @@ export function AgentPane({
   const [interruptedAction, setInterruptedAction] = useState<"continue" | "dismiss" | "">("");
   const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [sendKind, setSendKind] = useState<"task" | "answer" | "compact">("task");
+  const [highlightedMessageID, setHighlightedMessageID] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
   const [configSection, setConfigSection] = useState<"profile" | "team" | "external" | "triggers" | "runtime" | "usage">("profile");
   const [nameDraft, setNameDraft] = useState(agent.name);
@@ -118,6 +314,7 @@ export function AgentPane({
   const [sandboxDraft, setSandboxDraft] = useState(agent.sandbox || "danger-full-access");
   const [approvalDraft, setApprovalDraft] = useState(agent.approvalPolicy || "never");
   const [savingConfig, setSavingConfig] = useState(false);
+  const [cwdCopyStatus, setCwdCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [identityDraft, setIdentityDraft] = useState("");
   const [domainDraft, setDomainDraft] = useState("");
@@ -145,6 +342,8 @@ export function AgentPane({
   const scrollAnchorTimerRef = useRef<number | null>(null);
   const virtualPinTimerRef = useRef<number | null>(null);
   const initialBottomSettleTimerRef = useRef<number | null>(null);
+  const markerHighlightTimerRef = useRef<number | null>(null);
+  const markerRevealTimerRef = useRef<number | null>(null);
   const loadedRef = useRef(0); // turns loaded so far
   const totalRef = useRef(0); // total turns in rollout
   const loadingRef = useRef(false);
@@ -153,7 +352,10 @@ export function AgentPane({
   const threadStateRef = useRef<Record<string, unknown>>({});
   const sendingRef = useRef(false);
   const sendStatusTimerRef = useRef<number | null>(null);
+  const cwdCopyTimerRef = useRef<number | null>(null);
+  const cwdCopyTargetRef = useRef("");
   const attachmentsRef = useRef<PendingArtifact[]>([]);
+  cwdCopyTargetRef.current = `${agent.id}\u0000${agent.cwd}`;
   const feedRows = useMemo<FeedRow[]>(() => [
     ...Object.entries(feed.approvals).map(([id, approval]) => ({
       key: `approval:${id}`,
@@ -209,6 +411,61 @@ export function AgentPane({
       }, sync ? 180 : 0);
     },
   });
+
+  const messageIndex = useMemo(() => {
+    const next = new Map<string, number>();
+    feedRows.forEach((row, index) => {
+      if (row.kind === "block") next.set(blockStableID(row.block), index);
+    });
+    return next;
+  }, [feedRows]);
+
+  const messageMarkers: PositionedMessageMarker[] = (() => {
+    const received = feedRows.flatMap((row) => {
+      if (row.kind !== "block") return [];
+      const marker = receivedMessageMarkerForBlock(row.block, agent);
+      return marker ? [marker] : [];
+    });
+    return received.map((marker, index) => ({
+      ...marker,
+      position: timelineMarkerPercent(index, received.length),
+    }));
+  })();
+
+  const jumpToMessage = useCallback((messageID: string) => {
+    const index = messageIndex.get(messageID);
+    if (index === undefined) return;
+    if (markerHighlightTimerRef.current !== null) window.clearTimeout(markerHighlightTimerRef.current);
+    if (markerRevealTimerRef.current !== null) window.clearTimeout(markerRevealTimerRef.current);
+    setHighlightedMessageID(messageID);
+    feedVirtualizer.scrollToIndex(index, { align: "center" });
+
+    let attempts = 0;
+    const reveal = () => {
+      const element = Array.from(feedRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") || [])
+        .find((candidate) => candidate.dataset.messageId === messageID);
+      if (element) {
+        if (typeof element.scrollIntoView === "function") element.scrollIntoView({ block: "center", behavior: "smooth" });
+        markerRevealTimerRef.current = null;
+        return;
+      }
+      if (attempts >= 12) {
+        markerRevealTimerRef.current = null;
+        return;
+      }
+      attempts += 1;
+      markerRevealTimerRef.current = window.setTimeout(reveal, 50);
+    };
+    markerRevealTimerRef.current = window.setTimeout(reveal, 0);
+    markerHighlightTimerRef.current = window.setTimeout(() => {
+      markerHighlightTimerRef.current = null;
+      setHighlightedMessageID("");
+    }, 1500);
+  }, [feedVirtualizer, messageIndex]);
+
+  useEffect(() => {
+    if (highlightedMessageID && !messageIndex.has(highlightedMessageID)) setHighlightedMessageID("");
+  }, [highlightedMessageID, messageIndex]);
   useEffect(() => {
     if (!active) return;
     // Virtualizer.measure() clears every cached row size. Existing tall rows
@@ -248,9 +505,12 @@ export function AgentPane({
 
   useEffect(() => () => {
     if (sendStatusTimerRef.current !== null) window.clearTimeout(sendStatusTimerRef.current);
+    if (cwdCopyTimerRef.current !== null) window.clearTimeout(cwdCopyTimerRef.current);
     if (scrollAnchorTimerRef.current !== null) window.clearTimeout(scrollAnchorTimerRef.current);
     if (virtualPinTimerRef.current !== null) window.clearTimeout(virtualPinTimerRef.current);
     if (initialBottomSettleTimerRef.current !== null) window.clearTimeout(initialBottomSettleTimerRef.current);
+    if (markerHighlightTimerRef.current !== null) window.clearTimeout(markerHighlightTimerRef.current);
+    if (markerRevealTimerRef.current !== null) window.clearTimeout(markerRevealTimerRef.current);
     for (const attachment of attachmentsRef.current) {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
     }
@@ -275,6 +535,14 @@ export function AgentPane({
     setSandboxDraft(agent.sandbox || "danger-full-access");
     setApprovalDraft(agent.approvalPolicy || "never");
   }, [agent.id, agent.name, agent.providerId, agent.model, agent.effort, agent.sandbox, agent.approvalPolicy]);
+
+  useEffect(() => {
+    if (cwdCopyTimerRef.current !== null) {
+      window.clearTimeout(cwdCopyTimerRef.current);
+      cwdCopyTimerRef.current = null;
+    }
+    setCwdCopyStatus("idle");
+  }, [agent.id, agent.cwd]);
 
   useEffect(() => {
     if (!active || !configRequestNonce) return;
@@ -747,6 +1015,18 @@ export function AgentPane({
     }
   };
 
+  const copyWorkingDirectory = async () => {
+    const target = cwdCopyTargetRef.current;
+    const copied = await copyText(agent.cwd);
+    if (cwdCopyTargetRef.current !== target) return;
+    if (cwdCopyTimerRef.current !== null) window.clearTimeout(cwdCopyTimerRef.current);
+    setCwdCopyStatus(copied ? "copied" : "failed");
+    cwdCopyTimerRef.current = window.setTimeout(() => {
+      cwdCopyTimerRef.current = null;
+      setCwdCopyStatus("idle");
+    }, 1500);
+  };
+
   const saveConfig = async () => {
     if (running || savingConfig) return;
     const nextName = nameDraft.trim();
@@ -908,6 +1188,12 @@ export function AgentPane({
   const reasoningEfforts = selectedModelDetail?.reasoningEfforts?.length ? selectedModelDetail.reasoningEfforts : FALLBACK_REASONING_EFFORTS;
   const modelPresetValue = modelCustomOpen || isCustomModel(modelDraft, providerDraft, selectableProviders) ? CUSTOM_MODEL_VALUE : modelDraft;
   const providerChanged = providerDraft !== (agent.providerId || "openai");
+  const cwdCopyLabel = cwdCopyStatus === "copied" ? "Copied" : cwdCopyStatus === "failed" ? "Copy failed" : "Copy";
+  const cwdCopyAriaLabel = cwdCopyStatus === "copied"
+    ? "Copied working directory"
+    : cwdCopyStatus === "failed"
+      ? "Copy working directory failed"
+      : "Copy working directory";
   const profileDirty = Boolean(
     profile &&
       (identityDraft.trim() !== (profile.identity || "") ||
@@ -1016,6 +1302,36 @@ export function AgentPane({
                       className="h-8 w-full rounded-md bg-background px-2.5 font-mono text-[12px] outline-none ring-1 ring-border transition placeholder:text-muted-foreground/60 focus:ring-ring/25 disabled:opacity-60"
                     />
                   </label>
+                  <div className="mb-2">
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Working directory</span>
+                    <div className="flex min-w-0 items-start gap-2 rounded-md bg-background px-2.5 py-2 ring-1 ring-border">
+                      <code
+                        data-testid="agent-working-directory"
+                        className="min-w-0 flex-1 select-text whitespace-pre-wrap break-all font-mono text-[12px] leading-5 text-foreground"
+                        title={agent.cwd}
+                      >
+                        {agent.cwd}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={copyWorkingDirectory}
+                        aria-label={cwdCopyAriaLabel}
+                        title={cwdCopyAriaLabel}
+                        className={cn(
+                          "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[10px] font-medium transition-colors",
+                          cwdCopyStatus === "copied"
+                            ? "bg-success/10 text-success"
+                            : cwdCopyStatus === "failed"
+                              ? "bg-destructive/10 text-destructive"
+                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                        )}
+                      >
+                        {cwdCopyStatus === "copied" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                        <span aria-live="polite">{cwdCopyLabel}</span>
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[10px] leading-4 text-muted-foreground">Codex reads project context such as AGENTS.md from this long-lived directory. Read only.</div>
+                  </div>
                   <label className="mb-2 block">
                     <span className="mb-1 block text-[11px] text-muted-foreground">Provider</span>
                     <select
@@ -1214,12 +1530,17 @@ export function AgentPane({
               {active ? feedVirtualizer.getVirtualItems().map((virtualRow) => {
                 const row = feedRows[virtualRow.index];
                 if (!row) return null;
+                const messageID = row.kind === "block" ? blockStableID(row.block) : "";
+                const messageMarker = row.kind === "block" ? receivedMessageMarkerForBlock(row.block, agent) : null;
                 return (
                   <div
                     key={virtualRow.key}
                     data-index={virtualRow.index}
+                    data-message-id={messageID || undefined}
+                    data-message-kind={messageMarker?.kind}
+                    data-message-highlighted={messageID && highlightedMessageID === messageID ? "true" : undefined}
                     ref={measureFeedRow}
-                    className="absolute left-0 top-0 flow-root w-full py-px"
+                    className={`absolute left-0 top-0 flow-root w-full py-px transition-[background-color,box-shadow] duration-300 ${messageID && highlightedMessageID === messageID ? "rounded-md bg-[var(--loom-blue)]/8 ring-2 ring-[var(--loom-blue)]/55" : ""}`}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {row.kind === "approval" ? (
@@ -1245,7 +1566,7 @@ export function AgentPane({
                         </button>
                       </div>
                     ) : (
-                      <BlockView block={row.block} />
+                      <BlockView block={row.block} onOpenHostFile={onOpenHostFile} />
                     )}
                   </div>
                 );
@@ -1253,6 +1574,13 @@ export function AgentPane({
             </div>
           </div>
         </div>
+        {active && (
+          <ReceivedMessageTimeline
+            markers={messageMarkers}
+            highlightedID={highlightedMessageID}
+            onSelect={jumpToMessage}
+          />
+        )}
         {active && showJumpToBottom && (
           <button
             type="button"

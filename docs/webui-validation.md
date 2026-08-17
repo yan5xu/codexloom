@@ -21,7 +21,7 @@
 
 ```sh
 cd web
-npm run dev -- --host 127.0.0.1 --port 5188
+pnpm run dev -- --host 127.0.0.1 --port 5188
 ```
 
 `5188` 适合快速修改、HMR 和浏览器走查。当前 `vite.config.ts` 会把 `/api` 代理到生产 Hub `127.0.0.1:4870`，因此它不是隔离环境：打开页面是只读行为，但发送消息、修改 Profile、配置 Integration、归档 Agent 和 Restart 都会影响生产数据。需要执行写操作时，先建立独立 canary。
@@ -67,12 +67,11 @@ git status --short
 ### 3. 构建发布产物
 
 ```sh
-cd web && npm run build
-cd ..
+pnpm --dir web run build
 PATH=/usr/local/go/bin:$PATH make build
 ```
 
-`npm run build` 会更新 `internal/webui/dist`；`make build` 再把这份 dist 嵌入 Go 二进制。只构建前端而没有重建 Go，生产 Restart 后仍可能加载旧的 embed 资源。
+`pnpm --dir web run build` 会更新 `internal/webui/dist`；`make build` 再把这份 dist 嵌入 Go 二进制。只构建前端而没有重建 Go，生产 Restart 后仍可能加载旧的 embed 资源。
 
 ### 4. 验证 HTTP 产物
 
@@ -316,7 +315,7 @@ Browser 网络检查可用于确认请求是否重复或失败：
 
 ```text
 Source:        changed components
-Build:         npm run build / make build
+Build:         pnpm --dir web run build / make build
 Target:        dev, canary or production URL
 Desktop:       viewport, URL, automation assertion, screenshot path
 Mobile:        viewport, automation assertion, screenshot path
@@ -329,7 +328,7 @@ Residual risk: untested real device, provider, error state or destructive path
 
 ## 常见误区
 
-- `npm run build` 通过就宣布完成。
+- `pnpm --dir web run build` 通过就宣布完成。
 - 遇到白屏先猜缓存或看截图，没有先读控制台错误和 stack。
 - 只截图，不读 `window.codexLoom.state()`。
 - 只读 state，不实际点击和查看截图。

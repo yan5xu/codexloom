@@ -12,7 +12,7 @@ import (
 
 func (s *Server) registerSystemRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"build": s.build})
+		writeJSON(w, 200, map[string]any{"build": s.build, "proxy": s.hub.ProxyRuntimeSnapshot()})
 	})
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {

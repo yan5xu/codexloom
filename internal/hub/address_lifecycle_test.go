@@ -24,7 +24,6 @@ func newAddressLifecycleFixture(t *testing.T) addressLifecycleFixture {
 		t.Fatal(err)
 	}
 	h := New(st)
-	h.Shutdown()
 	seedInboxAgent(t, h, "agent-a", "alpha")
 	seedInboxAgent(t, h, "agent-b", "beta")
 	connection, err := h.CreateConnection(ConnectionParams{Provider: "parall", Capabilities: []string{"receive_events", "provider_native_read"}})
@@ -97,7 +96,7 @@ func TestManagedAddressArchiveAndRestorePreserveMembershipAndAudit(t *testing.T)
 
 	fixture.h.Shutdown()
 	reloaded := New(fixture.st)
-	reloaded.Shutdown()
+	defer reloaded.Shutdown()
 	operations := reloaded.ListAddressLifecycleOperations(fixture.address.ID)
 	if len(operations) != 1 || operations[0].ID != archived.Operation.ID {
 		t.Fatalf("persisted operations = %#v", operations)
@@ -269,8 +268,9 @@ func TestAddressTransferPreservesStableReferencesAndSupportsCleanRollback(t *tes
 		t.Fatalf("post-transfer duplicate changed ownership: %#v, err=%v", redelivered, err)
 	}
 
+	fixture.h.Shutdown()
 	reloaded := New(fixture.st)
-	reloaded.Shutdown()
+	defer reloaded.Shutdown()
 	rollbackPlan, err := reloaded.PreflightAddressTransferRollback(transferred.Operation.ID)
 	if err != nil || !rollbackPlan.Allowed {
 		t.Fatalf("clean rollback preflight = %#v, err=%v", rollbackPlan, err)
@@ -340,8 +340,9 @@ func TestAddressLifecycleNormalizesLegacyVersionsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fixture.h.Shutdown()
 	reloaded := New(fixture.st)
-	reloaded.Shutdown()
+	defer reloaded.Shutdown()
 	addresses, err := reloaded.ListAddresses("alpha")
 	if err != nil || len(addresses) != 1 || addresses[0].Version != 1 {
 		t.Fatalf("normalized addresses = %#v, err=%v", addresses, err)
@@ -354,6 +355,7 @@ func TestAddressLifecycleNormalizesLegacyVersionsOnce(t *testing.T) {
 		t.Fatalf("normalization fabricated lifecycle receipt: %#v", operations)
 	}
 
+	reloaded.Shutdown()
 	reloadedAgain := New(fixture.st)
 	reloadedAgain.Shutdown()
 	addresses, err = reloadedAgain.ListAddresses("alpha")

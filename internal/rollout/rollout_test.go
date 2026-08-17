@@ -114,6 +114,48 @@ func TestReadParsesTurnsAndItems(t *testing.T) {
 	}
 }
 
+func TestReadPreservesCommandExecutionDescriptionAndLegacyAbsence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	content := strings.Join([]string{
+		`{"timestamp":"2026-08-12T01:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-command"}}`,
+		`{"timestamp":"2026-08-12T01:00:01Z","type":"response_item","payload":{"type":"commandExecution","id":"cmd-success","command":"printf probe-ok","cwd":"/tmp/probe-home","description":"Run the isolated successful command probe","status":"completed","aggregatedOutput":"probe-ok","exitCode":0,"durationMs":0}}`,
+		`{"timestamp":"2026-08-12T01:00:02Z","type":"response_item","payload":{"type":"commandExecution","id":"cmd-legacy","command":"printf legacy","cwd":"/tmp/probe-home","status":"completed","exitCode":0}}`,
+		`{"timestamp":"2026-08-12T01:00:03Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"cmd-described","arguments":"{\"cmd\":\"printf described\",\"workdir\":\"/tmp/probe-home\",\"desc\":\"A described function call\"}"}}`,
+		`{"timestamp":"2026-08-12T01:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"cmd-described","output":"described\nProcess exited with code 0\n"}}`,
+		`{"timestamp":"2026-08-12T01:00:05Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-command"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transcript, err := ReadFile(path, "thread-command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transcript.Turns) != 1 {
+		t.Fatalf("turns = %#v", transcript.Turns)
+	}
+	var described, legacy, functionCall map[string]any
+	for _, item := range transcript.Turns[0].Items {
+		switch item["command"] {
+		case "printf probe-ok":
+			described = item
+		case "printf legacy":
+			legacy = item
+		case "printf described":
+			functionCall = item
+		}
+	}
+	if described["description"] != "Run the isolated successful command probe" || described["output"] != "probe-ok" {
+		t.Fatalf("commandExecution projection = %#v", described)
+	}
+	if _, ok := legacy["description"]; ok {
+		t.Fatalf("legacy item unexpectedly gained description: %#v", legacy)
+	}
+	if functionCall["description"] != "A described function call" || functionCall["exitCode"] != 0 {
+		t.Fatalf("function_call projection = %#v", functionCall)
+	}
+}
+
 func TestReadFilePreservesUserLocalImages(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	content := strings.Join([]string{

@@ -309,8 +309,12 @@ func (h *Hub) verifyProviderRequest(providerID, model string) (requestStatus, au
 	if err != nil {
 		return "failed", "configured", "Prepare model catalog: " + err.Error()
 	}
+	hostEnv, err := codexHostEnv()
+	if err != nil {
+		return "failed", "configured", "Prepare Codex verification proxy bypass: " + err.Error()
+	}
 	client, err := codex.SpawnWithOptions(codex.SpawnOptions{
-		Bin: codexHostBin(), Env: codexHostEnv(), Args: modelcatalog.SpawnArgs(catalog.Path),
+		Bin: codexHostBin(), Env: hostEnv, Args: modelcatalog.SpawnArgs(catalog.Path),
 	})
 	if err != nil {
 		return "failed", "configured", "Start Codex verification runtime: " + err.Error()

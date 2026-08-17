@@ -22,6 +22,8 @@
   <dict>
     <key>PATH</key>
     <string>/Users/cp/.nvm/versions/node/v25.2.1/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>CODEX_LOOM_NO_PROXY</key>
+    <string></string>
   </dict>
 </dict>
 </plist>

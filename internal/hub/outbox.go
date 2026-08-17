@@ -293,12 +293,14 @@ func (h *Hub) ClaimNextOutbox(connectionID string) (*ConnectorCommand, error) {
 		if err := h.commitOutboxLocked(next); err != nil {
 			return nil, errf(500, "persist outbox claim: %s", err)
 		}
-		return &ConnectorCommand{Type: "send", Connection: *connection, Address: *address, OutboxItem: next}, nil
+		return &ConnectorCommand{Type: "send", Connection: clonePlatformConnectionValue(*connection), Address: cloneAgentAddressValue(*address), OutboxItem: next}, nil
 	}
 	return nil, nil
 }
 
 func (h *Hub) CompleteOutbox(connectionID, id string, p OutboxResultParams) (OutboxItem, error) {
+	unlock := h.gatewayCoordinatorForUse().lock(connectionID)
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	item := h.outbox[id]
@@ -365,6 +367,7 @@ func (h *Hub) CompleteOutbox(connectionID, id string, p OutboxResultParams) (Out
 	}
 	if connection := h.connections[connectionID]; connection != nil {
 		previous := *connection
+		rawStatus, rawError := h.rawGatewayObservationLocked(connection.ID, previous.Status, previous.LastError)
 		if p.Cursor != "" {
 			connection.Cursor = p.Cursor
 		}
@@ -373,6 +376,15 @@ func (h *Hub) CompleteOutbox(connectionID, id string, p OutboxResultParams) (Out
 		if !p.Success {
 			connection.Status = "degraded"
 			connection.LastError = next.LastError
+			rawStatus = "degraded"
+			rawError = next.LastError
+		}
+		if handled, observationErr := h.recordGatewayObservationLocked(connection.ID, rawStatus, rawError, ts, "", connection.Cursor, ts, nil); handled {
+			if observationErr != nil {
+				*connection = previous
+				log.Printf("[codex-loom] persist Gateway observation for outbox %s: %v", next.ID, observationErr)
+			}
+			return next, nil
 		}
 		if err := h.persistIntegrationsLocked(); err != nil {
 			*connection = previous

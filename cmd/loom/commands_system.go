@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/yan5xu/codex-loom/internal/buildinfo"
+	"github.com/yan5xu/codex-loom/internal/launchagent"
+	"github.com/yan5xu/codex-loom/internal/proxyenv"
 )
 
 func cmdVersion(a args) {
@@ -58,10 +60,55 @@ func cmdDoctor(a args) {
 			fmt.Printf("catalog: %s · %s\n", line, yellow(status))
 		}
 	}
+	fmt.Printf("proxy: %s\n", proxyDoctorStatus(launchAgentPlistPath(args{}), versionResponse))
 	if mismatch := buildMismatch(local, running); mismatch != "" {
 		fmt.Printf("status: %s\n", yellow(mismatch))
 	} else {
 		fmt.Printf("status: %s\n", green("CLI and running service match"))
+	}
+}
+
+func proxyDoctorStatus(plistPath string, versionResponse map[string]any) string {
+	inspection, err := launchagent.InspectFile(plistPath)
+	if err != nil {
+		return yellow("LaunchAgent preflight unavailable: " + err.Error())
+	}
+	proxy, ok := versionResponse["proxy"].(map[string]any)
+	if !ok {
+		return yellow("running service does not expose proxy readback")
+	}
+	if valid, _ := proxy["valid"].(bool); !valid {
+		message, _ := proxy["error"].(string)
+		if message == "" {
+			message = "invalid runtime proxy configuration"
+		}
+		return red(message)
+	}
+	hubRecord, _ := proxy["hub"].(map[string]any)
+	childRecord, _ := proxy["codexHost"].(map[string]any)
+	hubSummary := proxySummaryFromRecord(hubRecord)
+	childSummary := proxySummaryFromRecord(childRecord)
+	if !proxyenv.Same(inspection.Proxy, hubSummary) {
+		return red(fmt.Sprintf("mismatch: LaunchAgent %s; Hub %s", formatProxySummary(inspection.Proxy), formatProxySummary(hubSummary)))
+	}
+	loaded, _ := proxy["codexHostLoaded"].(bool)
+	if !loaded {
+		return yellow("LaunchAgent and Hub match; CodexHost is not loaded yet")
+	}
+	matching, _ := proxy["matching"].(bool)
+	if !matching || !proxyenv.Same(hubSummary, childSummary) {
+		return red(fmt.Sprintf("mismatch: Hub %s; CodexHost %s", formatProxySummary(hubSummary), formatProxySummary(childSummary)))
+	}
+	return green("verified · LaunchAgent, Hub, and CodexHost " + formatProxySummary(hubSummary))
+}
+
+func proxySummaryFromRecord(record map[string]any) proxyenv.Summary {
+	configured, _ := record["configured"].(bool)
+	digest, _ := record["sha256"].(string)
+	return proxyenv.Summary{
+		Configured: configured,
+		EntryCount: int(num(record, "entryCount")),
+		SHA256:     digest,
 	}
 }
 

@@ -22,7 +22,20 @@ The Owner Guide is the primary user journey. It explains when to use a Loom
 concept and how the concepts work together. The references below provide exact
 object, command, integration, and implementation detail.
 
+“Complete bilingual user documentation” on docs.codexloom.ai currently means
+40 Owner-facing logical pages paired one-to-one in `zh-CN` and `en` (80
+locale files). It does not mean that every technical document under this
+repository's `docs/` directory has been translated. The site covers the Owner
+task journey from installation, long-lived Agents, Teams, continuous work, and
+External through Operations, Troubleshooting, and Reference. This map continues
+to describe the higher-resolution implementation and operator references in
+the repository and their actual languages.
+
 ## Owner and Agent Reference
+
+Use each file's actual language. Most references are English-only, while a few,
+including the current `loom-cli.md`, are primarily Chinese. An English file
+name or link label does not establish the body language.
 
 | Document | Use it for | Notes |
 |---|---|---|

@@ -1,4 +1,4 @@
-import { Activity, BookOpen, Cable, ChevronRight, CircleHelp, CirclePause, Inbox as InboxIcon, Info, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
+import { Activity, BookOpen, Cable, ChevronRight, CircleHelp, CirclePause, Files, Inbox as InboxIcon, Info, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings2, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Agent, type BackupStatus, type HumanRequest, type InboxEntry, type ModelProvider, type ModelProviderResponse, type RemoteSnapshot, type TopicSummary } from "./types";
@@ -27,6 +27,7 @@ const SchedulesPane = lazy(() => import("./SchedulesPane").then((module) => ({ d
 const TeamPane = lazy(() => import("./TeamPane").then((module) => ({ default: module.TeamPane })));
 const OverviewPane = lazy(() => import("./OverviewPane").then((module) => ({ default: module.OverviewPane })));
 const SettingsPane = lazy(() => import("./SettingsPane").then((module) => ({ default: module.SettingsPane })));
+const HostFilesPane = lazy(() => import("./HostFilesPane").then((module) => ({ default: module.HostFilesPane })));
 
 function WorkbenchFallback() {
   return (
@@ -208,6 +209,13 @@ function readAgentTabs() {
   } catch {
     return [];
   }
+}
+
+function readInitialHostFilePath() {
+  if (typeof window === "undefined") return "/";
+  const hash = decodeURIComponent(window.location.hash.slice(1));
+  if (hash.split("?")[0] !== "files") return "/";
+  return new URLSearchParams(hash.split("?")[1] || "").get("path") || "/";
 }
 
 function agentUpdatedAt(agent: Agent) {
@@ -568,9 +576,10 @@ export default function App() {
   const [liveStreamState, setLiveStreamState] = useState<GlobalEventState>(() => globalEventState());
   const [openAgentIds, setOpenAgentIds] = useState<string[]>(readAgentTabs);
   const [unseenAgentIds, setUnseenAgentIds] = useState<Set<string>>(() => new Set());
-  const [view, setView] = useState<"agents" | "needs-you" | "topics" | "inbox" | "integrations" | "messages" | "schedules" | "team" | "status" | "capacity" | "usage" | "settings" | "remote" | "design">("agents");
+  const [view, setView] = useState<"agents" | "needs-you" | "topics" | "inbox" | "integrations" | "messages" | "schedules" | "team" | "status" | "capacity" | "usage" | "settings" | "remote" | "design" | "files">("agents");
   const [overviewSection, setOverviewSection] = useState<OverviewSection>("status");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("remote");
+  const [hostFilePath, setHostFilePath] = useState(readInitialHostFilePath);
   const [targetHint, setTargetHint] = useState("");
   const [messageParticipants, setMessageParticipants] = useState<[string, string] | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
@@ -931,6 +940,13 @@ export default function App() {
       hashApplied.current = true;
       return;
     }
+    if (route === "files") {
+      const params = new URLSearchParams(h.split("?")[1] || "");
+      setHostFilePath(params.get("path") || "/");
+      setView("files");
+      hashApplied.current = true;
+      return;
+    }
     if (agents.length === 0) return;
     if (h) {
       const s = agents.find((x) => x.id === h || x.name === h);
@@ -1079,6 +1095,15 @@ export default function App() {
     setCurrent(null);
     setSidebarOpen(false);
     window.location.hash = "external";
+  };
+
+  const selectFiles = (path = "/") => {
+    setHostFilePath(path || "/");
+    setView("files");
+    setCurrent(null);
+    setSidebarOpen(false);
+    const query = path && path !== "/" ? `?path=${encodeURIComponent(path)}` : "";
+    window.location.hash = `files${query}`;
   };
 
   const selectSchedules = () => {
@@ -1356,6 +1381,8 @@ export default function App() {
       document.title = `${attention}Capacity · CodexLoom`;
     } else if (view === "settings") {
       document.title = `${attention}Settings · CodexLoom`;
+    } else if (view === "files") {
+      document.title = `${attention}Host files · CodexLoom`;
     } else if (selected) {
       const marker = isAgentWorking(selected) ? "● " : selected.lastError ? "! " : "";
       document.title = `${attention}${marker}${selected.name} · CodexLoom`;
@@ -1380,7 +1407,7 @@ export default function App() {
   };
 
   return (
-    <div className="loom-app-viewport flex h-screen w-screen max-w-full overflow-hidden bg-background">
+    <div className="loom-app-viewport fixed inset-0 flex h-screen w-screen max-w-full overflow-hidden bg-background">
       {/* backdrop — only on mobile when the drawer is open */}
       {sidebarOpen && (
         <div
@@ -1391,7 +1418,7 @@ export default function App() {
       {/* Sidebar is a full drawer on mobile and fully retracts on desktop. */}
       <aside
         aria-label="Agent workspace sidebar"
-        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col border-r border-sidebar-border/80 bg-sidebar shadow-xl transition-[transform,translate] duration-200 md:z-auto md:border-sidebar-border md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:hidden" : "md:static md:flex md:translate-x-0"} ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 transform flex-col overflow-hidden border-r border-sidebar-border/80 bg-sidebar shadow-xl transition-[transform,translate] duration-200 md:z-auto md:border-sidebar-border md:bg-sidebar/60 md:shadow-none ${sidebarCollapsed ? "md:hidden" : "md:static md:flex md:translate-x-0"} ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -1424,6 +1451,7 @@ export default function App() {
             <SidebarNavItem label="Overview" icon={Activity} active={view === "status" || view === "capacity" || view === "usage"} compact={false} onSelect={() => selectOverview()} />
             <SidebarNavItem label="Team" icon={Network} active={view === "team" || view === "messages"} compact={false} onSelect={selectTeam} />
             <SidebarNavItem label="External" icon={Cable} active={view === "integrations"} compact={false} onSelect={selectIntegrations} />
+            <SidebarNavItem label="Host files" icon={Files} active={view === "files"} compact={false} onSelect={() => selectFiles()} />
           </div>
         </nav>
 
@@ -1579,6 +1607,8 @@ export default function App() {
               <SchedulesPane agents={agents} onError={showToast} initialTo={targetHint} />
             ) : view === "team" ? (
               <TeamPane onError={showToast} onMessageAgent={messageAgent} onScheduleAgent={scheduleAgent} onOpenMessages={openTeamMessages} />
+            ) : view === "files" ? (
+              <HostFilesPane initialPath={hostFilePath} onOpenHostFile={selectFiles} />
             ) : view === "status" || view === "capacity" || view === "usage" ? (
               <OverviewPane
                 section={overviewSection}
@@ -1624,6 +1654,7 @@ export default function App() {
                     onHumanRequestChanged={() => queryClient.invalidateQueries({ queryKey: ["human-requests"] })}
                     onPendingWorkChanged={() => queryClient.invalidateQueries({ queryKey: ["pending-work"] })}
                     onOpenUsage={openAgentUsage}
+                    onOpenHostFile={selectFiles}
                     onTrackTopic={() => trackAgentWork(agent.id)}
                     onAgentUpdated={updateAgent}
                     onError={showToast}

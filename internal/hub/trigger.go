@@ -703,6 +703,16 @@ func (h *Hub) recordTriggerError(id string, cause error, permanent bool) {
 }
 
 func (h *Hub) applyTriggerObservation(id string, observation TriggerObservation) {
+	// Resolve the current Connection before entering its lifecycle domain, then
+	// re-read the Trigger under Hub.mu after the deterministic lock is held.
+	h.mu.Lock()
+	connectionID := ""
+	if trigger := h.triggers[id]; trigger != nil {
+		connectionID = trigger.ConnectionID
+	}
+	h.mu.Unlock()
+	unlock := h.gatewayCoordinatorForUse().lock(connectionID)
+	defer unlock()
 	h.mu.Lock()
 	trigger := h.triggers[id]
 	if trigger == nil || trigger.State != "pending" && trigger.State != "armed" {
@@ -775,6 +785,16 @@ func (h *Hub) applyTriggerObservation(id string, observation TriggerObservation)
 	}
 	if connection := h.connections[trigger.ConnectionID]; connection != nil && shouldCheckpointTriggerConnection(connection, observedAt) {
 		previousConnection := *connection
+		if handled, observationErr := h.recordGatewayObservationLocked(connection.ID, "connected", "", observedAt, observedAt, connection.Cursor, observedAt, nil); handled {
+			if observationErr != nil {
+				*connection = previousConnection
+			}
+			h.mu.Unlock()
+			if targetID != "" {
+				h.deliverNextQueuedForTarget(targetID, defaultInactivity)
+			}
+			return
+		}
 		connection.Status = "connected"
 		connection.LastHeartbeatAt = observedAt
 		connection.LastError = ""
@@ -876,6 +896,9 @@ func (h *Hub) reconcileTriggersLocked() error {
 		changed = true
 	}
 	if !changed {
+		return nil
+	}
+	if h.passive {
 		return nil
 	}
 	if err := h.persistTriggersLocked(); err != nil {

@@ -156,6 +156,8 @@ func (h *Hub) PreflightAddressLifecycle(addressID string, params AddressLifecycl
 }
 
 func (h *Hub) ApplyAddressLifecycle(addressID string, params AddressLifecycleParams) (AddressLifecycleResult, error) {
+	unlock := h.lockGatewayMutationScope(nil, []string{addressID})
+	defer unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -163,7 +165,7 @@ func (h *Hub) ApplyAddressLifecycle(addressID string, params AddressLifecyclePar
 	address := h.addresses[strings.TrimSpace(addressID)]
 	result := AddressLifecycleResult{Preflight: plan}
 	if address != nil {
-		result.Address = *address
+		result.Address = cloneAgentAddressValue(*address)
 	}
 	if err != nil {
 		return result, err
@@ -240,7 +242,14 @@ func (h *Hub) ApplyAddressLifecycle(addressID string, params AddressLifecyclePar
 	}
 	operation.AddressVersionAfter = nextAddress.Version
 	nextOperations[operation.ID] = operation
+	ticket, err := h.prepareGatewayMutationLocked(address.ConnectionID)
+	if err != nil {
+		return result, err
+	}
 	if err := h.commitAddressLifecycleLocked(nextAddresses, nextMemberships, nextCandidates, nextOperations); err != nil {
+		return result, err
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
 		return result, err
 	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": *nextAddress})
@@ -250,7 +259,7 @@ func (h *Hub) ApplyAddressLifecycle(addressID string, params AddressLifecyclePar
 		}
 	}
 	h.emitGlobalLocked("loom/integration-address-lifecycle", map[string]any{"operation": operation, "address": *nextAddress})
-	result.Address = *nextAddress
+	result.Address = cloneAgentAddressValue(*nextAddress)
 	copy := cloneAddressLifecycleOperation(*operation)
 	result.Operation = &copy
 	return result, nil
@@ -265,11 +274,19 @@ func (h *Hub) PreflightAddressTransferRollback(operationID string) (AddressLifec
 
 func (h *Hub) RollbackAddressTransfer(operationID string, params AddressTransferRollbackParams) (AddressLifecycleResult, error) {
 	h.mu.Lock()
+	addressID := ""
+	if operation := h.addressOperations[strings.TrimSpace(operationID)]; operation != nil {
+		addressID = operation.AddressID
+	}
+	h.mu.Unlock()
+	unlock := h.lockGatewayMutationScope(nil, []string{addressID})
+	defer unlock()
+	h.mu.Lock()
 	defer h.mu.Unlock()
 	plan, source, address, err := h.preflightAddressTransferRollbackLocked(operationID, params.ExpectedVersion)
 	result := AddressLifecycleResult{Preflight: plan}
 	if address != nil {
-		result.Address = *address
+		result.Address = cloneAgentAddressValue(*address)
 	}
 	if err != nil {
 		return result, err
@@ -305,12 +322,19 @@ func (h *Hub) RollbackAddressTransfer(operationID string, params AddressTransfer
 	rollback.AddressVersionAfter = nextAddress.Version
 	nextOperations[source.ID].ReversedBy = rollback.ID
 	nextOperations[rollback.ID] = rollback
+	ticket, err := h.prepareGatewayMutationLocked(address.ConnectionID)
+	if err != nil {
+		return result, err
+	}
 	if err := h.commitAddressLifecycleLocked(nextAddresses, h.memberships, h.conversationCandidates, nextOperations); err != nil {
+		return result, err
+	}
+	if err := h.finishGatewayMutationLocked(ticket); err != nil {
 		return result, err
 	}
 	h.emitGlobalLocked("loom/integration-address", map[string]any{"address": *nextAddress})
 	h.emitGlobalLocked("loom/integration-address-lifecycle", map[string]any{"operation": rollback, "address": *nextAddress})
-	result.Address = *nextAddress
+	result.Address = cloneAgentAddressValue(*nextAddress)
 	copy := cloneAddressLifecycleOperation(*rollback)
 	result.Operation = &copy
 	return result, nil

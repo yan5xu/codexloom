@@ -78,8 +78,10 @@ func (h *Hub) loadProviderOperations() error {
 			repaired = true
 		}
 		if repaired {
-			if err := h.st.AppendProviderOperation(operation); err != nil {
-				return err
+			if !h.passive {
+				if err := h.st.AppendProviderOperation(operation); err != nil {
+					return err
+				}
 			}
 			copy := operation
 			h.providerOperations[id] = &copy
@@ -244,7 +246,7 @@ func (h *Hub) ClaimNextProviderOperation(connectionID string) (*ConnectorCommand
 			return nil, errf(500, "persist provider operation claim: %s", err)
 		}
 		return &ConnectorCommand{
-			Type: "provider_operation", Connection: *connection, Address: *address,
+			Type: "provider_operation", Connection: clonePlatformConnectionValue(*connection), Address: cloneAgentAddressValue(*address),
 			ProviderOperation: &next,
 		}, nil
 	}

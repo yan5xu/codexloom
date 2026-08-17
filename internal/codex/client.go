@@ -22,6 +22,23 @@ import (
 
 var ErrClosed = errors.New("codex app-server exited")
 
+// RequestTimeoutError means the client stopped waiting for a JSON-RPC
+// response. It deliberately says nothing about whether the server applied a
+// mutating request before or after the timeout.
+type RequestTimeoutError struct {
+	Method  string
+	Timeout time.Duration
+}
+
+func (e *RequestTimeoutError) Error() string {
+	return fmt.Sprintf("timeout waiting for %s", e.Method)
+}
+
+func IsRequestTimeout(err error) bool {
+	var target *RequestTimeoutError
+	return errors.As(err, &target)
+}
+
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -324,7 +341,7 @@ func (c *Client) Request(method string, params any, timeout time.Duration) (json
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
-		return nil, fmt.Errorf("timeout waiting for %s", method)
+		return nil, &RequestTimeoutError{Method: method, Timeout: timeout}
 	}
 }
 

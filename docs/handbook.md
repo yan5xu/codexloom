@@ -307,6 +307,7 @@ CODEX_LOOM_PORT             HTTP 端口，默认 4870
 CODEX_LOOM_DATA             数据目录，默认 ~/.codex-loom
 CODEX_LOOM_URL              CLI 和 gateway 连接的服务地址
 CODEX_LOOM_CODEX_BIN        共享 CodexHost 使用的 codex 可执行文件
+CODEX_LOOM_NO_PROXY         追加到 CodexHost 的代理绕过主机列表（逗号分隔，可选）
 CODEX_LOOM_ADMIN_TOKEN      非 localhost 管理操作令牌
 CODEX_LOOM_CONNECTOR_TOKEN  gateway 连接令牌
 CODEX_LOOM_BACKUP_MIN_KEEP  恢复底线，始终保留的最新快照数，默认 2
@@ -682,11 +683,26 @@ Capacity 与 Token Usage 使用同一套包含首尾日期的日历选择器：`
 executable。完成 canary 后由用户执行一次：
 
 ```sh
-cp deploy/com.pinix.codex-loom.plist ~/Library/LaunchAgents/
+# 先显式设置 operator 管理的列表；不会从 Provider base_url 推断绕过域名。
+: "${CODEX_LOOM_NO_PROXY:?set CODEX_LOOM_NO_PROXY before installing the unit}"
+bin/loom launch-agent install \
+  --executable "$(pwd)/bin/codex-loom" \
+  --working-directory "$(pwd)"
+bin/loom launch-agent preflight
 launchctl bootout gui/$(id -u)/com.pinix.codex-hub
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pinix.codex-loom.plist
 launchctl kickstart -k gui/$(id -u)/com.pinix.codex-loom
+bin/loom doctor
 ```
+
+`launch-agent install` 只原子写入 owner-only plist，不调用 `launchctl`。它将当前进程中显式的
+`NO_PROXY`、`no_proxy` 与 `CODEX_LOOM_NO_PROXY` 合并、去重后，仅以
+`CODEX_LOOM_NO_PROXY` 写入 managed LaunchAgent。Hub 启动 CodexHost 时再把同一规范化值同时
+写入 child 的 `NO_PROXY` 与 `no_proxy`。`preflight` 验证 plist 路径和 managed 值；`doctor`
+只显示条目数与 SHA-256，并核对 LaunchAgent、Hub 与已加载 CodexHost 的 identity，不输出域名列表。
+更新已有规范 unit 时，installer 保留其他 plist 字段和 EnvironmentVariables（包括自定义 Codex
+路径），仅折叠代理三变量；传入的 executable/working-directory 与旧 unit 不一致会在写入前停止。
+修改 managed 值后必须 cold restart Hub/CodexHost；已启动的 child 不会热更新进程环境。
 
 确认新 label 正常后再删除旧 plist。此后页面内 Restart Loom 会查找同目录
 `codex-loom-reloader`，失败时再 fallback 到旧 reloader。

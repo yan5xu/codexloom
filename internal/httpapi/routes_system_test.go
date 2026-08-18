@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -15,6 +16,9 @@ import (
 )
 
 func TestVersionReportsRunningArtifact(t *testing.T) {
+	t.Setenv("NO_PROXY", "loopback.invalid,shared.invalid")
+	t.Setenv("no_proxy", "SHARED.invalid")
+	t.Setenv("CODEX_LOOM_NO_PROXY", "managed.invalid")
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +33,8 @@ func TestVersionReportsRunningArtifact(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	var response struct {
-		Build buildinfo.Info `json:"build"`
+		Build buildinfo.Info           `json:"build"`
+		Proxy hub.ProxyRuntimeSnapshot `json:"proxy"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
@@ -39,6 +44,12 @@ func TestVersionReportsRunningArtifact(t *testing.T) {
 	}
 	if response.Build.StartedAt != "2026-07-15T02:03:04Z" {
 		t.Fatalf("startedAt = %s", response.Build.StartedAt)
+	}
+	if !response.Proxy.Valid || response.Proxy.CodexHostLoaded || response.Proxy.Hub.EntryCount != 3 || len(response.Proxy.Hub.SHA256) != 64 {
+		t.Fatalf("proxy readback = %#v", response.Proxy)
+	}
+	if strings.Contains(recorder.Body.String(), "loopback.invalid") || strings.Contains(recorder.Body.String(), "managed.invalid") {
+		t.Fatalf("version response leaked proxy entries: %s", recorder.Body.String())
 	}
 }
 

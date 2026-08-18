@@ -14,6 +14,7 @@ import (
 
 	"github.com/yan5xu/codex-loom/internal/codex"
 	"github.com/yan5xu/codex-loom/internal/modelcatalog"
+	"github.com/yan5xu/codex-loom/internal/proxyenv"
 	loomskills "github.com/yan5xu/codex-loom/skills"
 )
 
@@ -28,6 +29,7 @@ type codexHostRuntime struct {
 	generation uint64
 	bin        string
 	catalogSHA string
+	proxy      proxyenv.Summary
 	// A mutating Thread RPC that timed out may still complete later. Do not
 	// reuse that Thread on the same app-server generation because a retry could
 	// duplicate context or work. Replacing the host terminates the old effect
@@ -82,9 +84,13 @@ func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
 	if err != nil {
 		return nil, errf(500, "prepare Codex model catalog: %s", err)
 	}
+	hostEnv, err := codexHostEnv()
+	if err != nil {
+		return nil, errf(500, "prepare CodexHost proxy bypass: %s", err)
+	}
 	client, err := codex.SpawnWithOptions(codex.SpawnOptions{
 		Bin:  codexHostBin(),
-		Env:  codexHostEnv(),
+		Env:  hostEnv,
 		Args: modelcatalog.SpawnArgs(catalog.Path),
 	})
 	if err != nil {
@@ -97,6 +103,7 @@ func (h *Hub) startCodexHostLocked() (*codexHostRuntime, error) {
 		generation:           h.codexHostGeneration,
 		bin:                  codexHostBin(),
 		catalogSHA:           catalog.SHA256,
+		proxy:                proxyenv.Summarize(hostEnv["NO_PROXY"]),
 		indeterminateThreads: map[string]threadControlFailure{},
 	}
 	client.OnNotification = func(method string, params json.RawMessage) {
@@ -179,7 +186,8 @@ func (h *Hub) materializeModelCatalog() (modelcatalog.Snapshot, error) {
 	return modelcatalog.Materialize(dataDir, os.Getenv("CODEX_LOOM_MODEL_CATALOG"))
 }
 
-func codexHostEnv() map[string]string {
+func codexHostEnv() (map[string]string, error) {
+	env := map[string]string{}
 	loomBin := strings.TrimSpace(os.Getenv("CODEX_LOOM_CLI_BIN"))
 	if loomBin == "" {
 		if executable, err := os.Executable(); err == nil {
@@ -189,20 +197,68 @@ func codexHostEnv() map[string]string {
 			}
 		}
 	}
-	if loomBin == "" {
-		return nil
-	}
-	dir := filepath.Dir(loomBin)
-	path := os.Getenv("PATH")
-	for _, existing := range filepath.SplitList(path) {
-		if filepath.Clean(existing) == filepath.Clean(dir) {
-			return nil
+	if loomBin != "" {
+		dir := filepath.Dir(loomBin)
+		path := os.Getenv("PATH")
+		found := false
+		for _, existing := range filepath.SplitList(path) {
+			if filepath.Clean(existing) == filepath.Clean(dir) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			if path == "" {
+				env["PATH"] = dir
+			} else {
+				env["PATH"] = dir + string(os.PathListSeparator) + path
+			}
 		}
 	}
-	if path == "" {
-		return map[string]string{"PATH": dir}
+	canonical, err := proxyenv.Current()
+	if err != nil {
+		return nil, err
 	}
-	return map[string]string{"PATH": dir + string(os.PathListSeparator) + path}
+	if canonical != "" {
+		// Some clients consult only one spelling. Give the shared CodexHost the
+		// exact same normalized operator-controlled value under both names.
+		env["NO_PROXY"] = canonical
+		env["no_proxy"] = canonical
+	}
+	if len(env) == 0 {
+		return nil, nil
+	}
+	return env, nil
+}
+
+type ProxyRuntimeSnapshot struct {
+	Valid           bool             `json:"valid"`
+	Error           string           `json:"error,omitempty"`
+	Hub             proxyenv.Summary `json:"hub"`
+	CodexHostLoaded bool             `json:"codexHostLoaded"`
+	CodexHost       proxyenv.Summary `json:"codexHost"`
+	Matching        bool             `json:"matching"`
+}
+
+// ProxyRuntimeSnapshot exposes only counts and digests. It never returns the
+// configured bypass entries, Provider URLs, or other environment values.
+func (h *Hub) ProxyRuntimeSnapshot() ProxyRuntimeSnapshot {
+	canonical, err := proxyenv.Current()
+	if err != nil {
+		return ProxyRuntimeSnapshot{Error: err.Error()}
+	}
+	snapshot := ProxyRuntimeSnapshot{Valid: true, Hub: proxyenv.Summarize(canonical)}
+	h.mu.Lock()
+	host := h.codexHost
+	if host != nil && host.client != nil && !host.client.Closed() {
+		snapshot.CodexHostLoaded = true
+		snapshot.CodexHost = host.proxy
+	}
+	h.mu.Unlock()
+	if snapshot.CodexHostLoaded {
+		snapshot.Matching = proxyenv.Same(snapshot.Hub, snapshot.CodexHost)
+	}
+	return snapshot
 }
 
 func (h *Hub) ensureCodexHost() (*codexHostRuntime, error) {

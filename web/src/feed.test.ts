@@ -491,4 +491,61 @@ This trusted context applies only to the immediately following inbox message.
 
     expect(prepended.blocks.map((block) => block.kind)).toEqual(["agent", "artifact", "user"]);
   });
+
+  it("seeds and deduplicates approval snapshots without resurrecting a resolved request", () => {
+    const seeded = reduceFeed(emptyFeed, {
+      seq: 12,
+      ts: "2026-08-19T01:00:00Z",
+      type: "__approvals_snapshot__",
+      data: {
+        approvals: [
+          { approvalId: "approval-1", method: "execCommandApproval", params: { command: "printf one" }, ts: "2026-08-19T00:59:00Z" },
+          { approvalId: "approval-1", method: "execCommandApproval", params: { command: "printf one" }, ts: "2026-08-19T00:59:00Z" },
+        ],
+      },
+    });
+    expect(Object.keys(seeded.approvals)).toEqual(["approval-1"]);
+    expect(seeded.approvalsSeq).toBe(12);
+
+    const resolved = reduceFeed(seeded, {
+      seq: 13,
+      ts: "2026-08-19T01:00:01Z",
+      type: "loom/approval-resolved",
+      data: { approvalId: "approval-1", decision: "accept" },
+    });
+    const staleReconnect = reduceFeed(resolved, {
+      seq: 12,
+      ts: "2026-08-19T01:00:02Z",
+      type: "__approvals_snapshot__",
+      data: { approvals: [{ approvalId: "approval-1", method: "execCommandApproval", params: {} }] },
+    });
+
+    expect(staleReconnect.approvals).toEqual({});
+    expect(staleReconnect.approvalsSeq).toBe(13);
+  });
+
+  it("preserves pending approvals while history seeds and reconciles", () => {
+    const pending = reduceFeed(emptyFeed, {
+      seq: 7,
+      ts: "2026-08-19T01:00:00Z",
+      type: "__approvals_snapshot__",
+      data: { approvals: [{ approvalId: "approval-history", method: "applyPatchApproval", params: { path: "file.ts" } }] },
+    });
+    const seeded = reduceFeed(pending, {
+      seq: 0,
+      ts: "",
+      type: "__history__",
+      data: { turns: [{ items: [{ type: "user", text: "current request" }] }] },
+    });
+    const reconciled = reduceFeed(seeded, {
+      seq: 0,
+      ts: "",
+      type: "__history_reconcile__",
+      data: { turns: [{ items: [{ type: "user", text: "current request" }] }] },
+    });
+
+    expect(seeded.approvals).toEqual(pending.approvals);
+    expect(reconciled.approvals).toEqual(pending.approvals);
+    expect(reconciled.approvalsSeq).toBe(7);
+  });
 });

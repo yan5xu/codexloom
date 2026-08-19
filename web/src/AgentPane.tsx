@@ -43,9 +43,7 @@ type MembershipDraft = {
   version: number;
 };
 
-type FeedRow =
-  | { key: string; kind: "approval"; id: string; approval: { method: string; params: any } }
-  | { key: string; kind: "block"; block: Block };
+type FeedRow = { key: string; block: Block };
 
 type PendingArtifact = {
   id: string;
@@ -356,19 +354,14 @@ export function AgentPane({
   const cwdCopyTargetRef = useRef("");
   const attachmentsRef = useRef<PendingArtifact[]>([]);
   cwdCopyTargetRef.current = `${agent.id}\u0000${agent.cwd}`;
-  const feedRows = useMemo<FeedRow[]>(() => [
-    ...Object.entries(feed.approvals).map(([id, approval]) => ({
-      key: `approval:${id}`,
-      kind: "approval" as const,
-      id,
-      approval,
-    })),
-    ...feed.blocks.map((block) => ({
-      key: feedBlockKey(block),
-      kind: "block" as const,
-      block,
-    })),
-  ], [feed.approvals, feed.blocks]);
+  const feedRows = useMemo<FeedRow[]>(() => feed.blocks.map((block) => ({
+    key: feedBlockKey(block),
+    block,
+  })), [feed.blocks]);
+  const approvalEntries = useMemo(() => Object.entries(feed.approvals).sort(([idA, approvalA], [idB, approvalB]) => {
+    const byTime = String(approvalA.ts || "").localeCompare(String(approvalB.ts || ""));
+    return byTime || idA.localeCompare(idB);
+  }), [feed.approvals]);
   const feedVirtualizer = useVirtualizer({
     enabled: active,
     // Disabled hidden tabs lose virtual-core's internal offset. Seed the
@@ -415,14 +408,13 @@ export function AgentPane({
   const messageIndex = useMemo(() => {
     const next = new Map<string, number>();
     feedRows.forEach((row, index) => {
-      if (row.kind === "block") next.set(blockStableID(row.block), index);
+      next.set(blockStableID(row.block), index);
     });
     return next;
   }, [feedRows]);
 
   const messageMarkers: PositionedMessageMarker[] = (() => {
     const received = feedRows.flatMap((row) => {
-      if (row.kind !== "block") return [];
       const marker = receivedMessageMarkerForBlock(row.block, agent);
       return marker ? [marker] : [];
     });
@@ -639,6 +631,19 @@ export function AgentPane({
       window.clearInterval(timer);
     };
   }, [configOpen, configSection, agent.id, agent.status]);
+
+  // AgentView snapshots carry approvals that may have been requested before
+  // this pane mounted or while its SSE connection was unavailable. The feed
+  // reducer owns sequence ordering so a stale reconnect snapshot cannot
+  // resurrect an approval after a newer approval-resolved event.
+  useEffect(() => {
+    dispatch({
+      seq: agent.lastSeq || 0,
+      ts: "",
+      type: "__approvals_snapshot__",
+      data: { approvals: agent.pendingApprovals || [] },
+    });
+  }, [agent.id, agent.lastSeq, agent.pendingApprovals]);
 
   // Seed the newest page of past turns from the rollout (single source of
   // history; works for mirror/idle agents with no live event log).
@@ -1522,76 +1527,120 @@ export function AgentPane({
             </div>
           )}
 
-      {/* event feed + pending approvals */}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
-        <div ref={feedRef} onScroll={onScroll} className="absolute inset-0 overflow-y-auto">
-          <div className="mx-auto max-w-[880px] px-3 pb-8 pt-3 md:px-6 md:pt-5">
-            <div className="relative w-full" style={{ height: `${feedVirtualizer.getTotalSize()}px` }}>
-              {active ? feedVirtualizer.getVirtualItems().map((virtualRow) => {
-                const row = feedRows[virtualRow.index];
-                if (!row) return null;
-                const messageID = row.kind === "block" ? blockStableID(row.block) : "";
-                const messageMarker = row.kind === "block" ? receivedMessageMarkerForBlock(row.block, agent) : null;
-                return (
-                  <div
-                    key={virtualRow.key}
-                    data-index={virtualRow.index}
-                    data-message-id={messageID || undefined}
-                    data-message-kind={messageMarker?.kind}
-                    data-message-highlighted={messageID && highlightedMessageID === messageID ? "true" : undefined}
-                    ref={measureFeedRow}
-                    className={`absolute left-0 top-0 flow-root w-full py-px transition-[background-color,box-shadow] duration-300 ${messageID && highlightedMessageID === messageID ? "rounded-md bg-[var(--loom-blue)]/8 ring-2 ring-[var(--loom-blue)]/55" : ""}`}
-                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+      {/* Pending approvals stay outside the virtualized trajectory so actions
+          remain visible regardless of feed position. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {approvalEntries.length > 0 && (
+          <section
+            aria-label="Pending approvals"
+            aria-live="polite"
+            data-testid="pending-approvals-pinned"
+            className="relative z-30 shrink-0 border-b border-warning/30 bg-warning/5 shadow-sm"
+          >
+            <div className="mx-auto w-full max-w-[880px] px-3 py-2.5 md:px-6 md:py-3">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-warning/12 text-warning">
+                  <CircleHelp className="size-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <h2 className="text-[12px] font-semibold text-foreground">Approval required</h2>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {approvalEntries.length} pending
+                    </span>
+                  </div>
+                  <p className="text-[10.5px] leading-4 text-muted-foreground">The Agent is waiting for your decision.</p>
+                </div>
+              </div>
+              <div className="mt-2 max-h-[min(40dvh,20rem)] space-y-2 overflow-y-auto overscroll-contain pr-1">
+                {approvalEntries.map(([id, approval]) => (
+                  <article
+                    key={id}
+                    data-approval-id={id}
+                    data-testid={`pending-approval-${id}`}
+                    className="min-w-0 rounded-md border border-warning/25 bg-card px-3 py-2.5 shadow-sm"
                   >
-                    {row.kind === "approval" ? (
-                      <div className="my-1 rounded-md border border-warning/30 bg-warning/5 px-4 py-3 shadow-card">
-                        <div className="mb-2 text-sm">
-                          <span className="text-warning">⚠</span> <b>codex requests approval</b> —{" "}
-                          <span className="font-mono text-[12px]">{row.approval.method}</span>
-                        </div>
-                        <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-muted/50 px-3 py-2 font-mono text-[12px] text-muted-foreground">
-                          {JSON.stringify(row.approval.params, null, 2)}
+                    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start">
+                      <div className="min-w-0 flex-1">
+                        <div className="break-all font-mono text-[11px] font-medium text-foreground">{approval.method}</div>
+                        <pre className="mt-1.5 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm bg-muted/55 px-2.5 py-2 font-mono text-[10.5px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+                          {JSON.stringify(approval.params, null, 2)}
                         </pre>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5 sm:pt-0.5">
                         <button
-                          onClick={() => resolveApproval(row.id, "accept")}
-                          className="mr-2 rounded-md bg-primary px-3.5 py-1.5 text-[13px] font-medium text-primary-foreground transition-colors hover:opacity-90"
+                          type="button"
+                          aria-label={`Reject ${approval.method}`}
+                          onClick={() => resolveApproval(id, "reject")}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                         >
-                          approve
+                          <X className="size-3.5" aria-hidden="true" />
+                          Reject
                         </button>
                         <button
-                          onClick={() => resolveApproval(row.id, "reject")}
-                          className="rounded-md px-3.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          type="button"
+                          aria-label={`Approve ${approval.method}`}
+                          onClick={() => resolveApproval(id, "accept")}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                         >
-                          reject
+                          <Check className="size-3.5" aria-hidden="true" />
+                          Approve
                         </button>
                       </div>
-                    ) : (
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div ref={feedRef} data-testid="agent-feed-scroll" onScroll={onScroll} className="absolute inset-0 overflow-y-auto">
+            <div className="mx-auto max-w-[880px] px-3 pb-8 pt-3 md:px-6 md:pt-5">
+              <div className="relative w-full" style={{ height: `${feedVirtualizer.getTotalSize()}px` }}>
+                {active ? feedVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const row = feedRows[virtualRow.index];
+                  if (!row) return null;
+                  const messageID = blockStableID(row.block);
+                  const messageMarker = receivedMessageMarkerForBlock(row.block, agent);
+                  return (
+                    <div
+                      key={virtualRow.key}
+                      data-index={virtualRow.index}
+                      data-message-id={messageID || undefined}
+                      data-message-kind={messageMarker?.kind}
+                      data-message-highlighted={messageID && highlightedMessageID === messageID ? "true" : undefined}
+                      ref={measureFeedRow}
+                      className={`absolute left-0 top-0 flow-root w-full py-px transition-[background-color,box-shadow] duration-300 ${messageID && highlightedMessageID === messageID ? "rounded-md bg-[var(--loom-blue)]/8 ring-2 ring-[var(--loom-blue)]/55" : ""}`}
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    >
                       <BlockView block={row.block} onOpenHostFile={onOpenHostFile} />
-                    )}
-                  </div>
-                );
-              }) : null}
+                    </div>
+                  );
+                }) : null}
+              </div>
             </div>
           </div>
+          {active && (
+            <ReceivedMessageTimeline
+              markers={messageMarkers}
+              highlightedID={highlightedMessageID}
+              onSelect={jumpToMessage}
+            />
+          )}
+          {active && showJumpToBottom && (
+            <button
+              type="button"
+              onClick={jumpToBottom}
+              title="Jump to latest"
+              aria-label="Jump to latest"
+              className="absolute bottom-3 left-1/2 z-10 flex size-9 -translate-x-1/2 items-center justify-center rounded-md border border-border bg-card text-foreground shadow-card transition hover:bg-muted active:translate-y-px"
+            >
+              <ArrowDown className="size-4" />
+            </button>
+          )}
         </div>
-        {active && (
-          <ReceivedMessageTimeline
-            markers={messageMarkers}
-            highlightedID={highlightedMessageID}
-            onSelect={jumpToMessage}
-          />
-        )}
-        {active && showJumpToBottom && (
-          <button
-            type="button"
-            onClick={jumpToBottom}
-            title="Jump to latest"
-            aria-label="Jump to latest"
-            className="absolute bottom-3 left-1/2 z-10 flex size-9 -translate-x-1/2 items-center justify-center rounded-md border border-border bg-card text-foreground shadow-card transition hover:bg-muted active:translate-y-px"
-          >
-            <ArrowDown className="size-4" />
-          </button>
-        )}
       </div>
 
       <div className="relative shrink-0 border-t border-border bg-background px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:px-6 md:py-3 md:pb-3">

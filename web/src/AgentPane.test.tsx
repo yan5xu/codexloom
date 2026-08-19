@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "./types";
 
@@ -21,6 +21,7 @@ vi.mock("@tanstack/react-virtual", () => ({
 }));
 
 import { AgentPane } from "./AgentPane";
+import { publishThreadEvent } from "./thread-events";
 
 const testAgent: Agent = {
   id: "agent-scroll",
@@ -114,6 +115,154 @@ describe("AgentPane", () => {
     expect(latestOptions?.enabled).toBe(true);
     expect(latestOptions?.initialOffset).toBeTypeOf("function");
     expect((latestOptions?.initialOffset as () => number)()).toBe(900);
+  });
+
+  it("seeds approvals that were already pending before the pane mounted", async () => {
+    render(
+      <AgentPane
+        {...props}
+        agent={{
+          ...testAgent,
+          lastSeq: 8,
+          pendingApprovals: [{
+            approvalId: "approval-before-mount",
+            method: "execCommandApproval",
+            params: { command: "printf pending" },
+            ts: "2026-08-19T01:00:00Z",
+          }],
+        }}
+        active
+      />,
+    );
+
+    const region = await screen.findByRole("region", { name: "Pending approvals" });
+    expect(region).toHaveTextContent("execCommandApproval");
+    expect(region).toHaveTextContent("printf pending");
+    expect(screen.getByRole("button", { name: "Approve execCommandApproval" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject execCommandApproval" })).toBeInTheDocument();
+
+    // The asynchronous history seed must not erase the approval snapshot.
+    await waitFor(() => expect(screen.getByTestId("pending-approval-approval-before-mount")).toBeInTheDocument());
+  });
+
+  it("re-seeds approvals from a reconnect snapshot without duplicating them", async () => {
+    const view = render(<AgentPane {...props} active />);
+    const reconnectAgent: Agent = {
+      ...testAgent,
+      lastSeq: 21,
+      pendingApprovals: [{
+        approvalId: "approval-reconnect",
+        method: "applyPatchApproval",
+        params: { path: "/workspace/file.ts" },
+        ts: "2026-08-19T01:01:00Z",
+      }],
+    };
+
+    view.rerender(<AgentPane {...props} agent={reconnectAgent} active />);
+    await screen.findByTestId("pending-approval-approval-reconnect");
+
+    act(() => {
+      publishThreadEvent(testAgent.id, {
+        seq: 21,
+        ts: "2026-08-19T01:01:00Z",
+        type: "loom/approval-requested",
+        data: {
+          approvalId: "approval-reconnect",
+          method: "applyPatchApproval",
+          params: { path: "/workspace/file.ts" },
+        },
+      });
+    });
+
+    expect(screen.getAllByTestId("pending-approval-approval-reconnect")).toHaveLength(1);
+  });
+
+  it("clears a resolved approval and does not resurrect it from a stale snapshot", async () => {
+    const pendingAgent: Agent = {
+      ...testAgent,
+      lastSeq: 30,
+      pendingApprovals: [{
+        approvalId: "approval-resolved",
+        method: "execCommandApproval",
+        params: { command: "printf resolve" },
+        ts: "2026-08-19T01:02:00Z",
+      }],
+    };
+    const view = render(<AgentPane {...props} agent={pendingAgent} active />);
+    await screen.findByTestId("pending-approval-approval-resolved");
+
+    act(() => {
+      publishThreadEvent(testAgent.id, {
+        seq: 31,
+        ts: "2026-08-19T01:02:01Z",
+        type: "loom/approval-resolved",
+        data: { approvalId: "approval-resolved", decision: "accept" },
+      });
+    });
+    await waitFor(() => expect(screen.queryByTestId("pending-approval-approval-resolved")).not.toBeInTheDocument());
+
+    view.rerender(<AgentPane {...props} agent={{ ...pendingAgent, pendingApprovals: [...pendingAgent.pendingApprovals] }} active />);
+    expect(screen.queryByTestId("pending-approval-approval-resolved")).not.toBeInTheDocument();
+  });
+
+  it("keeps approval actions pinned while the virtualized feed scrolls", async () => {
+    render(
+      <AgentPane
+        {...props}
+        agent={{
+          ...testAgent,
+          lastSeq: 40,
+          pendingApprovals: [{
+            approvalId: "approval-pinned",
+            method: "execCommandApproval",
+            params: { command: "printf pinned" },
+            ts: "2026-08-19T01:03:00Z",
+          }],
+        }}
+        active
+      />,
+    );
+
+    const region = await screen.findByRole("region", { name: "Pending approvals" });
+    const feed = screen.getByTestId("agent-feed-scroll");
+    Object.defineProperties(feed, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 3_000 },
+    });
+    feed.scrollTop = 1_800;
+    fireEvent.scroll(feed);
+
+    expect(feed.contains(region)).toBe(false);
+    expect(region).toBeVisible();
+    expect(screen.getByRole("button", { name: "Approve execCommandApproval" })).toBeVisible();
+  });
+
+  it("keeps the existing approval decision endpoint and request body", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(
+      <AgentPane
+        {...props}
+        agent={{
+          ...testAgent,
+          lastSeq: 41,
+          pendingApprovals: [{
+            approvalId: "approval-post",
+            method: "execCommandApproval",
+            params: { command: "printf approve" },
+          }],
+        }}
+        active
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve execCommandApproval" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      return url === `/api/agents/${testAgent.id}/thread/approvals/approval-post`
+        && init?.method === "POST"
+        && init.body === JSON.stringify({ decision: "accept" });
+    })).toBe(true));
   });
 
   it("renders only received message markers and jumps by stable message identity", async () => {

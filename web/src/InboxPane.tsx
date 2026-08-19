@@ -255,22 +255,44 @@ export function InboxPane({ agents, onError }: { agents: Agent[]; onError: (mess
               </button>
             ))}
           </div>
-          <button onClick={() => refresh().catch((error: Error) => onError(error.message))} title="Refresh" className="hidden size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground sm:flex">
+          <button
+            type="button"
+            onClick={() => refresh().catch((error: Error) => onError(error.message))}
+            title="Refresh"
+            aria-label="Refresh Inbox"
+            className="hidden size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground sm:flex"
+          >
             <RefreshCw className="size-3.5" />
           </button>
-          <button onClick={() => setComposeOpen((value) => !value)} title="New outbound message" className="hidden size-8 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 sm:flex">
+          <button
+            type="button"
+            onClick={() => setComposeOpen((value) => !value)}
+            title="New outbound message"
+            aria-label="New outbound message"
+            aria-controls="outbound-compose"
+            aria-expanded={composeOpen}
+            className="hidden size-8 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 sm:flex"
+          >
             <Send className="size-3.5" />
           </button>
         </div>
       </header>
 
       {composeOpen && (
-        <section className="grid shrink-0 gap-2 border-b border-border bg-card px-4 py-3 sm:grid-cols-2 xl:grid-cols-[180px_280px_1fr_auto]">
-          <select value={sendAgent} onChange={(event) => { setSendAgent(event.target.value); setSendMembership(""); }} className={controlClass}>
+        <form
+          id="outbound-compose"
+          aria-label="New outbound message"
+          onSubmit={(event) => {
+            event.preventDefault();
+            sendOutbound();
+          }}
+          className="grid shrink-0 gap-2 border-b border-border bg-card px-4 py-3 sm:grid-cols-2 xl:grid-cols-[180px_280px_1fr_auto]"
+        >
+          <select aria-label="Sending agent" value={sendAgent} onChange={(event) => { setSendAgent(event.target.value); setSendMembership(""); }} className={controlClass}>
             <option value="">Agent</option>
             {agents.map((agent) => <option key={agent.id} value={agent.name}>{agent.name}</option>)}
           </select>
-          <select value={sendMembership} onChange={(event) => setSendMembership(event.target.value)} className={controlClass}>
+          <select aria-label="Authorized destination" value={sendMembership} onChange={(event) => setSendMembership(event.target.value)} className={controlClass}>
             <option value="">Authorized destination</option>
             {memberships.filter((membership) => {
               const address = addresses.find((item) => item.id === membership.addressId);
@@ -280,9 +302,9 @@ export function InboxPane({ agents, onError }: { agents: Agent[]; onError: (mess
               <option key={membership.id} value={membership.id}>{membership.displayName || membership.conversationId}</option>
             ))}
           </select>
-          <input value={sendText} onChange={(event) => setSendText(event.target.value)} placeholder="message" className={controlClass} />
-          <button onClick={sendOutbound} disabled={working} className="h-8 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:opacity-50">Send</button>
-        </section>
+          <input aria-label="Message" value={sendText} onChange={(event) => setSendText(event.target.value)} placeholder="message" className={controlClass} />
+          <button type="submit" disabled={working} className="h-8 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground disabled:opacity-50">Send</button>
+        </form>
       )}
 
       {mode === "inbox" ? (
@@ -293,7 +315,7 @@ export function InboxPane({ agents, onError }: { agents: Agent[]; onError: (mess
                 {value === "pending_access" ? "requests" : value === "awaiting_delivery" ? "delivering" : value} <span className="font-mono opacity-65">{counts[value] || 0}</span>
               </button>
             ))}
-            <select value={origin} onChange={(event) => setOrigin(event.target.value)} className="ml-auto h-7 rounded-md border border-border bg-background px-2 text-[11px] outline-none">
+            <select aria-label="Filter by source" value={origin} onChange={(event) => setOrigin(event.target.value)} className="ml-auto h-7 rounded-md border border-border bg-background px-2 text-[11px] outline-none">
               <option value="all">All sources</option>
               {origins.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>

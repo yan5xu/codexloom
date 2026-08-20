@@ -11,8 +11,9 @@
 // subscribers. HTTP projects legacy hub/* lifecycle names into canonical
 // loom/* names; Codex notifications retain their method name.
 //
-// Locking rule: NEVER call client.Request while holding h.mu — responses are
-// delivered by the reader goroutine, which also takes h.mu for notifications.
+// Locking rule: NEVER perform client JSON-RPC I/O while holding h.mu. Request
+// responses and server requests are delivered by the reader goroutine, whose
+// callbacks also take h.mu.
 package hub
 
 import (
@@ -223,10 +224,21 @@ type commRecord struct {
 }
 
 type approval struct {
-	rpcID  json.RawMessage
-	method string
-	params json.RawMessage
-	ts     string
+	rpcID     json.RawMessage
+	method    string
+	params    json.RawMessage
+	ts        string
+	resolving bool // claimed while Respond runs outside h.mu
+}
+
+type approvalRPCResponder interface {
+	Respond(id json.RawMessage, result any) error
+}
+
+type approvalResolution struct {
+	id       string
+	approval *approval
+	decision string
 }
 
 type turnState struct {
@@ -252,6 +264,7 @@ type turnState struct {
 type runtime struct {
 	agentID           string
 	client            *codex.Client
+	approvalResponder approvalRPCResponder
 	hostGeneration    uint64
 	skillConfigHash   string
 	skillConfigLoaded bool
@@ -261,6 +274,17 @@ type runtime struct {
 
 	activeTurn *turnState           // guarded by Hub.mu
 	approvals  map[string]*approval // guarded by Hub.mu
+}
+
+func (rt *runtime) respondApproval(id json.RawMessage, result any) error {
+	responder := rt.approvalResponder
+	if responder == nil {
+		responder = rt.client
+	}
+	if responder == nil {
+		return fmt.Errorf("Codex client is unavailable")
+	}
+	return responder.Respond(id, result)
 }
 
 type subscriber struct {
@@ -1555,26 +1579,74 @@ func (h *Hub) ResolveApproval(key, approvalID, decision string) (map[string]any,
 		return nil, errf(404, "no pending approval %s", approvalID)
 	}
 	ap, ok := rt.approvals[approvalID]
-	if !ok {
+	if !ok || ap.resolving {
 		h.mu.Unlock()
 		return nil, errf(404, "no pending approval %s", approvalID)
 	}
-	delete(rt.approvals, approvalID)
 	// codex 0.142.5 availableDecisions are "accept" / "cancel" (see protocol doc).
 	d := "cancel"
 	if decision == "accept" || decision == "approve" {
 		d = "accept"
 	}
-	h.emitLocked(meta.ID, "loom/approval-resolved", map[string]any{
-		"approvalId": approvalID, "decision": d, "method": ap.method,
-	})
-	client := rt.client
+	ap.resolving = true
+	agentID := meta.ID
 	h.mu.Unlock()
 
-	if err := client.Respond(ap.rpcID, map[string]any{"decision": d}); err != nil {
+	if err := rt.respondApproval(ap.rpcID, map[string]any{"decision": d}); err != nil {
+		h.mu.Lock()
+		h.releaseApprovalResolutionLocked(rt, approvalID, ap)
+		h.mu.Unlock()
 		return nil, errf(500, "respond approval: %s", err)
 	}
+	h.mu.Lock()
+	committed := h.commitApprovalResolutionLocked(agentID, rt, approvalID, ap, d)
+	h.mu.Unlock()
+	if !committed {
+		return nil, errf(500, "approval response sent but local state changed for %s", approvalID)
+	}
 	return map[string]any{"approvalId": approvalID, "decision": d}, nil
+}
+
+func (h *Hub) releaseApprovalResolutionLocked(rt *runtime, approvalID string, claimed *approval) {
+	if current := rt.approvals[approvalID]; current == claimed {
+		current.resolving = false
+	}
+}
+
+// commitApprovalResolutionLocked publishes resolution only after Codex has
+// accepted the matching JSON-RPC response. Failed writes leave the approval in
+// the same map so the existing ResolveApproval API can retry it.
+func (h *Hub) commitApprovalResolutionLocked(agentID string, rt *runtime, approvalID string, claimed *approval, decision string) bool {
+	current := rt.approvals[approvalID]
+	if current != claimed || !current.resolving {
+		return false
+	}
+	delete(rt.approvals, approvalID)
+	h.emitLocked(agentID, "loom/approval-resolved", map[string]any{
+		"approvalId": approvalID, "decision": decision, "method": claimed.method,
+	})
+	if h.runtimes[agentID] == rt && rt.activeTurn == nil && len(rt.approvals) == 0 {
+		h.startPendingWorkersLocked(agentID)
+	}
+	return true
+}
+
+func (h *Hub) cancelFinishedTurnApprovals(agentID string, rt *runtime, resolutions []approvalResolution) {
+	for _, resolution := range resolutions {
+		err := rt.respondApproval(resolution.approval.rpcID, map[string]any{"decision": resolution.decision})
+		h.mu.Lock()
+		if err != nil {
+			h.releaseApprovalResolutionLocked(rt, resolution.id, resolution.approval)
+			h.mu.Unlock()
+			log.Printf("[codex-loom] cancel approval %s after Turn finish: %v; approval remains pending for retry", resolution.id, err)
+			continue
+		}
+		committed := h.commitApprovalResolutionLocked(agentID, rt, resolution.id, resolution.approval, resolution.decision)
+		h.mu.Unlock()
+		if !committed {
+			log.Printf("[codex-loom] approval %s was answered after Turn finish but its local claim changed", resolution.id)
+		}
+	}
 }
 
 func (h *Hub) finishTurnLocked(meta *Agent, rt *runtime, status, errMsg string) {
@@ -1589,7 +1661,16 @@ func (h *Hub) finishTurnLocked(meta *Agent, rt *runtime, status, errMsg string) 
 	turn.finished = true
 	close(turn.stopWatchdog)
 	rt.activeTurn = nil
-	rt.approvals = map[string]*approval{}
+	resolutions := make([]approvalResolution, 0, len(rt.approvals))
+	for approvalID, ap := range rt.approvals {
+		if ap == nil || ap.resolving {
+			continue
+		}
+		ap.resolving = true
+		resolutions = append(resolutions, approvalResolution{
+			id: approvalID, approval: ap, decision: "cancel",
+		})
+	}
 
 	evType := "loom/turn-completed"
 	if status == "failed" {
@@ -1631,7 +1712,20 @@ func (h *Hub) finishTurnLocked(meta *Agent, rt *runtime, status, errMsg string) 
 	h.finishAgentMessageTurnLocked(turn, status, errMsg)
 	h.persistRuntimeProjectionLocked()
 	h.emitStatusLocked(meta, "idle")
-	h.startPendingWorkersLocked(meta.ID)
+	if len(rt.approvals) == 0 {
+		h.startPendingWorkersLocked(meta.ID)
+		return
+	}
+	if len(resolutions) == 0 {
+		return
+	}
+	agentID := meta.ID
+	if !h.startWorkerLocked(func() { h.cancelFinishedTurnApprovals(agentID, rt, resolutions) }) {
+		for _, resolution := range resolutions {
+			h.releaseApprovalResolutionLocked(rt, resolution.id, resolution.approval)
+		}
+		log.Printf("[codex-loom] could not schedule cancellation for %d approval(s) after Turn finish; approvals remain pending for retry", len(resolutions))
+	}
 }
 
 // finishAgentMessageTurnLocked completes the handling attempt associated with

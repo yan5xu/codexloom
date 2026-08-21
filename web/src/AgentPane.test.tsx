@@ -265,6 +265,45 @@ describe("AgentPane", () => {
     })).toBe(true));
   });
 
+  // Deciding on an approval means reading the command and the stated reason.
+  // Dumping the whole params object buries both under transport ids.
+  it("surfaces the command and reason, and keeps raw params collapsed", async () => {
+    const agent: Agent = {
+      ...testAgent,
+      lastSeq: 42,
+      pendingApprovals: [{
+        approvalId: "approval-readable",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "019fc597-18b4-7243-afd7-c552eb7f37b5",
+          turnId: "019fe090-7daa-74d3-b842-be5e618dfa25",
+          itemId: "exec-746126c3",
+          reason: "Allow read-only SQL via the approved direct connection?",
+          command: "/bin/zsh -lc 'psql \"$DATABASE_URL\" -c \"SELECT 1\"'",
+          cwd: "/Users/pengxiao/workspaces/zenuml/conf-app",
+        },
+        ts: "2026-08-19T01:04:00Z",
+      }],
+    };
+
+    const view = render(<AgentPane {...props} agent={agent} active />);
+    await screen.findByTestId("pending-approval-approval-readable");
+
+    const command = view.container.querySelector("[data-approval-command]");
+    expect(command?.textContent).toContain("SELECT 1");
+
+    const reason = view.container.querySelector("[data-approval-reason]");
+    expect(reason?.textContent).toContain("Allow read-only SQL");
+
+    const cwd = view.container.querySelector("[data-approval-cwd]");
+    expect(cwd?.textContent).toContain("/Users/pengxiao/workspaces/zenuml/conf-app");
+
+    const raw = view.container.querySelector("details[data-approval-raw]");
+    expect(raw).toBeTruthy();
+    expect((raw as HTMLDetailsElement).open).toBe(false);
+    expect(raw?.textContent).toContain("019fc597-18b4-7243-afd7-c552eb7f37b5");
+  });
+
   it("renders only received message markers and jumps by stable message identity", async () => {
     const extraOwnerItems = Array.from({ length: 8 }, (_, index) => ({
       type: "user",

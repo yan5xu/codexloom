@@ -1563,9 +1563,30 @@ export function AgentPane({
                     <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start">
                       <div className="min-w-0 flex-1">
                         <div className="break-all font-mono text-[11px] font-medium text-foreground">{approval.method}</div>
-                        <pre className="mt-1.5 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm bg-muted/55 px-2.5 py-2 font-mono text-[10.5px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">
-                          {JSON.stringify(approval.params, null, 2)}
-                        </pre>
+                        {approval.params?.reason ? (
+                          <div data-approval-reason className="mt-1.5 text-[11px] text-foreground">
+                            {String(approval.params.reason)}
+                          </div>
+                        ) : null}
+                        {approval.params?.command ? (
+                          <pre
+                            data-approval-command
+                            className="mt-1.5 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm bg-muted/55 px-2.5 py-2 font-mono text-[10.5px] leading-4 [overflow-wrap:anywhere]"
+                          >
+                            {String(approval.params.command)}
+                          </pre>
+                        ) : null}
+                        {approval.params?.cwd ? (
+                          <div data-approval-cwd className="mt-1.5 break-all font-mono text-[10.5px] text-muted-foreground">
+                            cwd {String(approval.params.cwd)}
+                          </div>
+                        ) : null}
+                        <details data-approval-raw className="mt-1.5">
+                          <summary className="cursor-pointer text-[10.5px] text-muted-foreground">raw params</summary>
+                          <pre className="mt-1 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm bg-muted/55 px-2.5 py-2 font-mono text-[10.5px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+                            {JSON.stringify(approval.params, null, 2)}
+                          </pre>
+                        </details>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 sm:pt-0.5">
                         <button
